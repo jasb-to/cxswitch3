@@ -21,6 +21,8 @@ const TELEGRAM_ALERT_KEY_PREFIX = "cxswitch:telegram_alert:";
 const ONE_TIME_BTC_SHORT_CLEANUP_KEY = "cxswitch:cleanup:btc_short_20260923";
 const SIGNAL_HISTORY_MAX = 150;
 const TELEGRAM_ALERT_TTL_SECONDS = 60*60*24*45;
+const CLEANUP_KEY = "cxswitch:cleanup:bandwidth_20261002_v1";
+const LEGACY_1D_LOG_KEY = "cxswitch:1d_trend_log_v2";
 
 export interface ActiveTrade {
   id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD";
@@ -91,7 +93,19 @@ export async function addActiveSignal(signal: Signal): Promise<void> {
 export async function removeActiveSignal(pair:string,direction:"LONG"|"SHORT"):Promise<void>{const active=await getActiveSignals();const filtered=active.filter(a=>!(a.pair===pair&&a.direction===direction));if(filtered.length!==active.length){await setActiveSignals(filtered);console.log(`[ACTIVE] Removed ${pair} ${direction}`);}}
 export async function removeActiveSignalById(id:string):Promise<void>{const active=await getActiveSignals();const filtered=active.filter(a=>a.id!==id);if(filtered.length!==active.length){await setActiveSignals(filtered);console.log(`[ACTIVE] Removed signal ${id}`);}}
 export async function updateActiveTradeMilestones(id:string,price:number):Promise<ActiveTrade|undefined>{const active=await getActiveSignals();const trade=active.find(a=>a.id===id);if(!trade)return undefined;const hit=(level:number|undefined,direction:"LONG"|"SHORT")=>level!==undefined&&(direction==="LONG"?price>=level:price<=level);let changed=false;if(!trade.tp1HitAt&&hit(trade.tp1,trade.direction)){trade.tp1HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP1 reached @ ${price}`);}if(!trade.tp2HitAt&&hit(trade.tp2,trade.direction)){trade.tp2HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP2 reached @ ${price}`);}if(!trade.tp3HitAt&&hit(trade.tp3,trade.direction)){trade.tp3HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP3 reached @ ${price}`);}if(changed)await setActiveSignals(active);return trade;}
-export async function getSignalHistory():Promise<SignalHistoryEntry[]>{return(await redis.get<SignalHistoryEntry[]>(SIGNAL_HISTORY_KEY))||[];}
+export async function getSignalHistory():Promise<SignalHistoryEntry[]>{
+  const history=(await redis.get<SignalHistoryEntry[]>(SIGNAL_HISTORY_KEY))||[];
+  const cleaned=await redis.get<boolean>(CLEANUP_KEY);
+  if(!cleaned){
+    const keep=Math.ceil(history.length/2);
+    if(history.length>keep) await redis.set(SIGNAL_HISTORY_KEY,history.slice(-keep));
+    await redis.del(LEGACY_1D_LOG_KEY);
+    await redis.set(CLEANUP_KEY,true);
+    console.log(`[STATE CLEANUP] Bandwidth cleanup complete: signal_history ${history.length} -> ${Math.min(history.length,keep)}; deleted legacy 1D v2 log`);
+    return history.slice(-keep);
+  }
+  return history;
+}
 export async function setSignalHistory(history:SignalHistoryEntry[]):Promise<void>{await redis.set(SIGNAL_HISTORY_KEY,history);}
 
 // Persistent Telegram alert idempotency. The key represents a lifecycle event
