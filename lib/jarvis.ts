@@ -1,8 +1,8 @@
 // lib/jarvis.ts — CXSwitch JARVIS interpretation layer
-import { Redis } from "@upstash/redis";
+import { Redis } from "./supabase-kv";
 import { sendJarvisUpdate } from "./telegram";
 
-const redis = new Redis({ url: process.env.KV_REST_API_URL!, token: process.env.KV_REST_API_TOKEN! });
+const redis = new Redis();
 const JARVIS_KEY = "cxswitch:jarvis_state";
 const MODEL = process.env.HUGGINGFACE_MODEL || "Qwen/Qwen3-4B-Instruct-2507";
 
