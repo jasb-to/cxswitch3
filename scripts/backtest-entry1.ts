@@ -61,7 +61,21 @@ async function readArchive(url:string,cachePath:string):Promise<Candle[]>{
   const csv=execFileSync("unzip",["-p",cachePath],{encoding:"utf8",maxBuffer:256*1024*1024});
   return csvToCandles(csv);
 }
+function aggregateWeekly(rows:Candle[]):Candle[]{
+  const buckets=new Map<number,Candle>();
+  for(const row of rows){
+    const d=new Date(row.timestamp); const day=d.getUTCDay();
+    const mondayOffset=day===0?6:day-1;
+    const ts=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()-mondayOffset);
+    const existing=buckets.get(ts);
+    if(!existing)buckets.set(ts,{timestamp:ts,open:row.open,high:row.high,low:row.low,close:row.close,volume:row.volume});
+    else{existing.high=Math.max(existing.high,row.high);existing.low=Math.min(existing.low,row.low);existing.close=row.close;existing.volume+=row.volume;}
+  }
+  return [...buckets.values()].sort((a,b)=>a.timestamp-b.timestamp);
+}
+
 async function fetchKlines(symbol:string,interval:string,start:number,end:number):Promise<Candle[]>{
+  if(interval==="1w")return aggregateWeekly(await fetchKlines(symbol,"1d",start,end));
   const months=monthStarts(start,end);
   const out:Candle[]=[];
   for(const ym of months){
