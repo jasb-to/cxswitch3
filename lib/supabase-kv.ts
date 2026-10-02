@@ -8,9 +8,15 @@ let client: SupabaseClient | null = null;
 
 function getClient() {
   if (client) return client;
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const rawUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error("Supabase persistence is not configured: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY");
+  if (!rawUrl || !key) throw new Error("Supabase persistence is not configured: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY");
+
+  // Accept the normal project API URL, or recover a dashboard URL copied from Supabase.
+  let url = rawUrl.trim().replace(/\/$/, "");
+  const dashboardMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9]+)(?:\/|$)/i);
+  if (dashboardMatch) url = "https://" + dashboardMatch[1] + ".supabase.co";
+
   client = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
   return client;
 }
