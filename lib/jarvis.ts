@@ -72,7 +72,8 @@ function entry1Watch(m:any):string {
   const near=Math.abs(dist)<=1;
   const extreme=dir==="LONG"?k<25:k>75;
   if(near&&extreme) return `${dir} ENTRY_1 setup present; ENTRY_1 remains silent.`;
-  return `${dir} ENTRY_1 watch: ${near?"near trendline":"waiting for trendline approach"} · Stoch K ${Number.isFinite(k)?k:"—"}`;
+  if(near) return `${dir} ENTRY_1 watch: near trendline · waiting for Stoch K ${dir==="LONG"?"< 25":"> 75"}`;
+  return `${dir} ENTRY_1 watch: waiting for trendline approach · Stoch K ${Number.isFinite(k)?k:"—"}`;
 }
 
 function pairState(m:any, active:any):JarvisPairState {
