@@ -25,7 +25,7 @@ const CLEANUP_KEY = "cxswitch:cleanup:bandwidth_20261002_v1";
 const LEGACY_1D_LOG_KEY = "cxswitch:1d_trend_log_v2";
 
 export interface ActiveTrade {
-  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD";
+  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number; tp3?: number;
   tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
   status: "ACTIVE"; context: any; version: number;
@@ -34,7 +34,7 @@ export interface ActiveTrade {
 
 export type HistoryStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "FAILED" | "EXPIRED";
 export interface SignalHistoryEntry {
-  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD";
+  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number; tp3?: number;
   tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
   status: HistoryStatus; exitReason?: string; exitPrice?: number; exitTimestamp?: number; context: any; version: number;
