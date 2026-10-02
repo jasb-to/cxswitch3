@@ -19,9 +19,8 @@ const VISION_BASE="https://data.binance.vision/data/futures/um";
 const PAIRS=(process.env.BACKTEST_PAIRS||"BTC,ETH,SOL").split(",").map(x=>x.trim().toUpperCase()).filter(Boolean) as Pair[];
 const MONTHS=Math.max(6,Number(process.env.BACKTEST_MONTHS||18));
 const FOUR_H=4*60*60*1000;
-const NOW=Date.now();
-const START=NOW-MONTHS*30.4375*24*60*60*1000;
-const END=NOW;
+const END=Date.now()-2*24*60*60*1000;
+const START=END-MONTHS*30.4375*24*60*60*1000;
 const CACHE_DIR=process.env.BACKTEST_CACHE||path.join(os.tmpdir(),"cxswitch-binance-vision");
 
 function monthStarts(start:number,end:number){
