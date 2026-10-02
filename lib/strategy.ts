@@ -624,17 +624,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     (shortFibPath.state==="DEEP_RECLAIM"&&price>=shortFib.swingLow&&price<=shortFib.fib50*(1+ENTRY1_PATH_ZONE_PCT))
   );
   const longPreBreak=longTL.valid&&price<=longTL.price+longBuffer,shortPreBreak=shortTL.valid&&price>=shortTL.price-shortBuffer;
-  // ENTRY_1 momentum is deliberately early, but a reversal from an opposing
-  // 4H environment needs 2 of the 3 closed-4H momentum signals. This preserves
-  // early entries while preventing a StochRSI-only reversal from firing.
-  // Explicit 5/13 stage transitions and confirmed structure shifts remain
-  // valid on their own, because those are direct 4H transition evidence.
+  // ENTRY_1 momentum diagnostics remain visible, but the decision itself
+  // uses the direct 4H transition test below rather than a stacked score.
   const stochLong=st.k>st.d&&st.k>prevSt.k,stochShort=st.k<st.d&&st.k<prevSt.k;
   const macdLong=macd.bullishShift,macdShort=macd.bearishShift;
   const emaLong=fourH.direction==="BULLISH"||fourH.turning&&fourH.direction==="BULLISH";
   const emaShort=fourH.direction==="BEARISH"||fourH.turning&&fourH.direction==="BEARISH";
-  const longMomentum=stochLong||macdLong||emaLong;
-  const shortMomentum=stochShort||macdShort||emaShort;
   const longMomentumCount=[stochLong,macdLong,emaLong].filter(Boolean).length;
   const shortMomentumCount=[stochShort,macdShort,emaShort].filter(Boolean).length;
   const longExhaustion=checkEntry1Exhaustion("LONG",r,st,longDist,a),shortExhaustion=checkEntry1Exhaustion("SHORT",r,st,shortDist,a);
@@ -672,9 +667,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   // A previous bearish 4H plus ANY single fresh bullish timing/structure
   // reaction is also enough. This is intentionally permissive: location and
   // exhaustion remain the separate quality gates. We do not stack indicators.
-  const previousFourH=closed.length>20
-    ? get4HEmaDiagnostic(closed.slice(0,-1))
-    : {direction:"NEUTRAL" as const,stage:"NEUTRAL",turning:false};
   const bullStageTransition=
     fourH.stage==="EARLY_BULLISH_L1" ||
     fourH.stage==="EARLY_BULLISH_L2" ||
@@ -761,15 +753,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const freshLongPreBreak=fourHPreBreakLong&&previousLongDistance>fourHPreBreakBuffer;
   const freshShortPreBreak=fourHPreBreakShort&&previousShortDistance>fourHPreBreakBuffer;
 
-  const dailyLongAllowed=dDir==="BULL";
-  const dailyShortAllowed=dDir==="BEAR";
-  const candidate=String(dailyLive?.candidateState||"");
   const shortFadeEntry1=dailyFade.shortWatch;
-  const dailyTransitionBlocked=!!dailyLive && (
-    candidate==="TRANSITION" ||
-    (dDir==="BULL"&&candidate==="BEAR_DEVELOPING") ||
-    (dDir==="BEAR"&&candidate.startsWith("BULL"))
-  );
 
   // ENTRY_1 is deliberately lean: setup + one meaningful 4H trigger + exhaustion veto.
   // The existing fresh-pre-break test is the setup dedupe; no arbitrary cooldown is added.
@@ -814,7 +798,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
     entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:false,weeklyGateShort:false,volatilityPct:price>0?round((av/price)*100):0,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
-    entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:dailyTransitionBlocked?"TRANSITION_BLOCK":"NONE",entry1ClosedRsi:r,
+    entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:"NONE",entry1ClosedRsi:r,
     entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:1,entry1MomentumRequired:true,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI,entry1DailyPreBreakLong:dailyPreBreakLong,entry1DailyPreBreakShort:dailyPreBreakShort,entry1DailyRsi:dailyRsiNow,entry1DailyRsiPrev:dailyRsiPrev,entry1DailyRsiTurnLong:dailyRsiLongTurn,entry1DailyRsiTurnShort:dailyRsiShortTurn,entry1FourHPreBreakLong:freshLongPreBreak,entry1FourHPreBreakShort:freshShortPreBreak,entry1FourHBreakLineLong:longBreakPrice,entry1FourHBreakLineShort:shortBreakPrice,dailyFadeShortWatch:dailyFade.shortWatch,dailyFadeFailedBreak:dailyFade.failedBreak,dailyFadeLevel:dailyFade.level,dailyFadeStochK:dailyFade.stochK,dailyFadeStochD:dailyFade.stochD
   });
 
@@ -941,7 +925,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):"4H_BREAKOUT→15M_DIP";
   const actualRr=Math.abs(tp1-entry)/Math.max(risk,1e-9);
   if(actualRr<MIN_RR){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} ${type} | TP1 RR ${actualRr.toFixed(2)} < MIN_RR ${MIN_RR}`);return{market:market(baseMarket()),debug};}
-  const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:Math.round(actualRr*100)/100,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} | 1W ${weekly.direction||"NEUTRAL"} | 1D ${dDir} | 4H ${strength(daily(candles4h),dir)}`,location,trigger,context:{
+  const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:Math.round(actualRr*100)/100,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} | 1W ${weekly.direction||"NEUTRAL"} | 1D ${dDir} | 4H ${strength(dailyCandles,dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:`${dir} CONFIRMED ENTRY_2`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
     pullback:type==="ENTRY_2"?"15M_DIP_TO_4H_TRENDLINE":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
