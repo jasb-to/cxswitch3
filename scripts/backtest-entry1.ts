@@ -4,6 +4,17 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { generateSignal, type Candle } from "../lib/strategy";
 
+type Pair = "BTC"|"ETH"|"SOL";
+type Row = {
+  pair:string; direction:"LONG"|"SHORT"; timestamp:number; entry:number;
+  stop:number|null; tp1:number|null; tp2:number|null;
+  r4h:number|null; r8h:number|null; r12h:number|null; r24h:number|null;
+  r48h:number|null; r72h:number|null;
+  mae72:number|null; mfe72:number|null;
+  stopHit72:boolean; tp1Hit72:boolean; tp2Hit72:boolean;
+  exhaustion:string; reason:string;
+};
+
 const VISION_BASE="https://data.binance.vision/data/futures/um";
 const PAIRS=(process.env.BACKTEST_PAIRS||"BTC,ETH,SOL").split(",").map(x=>x.trim().toUpperCase()).filter(Boolean) as Pair[];
 const MONTHS=Math.max(6,Number(process.env.BACKTEST_MONTHS||18));
