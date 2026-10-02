@@ -161,6 +161,7 @@ async function runPair(pair:Pair):Promise<Row[]>{
 function avg(xs:(number|null)[]){const a=xs.filter((x):x is number=>x!==null&&Number.isFinite(x));return a.length?a.reduce((s,x)=>s+x,0)/a.length:null;}
 function pct(xs:(number|null)[],fn:(x:number)=>boolean){const a=xs.filter((x):x is number=>x!==null&&Number.isFinite(x));return a.length?a.filter(fn).length/a.length*100:null;}
 
+async function main(){
 const all:Row[]=[];
 for(const pair of PAIRS)all.push(...await runPair(pair));
 console.log("\n=== CX SWITCH ENTRY_1 BACKTEST ===");
@@ -179,3 +180,7 @@ if(all.length){
     r.mae72??"",r.mfe72??"",r.stopHit72,r.tp1Hit72,r.tp2Hit72
   ].join(","));
 }
+
+}
+
+main().catch(err=>{console.error(err);process.exit(1);});
