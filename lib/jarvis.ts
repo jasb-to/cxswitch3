@@ -161,7 +161,7 @@ function pairState(m:any, active:any):JarvisPairState {
   const tradeDecision=active
     ? (active.positionManagementRecommendation==="EXIT TRADE" || active.positionManagementState==="EXIT" ? "EXIT TRADE" : "STAY IN TRADE")
     : undefined;
-  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature,currentAnalysis:current,tradeDecision,entry1Watch};
+  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature,currentAnalysis:current,tradeDecision,entry1Watch:entryWatch};
 }
 
 function portfolioState(pairs:JarvisPairState[]):JarvisSnapshot["portfolioState"]{
