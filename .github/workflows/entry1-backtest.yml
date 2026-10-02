@@ -12,12 +12,12 @@ on:
       pairs:
         description: "Comma-separated symbols"
         required: false
-        default: "BTC,ETH,SOL"
+        default: "BTC,ETH,SOL,DOGE"
 
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       BACKTEST_MONTHS: ${{ github.event.inputs.months || '18' }}
       BACKTEST_PAIRS: ${{ github.event.inputs.pairs || 'BTC,ETH,SOL' }}
