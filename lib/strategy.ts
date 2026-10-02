@@ -556,7 +556,7 @@ export function getDaily513Diagnostic(c:Candle[]){
   const d=daily(c);if(d.length<21)return{stage:"NEUTRAL",label:"1D NEUTRAL",direction:"NEUTRAL" as const,ema5:0,ema13:0,spread:0,spreadPct:0,spreadContracting:false,spreadChangePct:0,ema5Slope:0,ema13Slope:0};
   const x=d.slice(0,-1).map(z=>z.close),f=ema(x,5),s=ema(x,13),ema5=f.at(-1)!,ema13=s.at(-1)!,p5=f.at(-2)!,p13=s.at(-2)!,spread=ema5-ema13,prev=p5-p13,contract=Math.abs(spread)<Math.abs(prev);let stage=spread>0?"BULLISH":"BEARISH",label=spread>0?"1D BULLISH":"1D BEARISH",direction:"BULLISH"|"BEARISH"=spread>0?"BULLISH":"BEARISH";if(spread<0&&ema5>p5&&contract){stage="EARLY_BULLISH";label="1D EARLY BULLISH";}if(spread>0&&ema5<p5&&contract){stage="EARLY_BEARISH";label="1D EARLY BEARISH";}return{stage,label,direction,ema5,ema13,spread,spreadPct:ema13?spread/ema13*100:0,spreadContracting:contract,spreadChangePct:prev?((Math.abs(spread)-Math.abs(prev))/Math.abs(prev))*100:0,ema5Slope:ema5-p5,ema13Slope:ema13-p13};
 }
-function logFib(debug:string[],pair:string,d:Direction,f:FibLevels|null,price:number){if(!f){debug.push(`[FIB] ${pair} ${d} | unavailable`);return;}const levels=[["0.382",f.fib382],["0.500",f.fib50],["0.618",f.fib618]] as const,near=levels.reduce((a,b)=>Math.abs(price-b[1])<Math.abs(price-a[1])?b:a);debug.push(`[FIB] ${pair} ${d} | swingLow=${f.swingLow.toFixed(2)} swingHigh=${f.swingHigh.toFixed(2)} | 0.382=${f.fib382.toFixed(2)} 0.500=${f.fib50.toFixed(2)} 0.618=${f.fib618.toFixed(2)} | price=${price.toFixed(2)} nearest=${near[0]} @ ${near[1].toFixed(2)} dist=${(Math.abs(price-near[1])/Math.max(Math.abs(near[1]),1)*100).toFixed(2)}%`);}
+function logFib(debug:string[],pair:string,d:Direction,f:FibLevels|null,price:number){if(!f||![f.swingLow,f.swingHigh,f.fib382,f.fib50,f.fib618].every(Number.isFinite)){debug.push(`[FIB] ${pair} ${d} | unavailable`);return;}const levels=[["0.382",f.fib382],["0.500",f.fib50],["0.618",f.fib618]] as const,near=levels.reduce((a,b)=>Math.abs(price-b[1])<Math.abs(price-a[1])?b:a);debug.push(`[FIB] ${pair} ${d} | swingLow=${f.swingLow.toFixed(2)} swingHigh=${f.swingHigh.toFixed(2)} | 0.382=${f.fib382.toFixed(2)} 0.500=${f.fib50.toFixed(2)} 0.618=${f.fib618.toFixed(2)} | price=${price.toFixed(2)} nearest=${near[0]} @ ${near[1].toFixed(2)} dist=${(Math.abs(price-near[1])/Math.max(Math.abs(near[1]),1)*100).toFixed(2)}%`);}
 
 function checkEntry1Exhaustion(direction:Direction,r:number,st:{k:number;d:number},trendlineDist:number,adxVal:number){
   // Directional V28.2 exhaustion protection, adapted to the current Fib-based ENTRY_1.
@@ -683,6 +683,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
+  const longRunway=entry1Runway(closed,longFib,price,"LONG");
+  const shortRunway=entry1Runway(closed,shortFib,price,"SHORT");
+  const longMomentumState=compositeMomentumState(closed,"LONG",st,macd,fourH);
+  const shortMomentumState=compositeMomentumState(closed,"SHORT",st,macd,fourH);
 
   // 1D is directional context AND the early setup.
   // ENTRY_1 fires before the daily structural breakout, with RSI turning
@@ -735,6 +739,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const dailyLongAllowed=dDir==="BULL";
   const dailyShortAllowed=dDir==="BEAR";
   const candidate=String(dailyLive?.candidateState||"");
+  const shortFadeEntry1=dailyFade.shortWatch;
   const dailyTransitionBlocked=!!dailyLive && (
     candidate==="TRANSITION" ||
     (dDir==="BULL"&&candidate==="BEAR_DEVELOPING") ||
@@ -748,12 +753,16 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     dailyPreBreakLong&&
     dailyRsiLongTurn&&
     freshLongPreBreak&&
+    long4HTransition&&
+    longMomentumCount>=1&&
     !longExhausted;
   const shortEntry1=
     dailyShortAllowed&&
     dailyPreBreakShort&&
     dailyRsiShortTurn&&
     freshShortPreBreak&&
+    short4HTransition&&
+    shortMomentumCount>=1&&
     !shortExhausted;
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
@@ -896,7 +905,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":"15M_TRENDLINE_RETEST";
   const entry1Trigger=type==="ENTRY_1"&&dir==="SHORT"&&shortFadeEntry1?"1D_OVERBOUGHT_RESISTANCE→4H_FADE":"1D_BREAKOUT→4H_TRANSITION";
   const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):"4H_BREAKOUT→15M_DIP";
-  const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} | 1W ${weekly.direction||"NEUTRAL"} | 1D ${dDir} | 4H ${strength(daily(candles4h),dir)}`,location,trigger,context:{
+  const actualRr=Math.abs(tp1-entry)/Math.max(risk,1e-9);
+  if(actualRr<MIN_RR){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} ${type} | TP1 RR ${actualRr.toFixed(2)} < MIN_RR ${MIN_RR}`);return{market:market(baseMarket()),debug};}
+  const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:Math.round(actualRr*100)/100,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} | 1W ${weekly.direction||"NEUTRAL"} | 1D ${dDir} | 4H ${strength(daily(candles4h),dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:`${dir} CONFIRMED ENTRY_2`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
     pullback:type==="ENTRY_2"?"15M_DIP_TO_4H_TRENDLINE":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
