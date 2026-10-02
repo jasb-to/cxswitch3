@@ -23,7 +23,7 @@ export class Redis {
   private db = getClient();
 
   async get<T = unknown>(key: string): Promise<T | null> {
-    const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).maybeSingle<Row>();
+    const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).maybeSingle();
     if (error) throw new Error(`Supabase KV get failed for ${key}: ${error.message}`);
     if (!data) return null;
     if (data.expires_at && new Date(data.expires_at).getTime() <= Date.now()) {
