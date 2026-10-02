@@ -573,8 +573,34 @@ function checkEntry1Exhaustion(direction:Direction,r:number,st:{k:number;d:numbe
   return{blocked:false,reason:""};
 }
 
-export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext,candlesWeekly:Candle[]=[],marketHealth?:MarketHealth):SignalResult{
-  const debug:string[]=[];const now=Date.now();if(candles4h.length<35){debug.push("Insufficient 4H data");return{debug};}
+type Entry1State={
+  dailyDirection:"BULL"|"BEAR"|"NEUTRAL";
+  dailyPreBreak:boolean;
+  dailyRsiTurn:boolean;
+  fourHPreBreak:boolean;
+  transitionTrigger:boolean;
+  setupFresh:boolean;
+  exhausted:boolean;
+  exhaustionReason:string;
+};
+type Entry1Decision={direction:Direction;reason:string;trigger:string}|null;
+function decideEntry1(state:Entry1State):Entry1Decision{
+  if(state.exhausted||!state.setupFresh||!state.dailyPreBreak||!state.dailyRsiTurn||!state.fourHPreBreak||!state.transitionTrigger)return null;
+  if(state.dailyDirection==="BULL")return{direction:"LONG",reason:"1D pre-break + RSI turn + 4H pre-break + transition trigger",trigger:"4H_TRANSITION"};
+  if(state.dailyDirection==="BEAR")return{direction:"SHORT",reason:"1D pre-break + RSI turn + 4H pre-break + transition trigger",trigger:"4H_TRANSITION"};
+  return null;
+}
+type Entry2State={longRetest:boolean;shortRetest:boolean;longBlocked:boolean;shortBlocked:boolean;};
+type Entry2Decision={direction:Direction;reason:string}|null;
+function decideEntry2(state:Entry2State):Entry2Decision{
+  if(state.longRetest&&!state.shortRetest&&!state.longBlocked)return{direction:"LONG",reason:"4H trendline break + 15M dip/retest"};
+  if(state.shortRetest&&!state.longRetest&&!state.shortBlocked)return{direction:"SHORT",reason:"4H trendline break + 15M dip/retest"};
+  return null;
+}
+
+export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext,candlesWeekly:Candle[]=[],marketHealth?:MarketHealth,nowOverride?:number):SignalResult{
+  const debug:string[]=[];const now=nowOverride??Date.now();if(candles4h.length<35){debug.push("Insufficient 4H data");return{debug};}
+  const dailyCandles=daily(candles4h);
   const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily),dailyBreakout=dailyBreakoutContext(candles4h),dailyFade=dailyFadeContext(candles4h),weekly=weeklyDirection(candlesWeekly,price);
   const structure=detectStructureShift(pair,closed),structureDir=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure as Direction:null;
   const fourH=get4HEmaDiagnostic(closed),macd=macd4h(closed),closes=closed.map(x=>x.close),st=stochRsi(closes),prevClosed=closed.length>1?closed.slice(0,-1):closed,prevSt=stochRsi(prevClosed.map(x=>x.close)),r=Math.round(rsi(closes)*10)/10,a=adx(closed),av=atr(closed);
@@ -691,7 +717,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   // 1D is directional context AND the early setup.
   // ENTRY_1 fires before the daily structural breakout, with RSI turning
   // from the lower/upper area. The 4H must also be approaching its breakout.
-  const dailyCandles=daily(candles4h);
   const dailyClosed=dailyCandles.length>1?dailyCandles.slice(0,-1):dailyCandles;
   const dailyLiveCandle=dailyCandles.at(-1);
   const dailyCloses=dailyClosed.map(x=>x.close);
@@ -746,24 +771,30 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     (dDir==="BEAR"&&candidate.startsWith("BULL"))
   );
 
-  // ENTRY_1 has exactly the requested structure:
-  // 1D direction + 1D pre-break + RSI turn + 4H pre-break.
-  const longEntry1=
-    dailyLongAllowed&&
-    dailyPreBreakLong&&
-    dailyRsiLongTurn&&
-    freshLongPreBreak&&
-    long4HTransition&&
-    longMomentumCount>=1&&
-    !longExhausted;
-  const shortEntry1=
-    dailyShortAllowed&&
-    dailyPreBreakShort&&
-    dailyRsiShortTurn&&
-    freshShortPreBreak&&
-    short4HTransition&&
-    shortMomentumCount>=1&&
-    !shortExhausted;
+  // ENTRY_1 is deliberately lean: setup + one meaningful 4H trigger + exhaustion veto.
+  // The existing fresh-pre-break test is the setup dedupe; no arbitrary cooldown is added.
+  const longEntry1Decision=decideEntry1({
+    dailyDirection:dDir,
+    dailyPreBreak:dailyPreBreakLong,
+    dailyRsiTurn:dailyRsiLongTurn,
+    fourHPreBreak:freshLongPreBreak,
+    transitionTrigger:long4HTransition,
+    setupFresh:freshLongPreBreak,
+    exhausted:longExhausted,
+    exhaustionReason:longExhaustion.reason
+  });
+  const shortEntry1Decision=decideEntry1({
+    dailyDirection:dDir,
+    dailyPreBreak:dailyPreBreakShort,
+    dailyRsiTurn:dailyRsiShortTurn,
+    fourHPreBreak:freshShortPreBreak,
+    transitionTrigger:short4HTransition,
+    setupFresh:freshShortPreBreak,
+    exhausted:shortExhausted,
+    exhaustionReason:shortExhaustion.reason
+  });
+  const longEntry1=!!longEntry1Decision;
+  const shortEntry1=!!shortEntry1Decision;
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
@@ -772,7 +803,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[1D FADE WATCH] ${pair} | shortWatch=${dailyFade.shortWatch?"YES":"NO"} | failedBreak=${dailyFade.failedBreak?"YES":"NO"} | level=${dailyFade.level?.toFixed(2)||"—"} | dist=${Number.isFinite(dailyFade.distPct)?dailyFade.distPct.toFixed(2)+"%":"—"} | Stoch=${dailyFade.stochK}/${dailyFade.stochD} | ${dailyFade.reason||"NONE"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | 1D_PREBREAK=${dailyPreBreakLong?"LONG":dailyPreBreakShort?"SHORT":"NONE"} | 1D_RSI=${dailyRsiNow}/${dailyRsiPrev} | RSI_TURN=${dailyRsiLongTurn?"LONG":dailyRsiShortTurn?"SHORT":"NONE"} | 4H_PREBREAK=${freshLongPreBreak?"LONG":freshShortPreBreak?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | 1D_PREBREAK=${dailyPreBreakLong?"LONG":dailyPreBreakShort?"SHORT":"NONE"} | 1D_RSI=${dailyRsiNow}/${dailyRsiPrev} | RSI_TURN=${dailyRsiLongTurn?"LONG":dailyRsiShortTurn?"SHORT":"NONE"} | 4H_PREBREAK=${freshLongPreBreak?"LONG":freshShortPreBreak?"SHORT":"NONE"} | TRIGGER=${long4HTransition?"LONG":short4HTransition?"SHORT":"NONE"} | FRESH=${freshLongPreBreak||freshShortPreBreak?"YES":"NO"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
@@ -784,7 +815,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
     entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:false,weeklyGateShort:false,volatilityPct:price>0?round((av/price)*100):0,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
     entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:dailyTransitionBlocked?"TRANSITION_BLOCK":"NONE",entry1ClosedRsi:r,
-    entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:0,entry1MomentumRequired:false,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI,entry1DailyPreBreakLong:dailyPreBreakLong,entry1DailyPreBreakShort:dailyPreBreakShort,entry1DailyRsi:dailyRsiNow,entry1DailyRsiPrev:dailyRsiPrev,entry1DailyRsiTurnLong:dailyRsiLongTurn,entry1DailyRsiTurnShort:dailyRsiShortTurn,entry1FourHPreBreakLong:freshLongPreBreak,entry1FourHPreBreakShort:freshShortPreBreak,entry1FourHBreakLineLong:longBreakPrice,entry1FourHBreakLineShort:shortBreakPrice,dailyFadeShortWatch:dailyFade.shortWatch,dailyFadeFailedBreak:dailyFade.failedBreak,dailyFadeLevel:dailyFade.level,dailyFadeStochK:dailyFade.stochK,dailyFadeStochD:dailyFade.stochD
+    entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:1,entry1MomentumRequired:true,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI,entry1DailyPreBreakLong:dailyPreBreakLong,entry1DailyPreBreakShort:dailyPreBreakShort,entry1DailyRsi:dailyRsiNow,entry1DailyRsiPrev:dailyRsiPrev,entry1DailyRsiTurnLong:dailyRsiLongTurn,entry1DailyRsiTurnShort:dailyRsiShortTurn,entry1FourHPreBreakLong:freshLongPreBreak,entry1FourHPreBreakShort:freshShortPreBreak,entry1FourHBreakLineLong:longBreakPrice,entry1FourHBreakLineShort:shortBreakPrice,dailyFadeShortWatch:dailyFade.shortWatch,dailyFadeFailedBreak:dailyFade.failedBreak,dailyFadeLevel:dailyFade.level,dailyFadeStochK:dailyFade.stochK,dailyFadeStochD:dailyFade.stochD
   });
 
   const closedIndex=closed.length-1;
@@ -841,13 +872,16 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const retestShort=shortExec.retest;
 
   let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|null=null,reason="";
-  // ENTRY_2 is the confirmed path. If a genuine breakout/retest is present,
-  // it must not be masked by an early ENTRY_1 condition on the same scan.
-  // 1W is context only; it is not an ENTRY_2 permission gate.
-  if(retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
-  else if(retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
-  else if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
-  else if(shortEntry1&&!longEntry1){dir="SHORT";type="ENTRY_1";reason="probability-based early setup";}
+  // ENTRY_2 remains the confirmed breakout/retest path. Keep it isolated from ENTRY_1.
+  const entry2Decision=decideEntry2({
+    longRetest:retestLong,
+    shortRetest:retestShort,
+    longBlocked:same(pair,"LONG",activeTrades),
+    shortBlocked:same(pair,"SHORT",activeTrades)
+  });
+  if(entry2Decision){dir=entry2Decision.direction;type="ENTRY_2";reason=entry2Decision.reason;}
+  else if(longEntry1Decision&&!shortEntry1Decision){dir="LONG";type="ENTRY_1";reason=longEntry1Decision.reason;}
+  else if(shortEntry1Decision&&!longEntry1Decision){dir="SHORT";type="ENTRY_1";reason=shortEntry1Decision.reason;}
   debug.push(`[4H BREAK] ${pair} | LONG prevClose=${previous4H.close.toFixed(2)} prevLine=${previousLongLine?.toFixed(2)||"—"} currentHigh=${developing4H.high.toFixed(2)} currentLine=${developingLongLine?.toFixed(2)||"—"} crossed=${current4HBreakLong?"YES":"NO"} | SHORT prevClose=${previous4H.close.toFixed(2)} prevLine=${previousShortLine?.toFixed(2)||"—"} currentLow=${developing4H.low.toFixed(2)} currentLine=${developingShortLine?.toFixed(2)||"—"} crossed=${current4HBreakShort?"YES":"NO"}`);
   debug.push(`[ENTRY_2] ${pair} | LONG break=${breakoutLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT break=${breakoutShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
 
