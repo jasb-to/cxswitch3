@@ -42,35 +42,7 @@ function stagedTargets(s: any) {
   return { tp1: s?.tp1 ?? s?.context?.stages?.tp1, tp2: s?.tp2 ?? s?.context?.stages?.tp2 ?? s?.target, tp3: s?.tp3 ?? s?.context?.stages?.tp3 ?? s?.target };
 }
 
-export async function runMigrationIfNeeded(): Promise<void> {
-  const migrated = await redis.get<boolean>(MIGRATION_FLAG_KEY);
-  if (migrated) return;
-  console.log("[STATE] Running one-time state migration...");
-  const legacySignals = await redis.get<any[]>(LEGACY_SIGNALS_KEY) || [];
-  const legacyTrades = await redis.get<Record<string, any>>(LEGACY_TRADES_KEY) || {};
-  const activeSignals: ActiveTrade[] = [];
-  const historyEntries: SignalHistoryEntry[] = [];
-  const latestAlerts: Record<string, SignalHistoryEntry> = {};
-  for (const s of legacySignals) {
-    if (!s || !s.id) continue;
-    const stages = stagedTargets(s);
-    const status: HistoryStatus = s.meta?.status === "TP_HIT" ? "TP_HIT" : s.meta?.status === "SL_HIT" ? "SL_HIT" : s.meta?.status === "EXPIRED" || s.meta?.status === "STALE" ? "EXPIRED" : s.exited ? "FAILED" : "ACTIVE";
-    const entry: SignalHistoryEntry = { id:s.id,pair:s.pair,direction:s.direction,type:s.type,entry:s.entry,stop:s.stop,target:stages.tp2 ?? s.target,tp1:stages.tp1,tp2:stages.tp2,tp3:stages.tp3,timestamp:s.timestamp,rr:s.rr ?? 0,status,exitReason:s.exitReason || s.meta?.status,exitPrice:s.exitPrice,exitTimestamp:s.exitTimestamp,context:s.context || {},version:1 };
-    historyEntries.push(entry);
-    if (!latestAlerts[entry.pair] || entry.timestamp > latestAlerts[entry.pair].timestamp) latestAlerts[entry.pair] = entry;
-    if (status === "ACTIVE" && s.meta?.status === "ACTIVE" && !s.exited) activeSignals.push({id:entry.id,pair:entry.pair,direction:entry.direction,type:entry.type,entry:entry.entry,stop:entry.stop,target:entry.target,tp1:entry.tp1,tp2:entry.tp2,tp3:entry.tp3,timestamp:entry.timestamp,rr:entry.rr,status:"ACTIVE",context:entry.context,version:1});
-  }
-  for (const [key,t] of Object.entries(legacyTrades)) {
-    if (!t || !t.id || activeSignals.some(a => a.id === t.id)) continue;
-    const stages = stagedTargets(t);
-    activeSignals.push({id:t.id,pair:t.pair || key.split("_")[0],direction:t.direction,type:t.type || "ENTRY_1",entry:t.entry,stop:t.stop,target:stages.tp2 ?? t.target,tp1:stages.tp1,tp2:stages.tp2,tp3:stages.tp3,timestamp:t.timestamp,rr:0,status:"ACTIVE",context:t.context || {},version:1});
-  }
-  if (activeSignals.length) await redis.set(ACTIVE_SIGNALS_KEY, activeSignals);
-  if (historyEntries.length) await redis.set(SIGNAL_HISTORY_KEY, historyEntries);
-  if (Object.keys(latestAlerts).length) await redis.set(LATEST_ALERTS_KEY, latestAlerts);
-  await redis.set(MIGRATION_FLAG_KEY, true);
-  console.log(`[STATE] Migration complete: active=${activeSignals.length} history=${historyEntries.length} latest=${Object.keys(latestAlerts).length}`);
-}
+export async function runMigrationIfNeeded(): Promise<void> { return; }
 
 export async function getActiveSignals(): Promise<ActiveTrade[]> {
   await runMigrationIfNeeded();
