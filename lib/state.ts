@@ -1,10 +1,10 @@
 // lib/state.ts — v01 canonical state
 // V28 trade architecture is stored here as the single active/history model.
 
-import { Redis } from "@upstash/redis";
+import { Redis } from "./supabase-kv";
 import { Signal } from "./strategy";
 
-const redis = new Redis({ url: process.env.KV_REST_API_URL!, token: process.env.KV_REST_API_TOKEN! });
+const redis = new Redis();
 
 const LEGACY_SIGNALS_KEY = "cxswitch:signals";
 const LEGACY_TRADES_KEY = "cxswitch:active_trades";
