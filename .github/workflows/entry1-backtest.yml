@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 60
     env:
       BACKTEST_MONTHS: ${{ github.event.inputs.months || '18' }}
-      BACKTEST_PAIRS: ${{ github.event.inputs.pairs || 'BTC,ETH,SOL' }}
+      BACKTEST_PAIRS: ${{ github.event.inputs.pairs || 'BTC,ETH,SOL,DOGE' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
