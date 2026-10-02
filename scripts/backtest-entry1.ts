@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { generateSignal, type Candle } from "../lib/strategy";
 
-type Pair = "BTC"|"ETH"|"SOL";
+type Pair = "BTC"|"ETH"|"SOL"|"DOGE";
 type Row = {
   pair:string; direction:"LONG"|"SHORT"; timestamp:number; entry:number;
   stop:number|null; tp1:number|null; tp2:number|null;
@@ -12,13 +12,15 @@ type Row = {
   r48h:number|null; r72h:number|null;
   mae72:number|null; mfe72:number|null;
   stopHit72:boolean; tp1Hit72:boolean; tp2Hit72:boolean;
-  exhaustion:string; reason:string;
+  exhaustion:string; reason:string; mode:Mode;
 };
 
 const VISION_BASE="https://data.binance.vision/data/futures/um";
-const PAIRS=(process.env.BACKTEST_PAIRS||"BTC,ETH,SOL").split(",").map(x=>x.trim().toUpperCase()).filter(Boolean) as Pair[];
+const PAIRS=(process.env.BACKTEST_PAIRS||"BTC,ETH,SOL,DOGE").split(",").map(x=>x.trim().toUpperCase()).filter(Boolean) as Pair[];
 const MONTHS=Math.max(6,Number(process.env.BACKTEST_MONTHS||18));
 const FOUR_H=4*60*60*1000;
+const MODES=["BASELINE","RELAX_RSI","RELAX_PREBREAK","RELAX_RSI_AND_PREBREAK"] as const;
+type Mode=typeof MODES[number];
 const END=Date.now()-2*24*60*60*1000;
 const START=END-MONTHS*30.4375*24*60*60*1000;
 const CACHE_DIR=process.env.BACKTEST_CACHE||path.join(os.tmpdir(),"cxswitch-binance-vision");
@@ -140,9 +142,9 @@ async function runPair(pair:Pair):Promise<Row[]>{
     while(p15+1<c15.length&&c15[p15+1].timestamp<=t)p15++;
     while(pw+1<cw.length&&cw[pw+1].timestamp<=t)pw++;
     if(p1<0||p15<0||pw<0)continue;
-    const h1=c1.slice(0,p1+1), m15=c15.slice(0,p15+1), w=cw.slice(0,pw+1);
+    const h1=c1.slice(Math.max(0,p1-1200),p1+1), m15=c15.slice(Math.max(0,p15-3000),p15+1), w=cw.slice(Math.max(0,pw-40),pw+1);
     const current=c4[i];
-    const result=generateSignal(pair,c1.slice(0,p1+1),c4.slice(0,i+1),m15,[],current.close,lastBreakout,undefined,w,undefined,t);
+    const result=generateSignal(pair,h1,c4.slice(Math.max(0,i-500),i+1),m15,[],current.close,lastBreakout,undefined,w,undefined,t);
     if(result.breakout)lastBreakout=result.breakout;
     const sig=result.signal;
     if(!sig||sig.type!=="ENTRY_1")continue;
@@ -159,7 +161,7 @@ async function runPair(pair:Pair):Promise<Row[]>{
     const tp1Hit=tp1!==null&&future.some(x=>dir==="LONG"?x.high>=tp1:x.low<=tp1);
     const tp2Hit=tp2!==null&&future.some(x=>dir==="LONG"?x.high>=tp2:x.low<=tp2);
     rows.push({
-      pair,direction:dir,timestamp:t,entry,
+      pair,direction:dir,timestamp:t,entry,mode:process.env.BACKTEST_MODE as Mode,
       stop:Number.isFinite(stop)?stop:null,tp1,tp2,
       r4h:ret(entry,horizon(1)?.close,dir),r8h:ret(entry,horizon(2)?.close,dir),
       r12h:ret(entry,horizon(3)?.close,dir),r24h:ret(entry,horizon(6)?.close,dir),
@@ -176,13 +178,15 @@ function pct(xs:(number|null)[],fn:(x:number)=>boolean){const a=xs.filter((x):x 
 
 async function main(){
 const all:Row[]=[];
-for(const pair of PAIRS)all.push(...await runPair(pair));
+for(const mode of MODES){ process.env.BACKTEST_MODE=mode; console.log("\n=== MODE "+mode+" ==="); for(const pair of PAIRS)all.push(...await runPair(pair)); }
 console.log("\n=== CX SWITCH ENTRY_1 BACKTEST ===");
 console.log(`Period: ${new Date(START).toISOString()} → ${new Date(END).toISOString()}`);
-console.log(`Pairs: ${PAIRS.join(", ")} | Raw ENTRY_1 signals: ${all.length}`);
+console.log(`Pairs: ${PAIRS.join(", ")} | Modes: ${MODES.join(", ")} | Raw ENTRY_1 signals: ${all.length}`);
+for(const mode of MODES){
 for(const pair of PAIRS){
-  const r=all.filter(x=>x.pair===pair);
+  const r=all.filter(x=>x.pair===pair&&x.mode===mode);
   console.log(`\\n${pair}: n=${r.length} | +24H avg=${round(avg(r.map(x=>x.r24h)))}% | +48H avg=${round(avg(r.map(x=>x.r48h)))}% | +72H avg=${round(avg(r.map(x=>x.r72h)))}% | MFE72 avg=${round(avg(r.map(x=>x.mfe72)))}% | MAE72 avg=${round(avg(r.map(x=>x.mae72)))}% | stop72=${round(pct(r.map(x=>x.stopHit72?1:0),x=>x>0))}% | TP1 72H=${round(pct(r.map(x=>x.tp1Hit72?1:0),x=>x>0))}% | TP2 72H=${round(pct(r.map(x=>x.tp2Hit72?1:0),x=>x>0))}%`);
+}
 }
 if(all.length){
   console.log("\nTimestamp,Pair,Direction,Entry,+4H,+8H,+12H,+24H,+48H,+72H,MAE72,MFE72,Stop72,TP1_72,TP2_72");
