@@ -889,9 +889,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const rawForwardLevels=dir==="LONG"
     ? [fib?.fib50,fib?.fib382,fib?.swingHigh].filter((x):x is number=>Number.isFinite(x)&&x>entry)
     : [fib?.fib50,fib?.fib382,fib?.swingLow].filter((x):x is number=>Number.isFinite(x)&&x<entry);
-  const recentResistance=Math.max(...closed.slice(-12).map(x=>x.high));
-  const recentSupport=Math.min(...closed.slice(-12).map(x=>x.low));
-  const structuralFallback=dir==="LONG"?recentResistance:recentSupport;
   const forwardLevels=[...new Set(rawForwardLevels)].sort((x,y)=>dir==="LONG"?x-y:y-x);
   // TP1 must be a meaningful move, not simply the nearest Fib level.
   // Reject levels that are too close to entry and step forward to the next
