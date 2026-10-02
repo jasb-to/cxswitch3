@@ -31,7 +31,7 @@ export interface TrendEngineResult{state:TrendState;direction:"BULL"|"BEAR"|"NEU
 export function evaluate1DTrend(c:Candle[],previousState?:TrendState):TrendEngineResult{
  // getCandles() already removes the currently-forming candle. Do not drop another candle here.
  const src=c;
- const s=structure(src),e=emaContext(src),f=early513(src),m=momentum(src);const ad=adx(src),adp=adx(src.slice(0,-1));const candidate=nextCandidate(s.direction,e.direction,f.direction,ad,adp,m.direction);
+ const s=structure(src),e=emaContext(src),f=early513(src),m=momentum(src);const ad=adx(src),adp=adx(src.slice(0,-1));const candidate=nextCandidate(s.direction as Direction,e.direction as Direction,f.direction as Direction,ad,adp,m.direction as Direction);
  const stable=previousState===candidate?candidate:(previousState&&((previousState.startsWith("BULL")&&candidate.startsWith("BULL"))||(previousState?.startsWith("BEAR")&&candidate.startsWith("BEAR")))?previousState:"TRANSITION");
  const direction=stable.startsWith("BULL")?"BULL":stable.startsWith("BEAR")?"BEAR":"NEUTRAL";
  const explanation=`Structure ${s.label}; EMA 8/21 ${e.alignment}; 5/13 ${f.direction}${f.cross?" CROSS":""}; ADX ${ad.toFixed(1)}; momentum ${m.direction}/${m.state}; candidate ${candidate}; state ${stable}`;
