@@ -104,6 +104,20 @@ function currentAnalysis(m:any, active:any, momentum:"SUPPORTIVE"|"WEAKENING"|"B
   const text=parts.slice(0,3).join(". ");
   return text.endsWith(".")?text:text+".";
 }
+function entry1Watch(m:any):string {
+  const preferred=m?.entry1CheckLong?.dailyPreBreak||m?.entry1CheckLong?.dailyRsiTurn||m?.entry1CheckLong?.fourHPreBreak||m?.entry1CheckLong?.transition
+    ? m?.entry1CheckLong : m?.entry1CheckShort;
+  if(!preferred) return "ENTRY_1 diagnostics unavailable";
+  if(preferred.decision==="ENTRY_1") return preferred.direction+" ENTRY_1 ready";
+  const missing:string[]=[];
+  if(!preferred.dailyPreBreak) missing.push("1D_PREBREAK");
+  if(!preferred.dailyRsiTurn) missing.push("1D_RSI_TURN");
+  if(!preferred.fourHPreBreak) missing.push("4H_PREBREAK");
+  if(!preferred.transition) missing.push("4H_TRANSITION");
+  if(!preferred.fresh) missing.push("FRESH");
+  if(preferred.exhausted) missing.push("EXHAUSTION");
+  return preferred.direction+" WAIT: "+(missing.join(", ")||"next setup");
+}
 function pairState(m:any, active:any):JarvisPairState {
   const dir=(active?.direction || directionOf(m)) as "LONG"|"SHORT"|"NEUTRAL";
   const e=m?.fourH513||{};
@@ -142,10 +156,11 @@ function pairState(m:any, active:any):JarvisPairState {
   const changed=`${verdict} · ${reasons.join(" · ")||"market context only"}`;
   const momentumSignature=active?`${dir}:${momentum}:${label}:${e.spreadContracting?"CONTRACTING":"EXPANDING"}`:"NO_POSITION";
   const current=currentAnalysis(m,active,momentum,verdict);
+  const entryWatch=entry1Watch(m);
   const tradeDecision=active
     ? (active.positionManagementRecommendation==="EXIT TRADE" || active.positionManagementState==="EXIT" ? "EXIT TRADE" : "STAY IN TRADE")
     : undefined;
-  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature,currentAnalysis:current,tradeDecision};
+  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature,currentAnalysis:current,tradeDecision,entry1Watch};
 }
 
 function portfolioState(pairs:JarvisPairState[]):JarvisSnapshot["portfolioState"]{
@@ -219,6 +234,7 @@ export async function runJarvis(marketData:any[],active:any[]):Promise<JarvisSna
     pairs[m.pair]=p;
   }
   const all=Object.values(pairs);
+  for(const p of all){ if(!p.position) console.log("[JARVIS ENTRY] "+p.pair+" | "+p.entry1Watch); }
   const portfolio=portfolioState(all);
   const changes=all.filter(p=>p.previousState&&p.previousState!==p.state);
   const decisionChanges=all.filter(p=>{
