@@ -4,10 +4,10 @@
 // It detects structural direction shifts from confirmed 4H swing points.
 // ATR is used only to make the structural break threshold scale with volatility.
 
-import { Redis } from "@upstash/redis";
+import { Redis } from "./supabase-kv";
 import type { Candle } from "./strategy";
 
-const redis=new Redis({url:process.env.KV_REST_API_URL!,token:process.env.KV_REST_API_TOKEN!});
+const redis=new Redis();
 const LOG_KEY="cxswitch:structure_shift_test_log_v1";
 const LAST_CANDLE_KEY="cxswitch:structure_shift_test_last_candle_v1";
 const MAX_LOG_ROWS=2500;
