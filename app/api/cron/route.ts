@@ -111,7 +111,7 @@ export async function GET(request:Request){
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
   const price=c1.at(-1)!.close;
   const existing=active.find(x=>x.pair===pair);
-  const result=generateSignal(pair,c1,c4,c15,price);
+  const result=generateSignal(pair,c1,c4,c15,[],price);
   const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);
   if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);
   const dbg=result.debug||[];
