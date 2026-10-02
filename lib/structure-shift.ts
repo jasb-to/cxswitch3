@@ -7,7 +7,7 @@
 import { Redis } from "./supabase-kv";
 import type { Candle } from "./strategy";
 
-const redis=new Redis();
+const getRedis=()=>new Redis();
 const LOG_KEY="cxswitch:structure_shift_test_log_v1";
 const LAST_CANDLE_KEY="cxswitch:structure_shift_test_last_candle_v1";
 const MAX_LOG_ROWS=2500;
@@ -86,6 +86,7 @@ export function detectStructureShift(pair:string,c:Candle[]):StructureShiftSnaps
 }
 
 export async function recordStructureShiftSnapshot(snapshot:StructureShiftSnapshot){
+  const redis=getRedis();
   const last=await redis.get<Record<string,number>>(LAST_CANDLE_KEY)||{};
   if(last[snapshot.pair]===snapshot.closedCandleTimestamp)return false;
   const previous=(await redis.get<StructureShiftSnapshot[]>(LOG_KEY)||[]);
@@ -98,4 +99,4 @@ export async function recordStructureShiftSnapshot(snapshot:StructureShiftSnapsh
   return true;
 }
 
-export async function getStructureShiftLog(){return(await redis.get<StructureShiftSnapshot[]>(LOG_KEY))||[];}
+export async function getStructureShiftLog(){const redis=getRedis();return(await redis.get<StructureShiftSnapshot[]>(LOG_KEY))||[];}
