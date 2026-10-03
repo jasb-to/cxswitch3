@@ -74,6 +74,10 @@ test("the generateSignal path contains the tactical direction flip",async()=>{
   assert.match(source,/signalDirection="LONG"/);
   assert.match(source,/t.direction==="SHORT"&&near&&approach.classification==="REJECTION"/);
   assert.match(source,/tacticalRejection=true/);
+  assert.match(source,/ema513\.turning&&ema513\.direction==="BULLISH"/);
+  assert.match(source,/ema513\.turning&&ema513\.direction==="BEARISH"/);
+  assert.match(source,/trigger15=!!x15&&!!p15/);
+  assert.match(source,/hysteresis direction flip bypass/);
 });
 
 test("TP1/TP2 are separate lifecycle fields in the signal engine",async()=>{
@@ -82,4 +86,5 @@ test("TP1/TP2 are separate lifecycle fields in the signal engine",async()=>{
   assert.match(source,/tp2:round\(tp2\)/);
   assert.match(source,/tp1=price\+\(tp2-price\)\*0\.5/);
   assert.match(source,/price\+3\*av/);
+  assert.doesNotMatch(source,/trendlinePrice:round\(tlPrice\),ema5_4h:[^\n]*trendlinePrice:round\(tlPrice\)/);
 });
