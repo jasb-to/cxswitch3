@@ -63,7 +63,7 @@ export async function sendAlert(signal:any){
     transitionLine,
     approachLine,
     marketLine,
-    `4H 5/13: ${signal.fourH513||"—"}`,"",
+    `4H 5/13: ${signal.fourH513||context.emaLabel4h||"—"}`,"",
     `SL: ${formatPrice(signal.stopLoss)}`,
     ...(type==="ENTRY_2"
       ? [`TP: ${formatPrice(displayTarget)}`]
