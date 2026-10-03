@@ -143,15 +143,29 @@ function deterministicTradeVerdict(signal:any,market:any):{ verdict:JarvisVerdic
   const direction=signal.direction==="SHORT"?"SHORT":"LONG";
   const k=Number(market?.stochK), d=Number(market?.stochD), r=Number(market?.rsi), dist=Number(market?.distToTrendline);
   const entry1=signal.type==="ENTRY_1";
+  const approach=signal.context?.trendlineApproach;
+  const classification=String(approach?.classification||"");
+  const stochDirection=String(approach?.stochDirection||"");
+  const rejectionConsistent=classification==="REJECTION" &&
+    direction==="SHORT" &&
+    stochDirection!=="RISING" &&
+    (Number(approach?.rejectionCandles)>=2 || approach?.closeBackInside===true);
+  const rejectionContradiction=classification==="REJECTION" && !rejectionConsistent;
+  const longIntoRejection=entry1 && direction==="LONG" && classification==="REJECTION";
   const exhausted=entry1 && (direction==="LONG" ? k>=99 || (k>95&&dist>1) || r>=80 : k<=1 || (k<5&&dist< -1) || r<=20);
-  const verdict:JarvisVerdict=exhausted?"CAUTION":"GOOD";
-  const summary=exhausted
-    ? `CAUTION — ${signal.type} ${direction} is showing the ENTRY_1 exhaustion condition.`
-    : `GOOD — ${signal.type} ${direction} passed the clean strategy context.`;
-  const why=[signal.type,`1D ${market?.dailyDirection||"NEUTRAL"}`,`4H Stoch ${k}/${d}`,`RSI ${r}`,Number.isFinite(dist)?`trendline distance ${dist}%`:null].filter(Boolean).join(" · ");
-  const watch=exhausted
-    ? "ENTRY_1 is blocked; ENTRY_2 bypasses exhaustion."
-    : "Watch the next closed 4H candle and trendline interaction.";
+  const veto=longIntoRejection || rejectionContradiction;
+  const verdict:JarvisVerdict=veto?"BAD":exhausted?"CAUTION":"GOOD";
+  const summary=veto
+    ? `BAD — ${signal.type} ${direction} conflicts with the mechanical trendline rejection classification.`
+    : exhausted
+      ? `CAUTION — ${signal.type} ${direction} is showing the ENTRY_1 exhaustion condition.`
+      : `GOOD — ${signal.type} ${direction} passed the bounded JARVIS context check.`;
+  const why=[signal.type,`1D ${market?.dailyDirection||"NEUTRAL"}`,`4H Stoch ${k}/${d}`,`RSI ${r}`,classification?`trendline ${classification}`:null,stochDirection?`Stoch direction ${stochDirection}`:null,Number.isFinite(dist)?`trendline distance ${dist}%`:null].filter(Boolean).join(" · ");
+  const watch=veto
+    ? "Mechanical trendline classification and proposed direction disagree; do not alert."
+    : exhausted
+      ? "ENTRY_1 is blocked; ENTRY_2 bypasses exhaustion."
+      : "Watch the next closed 4H candle and trendline interaction.";
   return {verdict,summary,why,watch};
 }
 
