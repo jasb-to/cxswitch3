@@ -43,6 +43,25 @@ export async function GET(request:Request){
  await setLastCronRun(started);
  console.log("========================================");console.log(`[CRON v${CXSWITCH_VERSION}] Started at ${new Date(started).toISOString()}`);
  let active=await getActiveSignals();
+ // Reconcile the persistent position store against ACTIVE history before any
+ // management runs. This recovers a live position if the active-state key was
+ // lost/reset while its corresponding history entry remained ACTIVE.
+ const historyAtStart=await getSignalHistory();
+ const activeKeys=new Set(active.map((x:any)=>`${x.pair}|${x.direction}`));
+ const recoverable=historyAtStart
+   .filter((h:any)=>h.status==="ACTIVE"&&!activeKeys.has(`${h.pair}|${h.direction}`))
+   .reduce((map:any,h:any)=>{
+     const key=`${h.pair}|${h.direction}`;
+     if(!map.has(key)||h.timestamp>map.get(key).timestamp)map.set(key,h);
+     return map;
+   },new Map<string,any>());
+ if(recoverable.size){
+   for(const h of recoverable.values()){
+     active.push({...h,status:"ACTIVE",scale:h.type,target:h.tp2??h.target});
+     console.log(`[STATE] Recovered ACTIVE position from history: ${h.pair}_${h.direction}_${h.type}`);
+   }
+   await setActiveSignals(active);
+ }
  // PAID has been retired. Remove any legacy active PAID state so the cron can
  // never try to manage the deleted GeckoTerminal market after the migration.
  const retiredPaid=active.filter(x=>x.pair==="PAID");
