@@ -82,8 +82,8 @@ function pairState(m:any, active:any):JarvisPairState {
   const tl=Number(m?.trendlinePrice);
   const trend=String(m?.trend||"");
   const entryType=String(active?.type||"");
-  const exhaustionLong=dir==="LONG" && ((k>=99)||(k>95&&Number.isFinite(dist)&&dist>1)||(r>=80));
-  const exhaustionShort=dir==="SHORT" && ((k<=1)||(k<5&&Number.isFinite(dist)&&dist< -1)||(r<=20));
+  const exhaustionLong=dir==="LONG" && ((k>=99)||(r>=80)||(k>95&&r>75));
+  const exhaustionShort=dir==="SHORT" && ((k<=1)||(r<=20)||(k<5&&r<25));
   const exhaustion=exhaustionLong||exhaustionShort;
   const managementExit=active?.positionManagementState==="EXIT"||active?.positionManagementRecommendation==="EXIT TRADE";
   const opposite1D=(dir==="LONG"&&m?.dailyDirection==="BEAR")||(dir==="SHORT"&&m?.dailyDirection==="BULL");
@@ -99,11 +99,11 @@ function pairState(m:any, active:any):JarvisPairState {
   if(trend) reasons.push(trend);
   if(Number.isFinite(dist)) reasons.push(`trendline distance ${dist.toFixed(2)}%`);
   if(Number.isFinite(k)&&Number.isFinite(d)) reasons.push(`4H Stoch ${k}/${d}`);
-  if(exhaustion) reasons.push("ENTRY_1 exhaustion condition present");
+  if(exhaustion) reasons.push("ENTRY_1 and ENTRY_2 exhaustion condition present");
   const thesis=active
     ? verdict==="BAD"?"Position management says EXIT.":verdict==="CAUTION"?"Position is under pressure; the clean strategy context is weakening.":"The clean strategy context remains intact."
     : verdict==="CAUTION"?"The setup is developing but has a caution condition.":"The clean 1D/4H setup is being monitored.";
-  const watch=verdict==="BAD"?"Follow the position management exit state.":exhaustion?"ENTRY_1 is blocked by exhaustion; ENTRY_2 is not blocked by exhaustion.":"Watch the next closed 4H candle and trendline interaction.";
+  const watch=verdict==="BAD"?"Follow the position management exit state.":exhaustion?"ENTRY_1 and ENTRY_2 both subject to exhaustion veto.":"Watch the next closed 4H candle and trendline interaction.";
   const changed=`${verdict} · ${reasons.join(" · ")||"market context only"}`;
   const momentumSignature=active?`${dir}:${momentum}:${k}:${d}`:"NO_POSITION";
   const tradeDecision=active?(managementExit?"EXIT TRADE":"STAY IN TRADE"):undefined;
@@ -142,7 +142,7 @@ async function interpretWithModel(snapshot:JarvisSnapshot):Promise<string|undefi
 function deterministicTradeVerdict(signal:any,market:any):{ verdict:JarvisVerdict; summary:string; why:string; watch:string }{
   const direction=signal.direction==="SHORT"?"SHORT":"LONG";
   const k=Number(market?.stochK), d=Number(market?.stochD), r=Number(market?.rsi), dist=Number(market?.distToTrendline);
-  const entry1=signal.type==="ENTRY_1";
+  const newEntry=signal.type==="ENTRY_1"||signal.type==="ENTRY_2";
   const approach=signal.context?.trendlineApproach;
   const classification=String(approach?.classification||"");
   const stochDirection=String(approach?.stochDirection||"");
@@ -151,8 +151,8 @@ function deterministicTradeVerdict(signal:any,market:any):{ verdict:JarvisVerdic
     stochDirection!=="RISING" &&
     (Number(approach?.rejectionCandles)>=2 || approach?.closeBackInside===true);
   const rejectionContradiction=classification==="REJECTION" && !rejectionConsistent;
-  const longIntoRejection=entry1 && direction==="LONG" && classification==="REJECTION";
-  const exhausted=entry1 && (direction==="LONG" ? k>=99 || (k>95&&dist>1) || r>=80 : k<=1 || (k<5&&dist< -1) || r<=20);
+  const longIntoRejection=newEntry && direction==="LONG" && classification==="REJECTION";
+  const exhausted=newEntry && (direction==="LONG" ? k>=99 || r>=80 || (k>95&&r>75) : k<=1 || r<=20 || (k<5&&r<25));
   const veto=longIntoRejection || rejectionContradiction;
   const verdict:JarvisVerdict=veto?"BAD":exhausted?"CAUTION":"GOOD";
   const summary=veto
@@ -164,7 +164,7 @@ function deterministicTradeVerdict(signal:any,market:any):{ verdict:JarvisVerdic
   const watch=veto
     ? "Mechanical trendline classification and proposed direction disagree; do not alert."
     : exhausted
-      ? "ENTRY_1 is blocked; ENTRY_2 bypasses exhaustion."
+      ? "ENTRY_1 and ENTRY_2 both subject to exhaustion veto."
       : "Watch the next closed 4H candle and trendline interaction.";
   return {verdict,summary,why,watch};
 }
