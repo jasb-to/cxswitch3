@@ -208,11 +208,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const lows=closed.slice(-20).map(x=>x.low),highs=closed.slice(-20).map(x=>x.high);let stop:number,tp1:number,tp2:number;
   if(type==="ENTRY_1"&&tacticalRejection){
     if(signalDirection==="SHORT"){
-      const rejectionHigh=Math.max(...closed.slice(-6).map(x=>x.high));
-      stop=Math.max(rejectionHigh,tlPrice+0.5*av);
+      stop=tlPrice+0.75*av;
     }else{
-      const rejectionLow=Math.min(...closed.slice(-6).map(x=>x.low));
-      stop=Math.min(rejectionLow,tlPrice-0.5*av);
+      stop=tlPrice-0.75*av;
     }
   }else if(type==="ENTRY_1"){
     stop=signalDirection==="LONG"?Math.min(Math.min(...lows),price-2*av):Math.max(Math.max(...highs),price+2*av);
