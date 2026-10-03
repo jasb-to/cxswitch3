@@ -101,7 +101,6 @@ type TrendlineApproachClass="BREAK_ATTEMPT"|"REJECTION"|"NEUTRAL";
 
 function classifyTrendlineApproach(c:Candle[],line:number,slope:number,k:number,prevK:number){
   const recent=c.slice(-3);
-  const stochDirection:k extends never?"RISING":"RISING";
   const sd=k>prevK+1?"RISING":k<prevK-1?"FALLING":"FLAT";
   let rejectionCandles=0;
   for(let i=0;i<recent.length;i++){
