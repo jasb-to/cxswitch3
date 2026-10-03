@@ -25,6 +25,7 @@ interface TrendlineState { slope:number; intercept:number; pivots:Pivot[]; lastU
 interface HysteresisState { lastSignalType:"ENTRY_1"|"ENTRY_2"|null; lastSignalDirection:Direction|null; lastSignalPrice:number; lockUntil:number; }
 const trendlineStore=new Map<string,TrendlineState>();
 const hysteresisStore=new Map<string,HysteresisState>();
+const exhaustionBlockedSince=new Map<string,number>();
 const HYSTERESIS_BAND=0.005;
 const TRENDLINE_MAX_AGE=7*24*60*60*1000;
 const TRENDLINE_MAX_DEVIATION=0.02;
@@ -119,9 +120,17 @@ function classifyTrendlineApproach(c:Candle[],line:number,slope:number,k:number,
   return{classification:rejection?"REJECTION":breakAttempt?"BREAK_ATTEMPT":"NEUTRAL",stochDirection:sd,rejectionCandles,closeBackInside,lastTouched};
 }
 
-function exhaustion(d:Direction,k:number,r:number,dist:number){
-  if(d==="LONG"){if(k>=99)return"LONG blocked: 4H Stoch K >= 99";if(k>95&&dist>0.01)return"LONG blocked: Stoch K > 95 and price >1% beyond trendline";if(r>=80)return"LONG blocked: 4H RSI >= 80";}
-  else{if(k<=1)return"SHORT blocked: 4H Stoch K <= 1";if(k<5&&dist< -0.01)return"SHORT blocked: Stoch K < 5 and price >1% beyond trendline";if(r<=20)return"SHORT blocked: 4H RSI <= 20";}return null;
+function exhaustion(d:Direction,k:number,r:number){
+  if(d==="LONG"){
+    if(k>=99)return"STOCH_PINNED_LONG K"+k;
+    if(r>=80)return"RSI_EXTREME_LONG RSI"+r;
+    if(k>95&&r>75)return"STOCH_RSI_COMBINED_LONG K"+k+" RSI"+r;
+  }else{
+    if(k<=1)return"STOCH_PINNED_SHORT K"+k;
+    if(r<=20)return"RSI_EXTREME_SHORT RSI"+r;
+    if(k<5&&r<25)return"STOCH_RSI_COMBINED_SHORT K"+k+" RSI"+r;
+  }
+  return null;
 }
 function market(pair:string,p:number,t:any,tl:number|null,k:number,d:number,r:number,a:number,e8:number,e21:number,ts:number){return{pair,price:round(p),timestamp:ts,trend:t.direction?t.direction+" "+t.strength:"NEUTRAL",dailyDirection:t.direction==="LONG"?"BULL":t.direction==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:t.strength,dailyEma8:round(t.ema8),dailyEma21:round(t.ema21),dailyEmaSpreadPct:round(t.spreadPct*100,3),adx:round(a,1),rsi:round(r,1),stochK:round(k,1),stochD:round(d,1),trendlinePrice:tl===null?0:round(tl),distToTrendline:tl===null?null:round((p-tl)/tl*100,3),ema8:round(e8),ema21:round(e21)};}
 
@@ -160,7 +169,22 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   else if(t.direction==="LONG"&&near&&extreme&&earlyTransition&&approach.classification==="BREAK_ATTEMPT")type="ENTRY_1";
   else if(t.direction==="LONG"&&near&&approach.classification==="REJECTION"){type="ENTRY_1";signalDirection="SHORT";tacticalRejection=true;}
   if(!type){debug.push("[SIGNAL] none");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
-  if(type==="ENTRY_1"){const veto=exhaustion(signalDirection,st.k,r,dist);if(veto){debug.push("[EXHAUST] "+veto);debug.push("[SIGNAL] none — ENTRY_1 exhaustion veto");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}debug.push("[EXHAUST] ENTRY_1 clear");}else debug.push("[EXHAUST] ENTRY_2 bypassed — exhaustion is not an ENTRY_2 veto");
+  if(type==="ENTRY_1"||type==="ENTRY_2"){
+    const blockKey=pair+"|"+type+"|"+signalDirection;
+    const veto=exhaustion(signalDirection,st.k,r);
+    if(veto){
+      const blockedSince=exhaustionBlockedSince.get(blockKey)??now;
+      if(!exhaustionBlockedSince.has(blockKey))exhaustionBlockedSince.set(blockKey,blockedSince);
+      const cycles=Math.max(1,Math.floor((now-blockedSince)/(4*60*60*1000))+1);
+      debug.push("[EXHAUST] "+veto+" | blocked_since "+new Date(blockedSince).toISOString()+" | cycles "+cycles);
+      debug.push("[SIGNAL BLOCKED] "+pair+" | "+type+" "+signalDirection+" | exhaustion: "+veto+" | blocked_since "+new Date(blockedSince).toISOString());
+      debug.push("[SIGNAL] none — "+type+" exhaustion veto");
+      debug.push("[ALERT] none");
+      return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};
+    }
+    exhaustionBlockedSince.delete(blockKey);
+    debug.push("[EXHAUST] "+type+" clear");
+  }
   if(!hystOK(pair,type,signalDirection,price,now,debug)){debug.push("[SIGNAL] suppressed by hysteresis");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
   const lows=closed.slice(-20).map(x=>x.low),highs=closed.slice(-20).map(x=>x.high);let stop:number,target:number;
   if(type==="ENTRY_1"&&tacticalRejection){
