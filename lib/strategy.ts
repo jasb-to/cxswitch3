@@ -8,7 +8,7 @@ import { get4HEmaDiagnostic } from "./ema-diagnostic";
 export interface Candle { timestamp:number; open:number; high:number; low:number; close:number; volume:number; }
 export interface Signal {
   id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2";
-  scale:"ENTRY_1"|"ENTRY_2"|null; entry:number; stop:number; target:number; tp1?:number; tp2?:number; tp3?:number;
+  scale:"ENTRY_1"|"ENTRY_2"|null; entry:number; stop:number; target:number; tp1?:number; tp2?:number; tp3?:number; tp1HitAt?:number; tp2HitAt?:number;
   rr:number; adx:number; rsi:number; stochK:number; stochD:number;
   /** Backward-compatible shape only; clean engine never computes or populates confidence. */ confidence?:number;
   expectedMove:number; reason:string; timestamp:number; version:number;
