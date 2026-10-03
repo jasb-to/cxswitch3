@@ -17,6 +17,19 @@ test("descending-resistance rejection is classified from closed candles",()=>{
   assert.equal(result.rejectionCandles,3);
 });
 
+test("ascending-support rejection is classified from closed candles",()=>{
+  const candles=[
+    candle(0,100,102,98,100),
+    candle(1,101,103,99,101),
+    candle(2,102,104,100,102),
+  ];
+  const result=classifyTrendlineApproach(candles,98,1,60,55);
+  assert.equal(result.classification,"REJECTION");
+  assert.equal(result.stochDirection,"RISING");
+  assert.equal(result.rejectionCandles,3);
+  assert.equal(result.closeBackInside,false);
+});
+
 test("tactical SHORT exits when a closed 4H candle reclaims its originating line",()=>{
   const candles=[
     candle(0,10,11,9,10),
@@ -58,6 +71,8 @@ test("the generateSignal path contains the tactical direction flip",async()=>{
   const source=await readFile(new URL("../lib/strategy.ts",import.meta.url),"utf8");
   assert.match(source,/approach\.classification==="REJECTION"/);
   assert.match(source,/signalDirection="SHORT"/);
+  assert.match(source,/signalDirection="LONG"/);
+  assert.match(source,/t.direction==="SHORT"&&near&&approach.classification==="REJECTION"/);
   assert.match(source,/tacticalRejection=true/);
 });
 
