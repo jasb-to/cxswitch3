@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { getActiveSignals, getSignalHistory, getLatestAlerts, getMarketData, getLastCronRun } from "@/lib/state";
 import { CXSWITCH_VERSION, ENTRY_ARCHITECTURE, DAILY_BIAS, EXECUTION_MODE } from "@/lib/version";
+import { getJarvisSnapshot } from "@/lib/jarvis";
 
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
@@ -47,7 +48,7 @@ function managementAdvice(h:any,m:any){
 }
 
 export async function GET(){
-  const activeSignals=await getActiveSignals(),signalHistory=await getSignalHistory(),persistedLatest=await getLatestAlerts(),marketData=await getMarketData(),lastCronRun=await getLastCronRun(),now=Date.now();
+  const activeSignals=await getActiveSignals(),signalHistory=await getSignalHistory(),persistedLatest=await getLatestAlerts(),marketData=await getMarketData(),lastCronRun=await getLastCronRun(),jarvisSnapshot=await getJarvisSnapshot(),now=Date.now();
   const activeByPair=Object.fromEntries(activeSignals.map((s:any)=>[s.pair,s]));
   const v28LatestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;const active=activeByPair[pair];const price=m?.price??h.entry;const v=alertValidity(h,price,now,!!active);const management=active?managementAdvice(active,m):null;const validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`}:v;return[pair,{...h,target:h.tp2??h.target,tp1:h.tp1,tp2:h.tp2,managementAdvice:management,momentumState:momentumState(active,m,management),momentumStatus:momentumStatus(active,m,management),currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];}));
   const latestAlerts=v28LatestAlerts;
@@ -55,10 +56,18 @@ export async function GET(){
   const enrichedActive=activeSignals.map((s:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===s.pair):undefined;const price=m?.price??s.entry;const management=managementAdvice(s,m);return{...s,scale:s.type,target:s.tp2??s.target,tp1:s.tp1,tp2:s.tp2,expectedMove:s.entry&&s.tp2?Math.round(Math.abs(s.tp2-s.entry)/s.entry*1000)/10:0,currentPrice:price,ageMinutes:Math.round((now-s.timestamp)/60000),validity:alertValidity(s,price,now,true),managementAdvice:management,momentumState:momentumState(s,m,management),momentumStatus:momentumStatus(s,m,management),meta:{status:s.status,ageMinutes:Math.round((now-s.timestamp)/60000),actionable:s.status==="ACTIVE",state:"POSITION_ACTIVE"}};});
   const enrichedHistory=signalHistory.map((h:any)=>({...h,scale:h.type,target:h.tp2??h.target,tp1:h.tp1,tp2:h.tp2,meta:{ageMinutes:Math.round((now-h.timestamp)/60000),status:h.status}}));
   const historyLogs=signalHistory.slice().sort((a,b)=>b.timestamp-a.timestamp).slice(0,8).map((h:any)=>`[ALERT] ${h.pair} — ${h.direction} ${h.type} @ ${h.entry} | SL ${h.stop} | TP1 ${h.tp1??"—"} | TP2 ${h.tp2??h.target} | ${h.status}`);
-  const validityLogs=Object.entries(latestAlerts).map(([pair,a]:any)=>`[VALIDITY] ${pair} — ${a.validity.state} | ${a.validity.reason}`);
-  const marketLogs=liveMarketData.map((m:any)=>`[PAIR] ${m.pair} — ${m.trend||"NO TREND"} | Price ${m.price} | ${m.location||"—"} | ${m.trigger||"WAITING"} | ADX ${m.adx??"—"} | RSI ${m.rsi??"—"} | Stoch ${m.stochK??"—"}/${m.stochD??"—"} | Momentum ${m.momentumState||"—"}`);
-  const managementLogs=Object.entries(latestAlerts).filter(([,a]:any)=>a.managementAdvice).map(([pair,a]:any)=>`[MANAGEMENT] ${pair} — ${a.direction} | ${a.momentumStatus?.icon||""} ${a.momentumStatus?.label||""} | ${a.managementAdvice.recommendation}`);
-  const logs=[`[SYSTEM] CXSwitch v${CXSWITCH_VERSION} | ${ENTRY_ARCHITECTURE} | ${DAILY_BIAS} | ${EXECUTION_MODE}`,`[CRON] Last run ${lastCronRun?new Date(lastCronRun).toISOString():"not recorded"}`,...managementLogs,...validityLogs,...marketLogs,...historyLogs,`[CRON] State: active=${enrichedActive.length} marketData=${liveMarketData.length} history=${signalHistory.length} latest=${Object.keys(latestAlerts).length}`].slice(0,40);
+  const unifiedPairLogs=liveMarketData.map((m:any)=>{
+    const pair=m.pair;
+    const active=enrichedActive.find((x:any)=>x.pair===pair);
+    const latest=latestAlerts[pair];
+    const j=jarvisSnapshot?.pairs?.[pair];
+    const signal=active?"none":latest?.validity?.state==="VALID"?`${latest.direction} ${latest.type}`:"none";
+    const position=active?`${active.direction}@${active.entry} SL=${active.stop} TP1=${active.tp1??"—"} TP2=${active.tp2??active.target??"—"}`:"none";
+    const management=active?.managementAdvice?.recommendation||"—";
+    const jarvis=j?.verdict||"watch";
+    return `[PAIR] ${pair} | 1D=${m.dailyDirection||"—"} | 4H=${m.fourH513?.label||m.trend||"—"} | SIGNAL=${signal} | POSITION=${position} | MANAGEMENT=${management} | JARVIS=${jarvis}`;
+  });
+  const logs=[`[SYSTEM] CXSwitch v${CXSWITCH_VERSION} | ${ENTRY_ARCHITECTURE} | ${DAILY_BIAS} | ${EXECUTION_MODE}`,`[CRON] Last run ${lastCronRun?new Date(lastCronRun).toISOString():"not recorded"}`,...unifiedPairLogs,...historyLogs,`[CRON] State: active=${enrichedActive.length} marketData=${liveMarketData.length} history=${signalHistory.length} latest=${Object.keys(latestAlerts).length}`].slice(0,40);
   const response=NextResponse.json({version:CXSWITCH_VERSION,architecture:ENTRY_ARCHITECTURE,dailyBias:DAILY_BIAS,executionMode:EXECUTION_MODE,activeSignals:enrichedActive,signalHistory:enrichedHistory,marketData:liveMarketData,latestAlerts,logs,system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length},updatedAt:new Date(now).toISOString()});
   response.headers.set("Cache-Control","no-store, no-cache, must-revalidate, proxy-revalidate");response.headers.set("Pragma","no-cache");response.headers.set("Expires","0");return response;
 }
