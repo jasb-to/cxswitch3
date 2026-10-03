@@ -26,10 +26,7 @@ export async function sendAlert(signal:any){
   const dir=signal.bias==="LONG"?"📈":"📉";
   const context=signal.context||{};
   const approach=context.trendlineApproach;
-  const singleTarget=signal.takeProfit??signal.target??signal.takeProfit2;
-  const tp1=signal.takeProfit1;
-  const tp2=signal.takeProfit2??singleTarget;
-  const displayTarget=type==="ENTRY_2"?singleTarget:tp2;
+  const displayTarget=signal.target??signal.takeProfit??signal.takeProfit2;
   const entry=Number(signal.price??signal.entry);
   const expectedMove=Number.isFinite(entry)&&Number.isFinite(Number(displayTarget))&&entry!==0
     ? Math.round((Math.abs(Number(displayTarget)-entry)/Math.abs(entry))*1000)/10
@@ -65,9 +62,7 @@ export async function sendAlert(signal:any){
     marketLine,
     `4H 5/13: ${signal.fourH513||context.emaLabel4h||"—"}`,"",
     `SL: ${formatPrice(signal.stopLoss)}`,
-    ...(type==="ENTRY_2"
-      ? [`TP: ${formatPrice(displayTarget)}`]
-      : [`TP1: ${formatPrice(tp1)}`,`TP2: ${formatPrice(tp2)}`]),
+    `TP: ${formatPrice(displayTarget)}`,
     `RR: ${signal.rr??"-"}`,"",
     `Expected Move: ${expectedMove}%`,
     signal.reason||""
