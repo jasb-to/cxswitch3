@@ -1,5 +1,7 @@
+import { get4HEmaDiagnostic } from "./ema-diagnostic";
+
 // lib/strategy.ts — CX Switch simplified v28
-// 1D EMA 8/21 direction -> 4H break-line -> 4H StochRSI timing -> ENTRY_1 / ENTRY_2.
+// 1D EMA 8/21 direction -> 4H transition -> 4H break-line -> 4H StochRSI timing -> ENTRY_1 / ENTRY_2.
 // No Fib paths, daily pre-breaks, weekly gates, scores, or multi-stage state machines.
 // ENTRY_1 = early accumulation; ENTRY_2 = confirmed trendline break; no ADD.
 
@@ -111,13 +113,22 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tl=getTrendline(pair,closed,t.direction);if(!tl){debug.push("[TL] no valid 3-pivot directional trendline");debug.push("[SIGNAL] none");debug.push("[ALERT] none");return{market:market(pair,price,t,null,st.k,st.d,r,a,e8,e21,now),debug};}
   const tlPrice=tl.price,dist=(price-tlPrice)/Math.max(Math.abs(tlPrice),1),ageDays=tl.age/(24*60*60*1000);
   debug.push("[TL] "+round(tlPrice)+" | R² "+round(tl.state.r2,2)+" | distance "+(dist*100).toFixed(2)+"% | age "+ageDays.toFixed(2)+"d | "+(t.direction==="LONG"?"swing highs / descending":"swing lows / ascending"));
+  const ema513=get4HEmaDiagnostic(closed);
+  const prevEma513=closed.length>20?get4HEmaDiagnostic(closed.slice(0,-1)):ema513;
+  const earlyTransition=t.direction==="LONG"
+    ? ema513.spread<0 && Math.abs(ema513.spreadAtr)<=0.75 && ema513.spread>ema513.spreadPrev && ema513.ema5Slope>prevEma513.ema5Slope
+    : ema513.spread>0 && Math.abs(ema513.spreadAtr)<=0.75 && ema513.spread<ema513.spreadPrev && ema513.ema5Slope<prevEma513.ema5Slope;
+  const confirmedTransition=t.direction==="LONG"
+    ? ema513.label==="BULLISH TREND TURNING"
+    : ema513.label==="BEARISH TREND TURNING";
+  debug.push("[TRANSITION] 4H "+ema513.label+" | early="+earlyTransition+" | confirmed="+confirmedTransition);
   const near=Math.abs(price-tlPrice)<=Math.max(ENTRY1_ATR_DISTANCE*av,price*0.0025),beyond=t.direction==="LONG"?price>tlPrice+ENTRY2_ATR_BUFFER*av:price<tlPrice-ENTRY2_ATR_BUFFER*av;
   const last=closed.at(-1)!,lastLine=tl.state.slope*(closed.length-1)+tl.state.intercept,closedBreak=t.direction==="LONG"?last.close>lastLine+ENTRY2_ATR_BUFFER*av:last.close<lastLine-ENTRY2_ATR_BUFFER*av;
   const turning=t.direction==="LONG"?st.k>st.d:st.k<st.d,extreme=t.direction==="LONG"?st.k<25:st.k>75;
   const c15=candles15m.length>=2?[...candles15m].sort((x,y)=>x.timestamp-y.timestamp):[],x15=c15.at(-1),p15=c15.at(-2),trigger15=!x15||!p15||(t.direction==="LONG"?x15.close>=x15.open&&x15.close>=p15.close:x15.close<=x15.open&&x15.close<=p15.close);
   const state=t.direction==="LONG"?(price>tlPrice?"beyond TL":near?"near TL":"below TL / far"):(price<tlPrice?"beyond TL":near?"near TL":"above TL / far");
   debug.push("[STATE] "+state+" | near="+near+" | beyond="+beyond+" | closedBreak="+closedBreak);
-  let type:"ENTRY_1"|"ENTRY_2"|null=null;if(closedBreak&&beyond&&turning&&trigger15)type="ENTRY_2";else if(near&&extreme)type="ENTRY_1";
+  let type:"ENTRY_1"|"ENTRY_2"|null=null;if(closedBreak&&beyond&&turning&&trigger15&&confirmedTransition)type="ENTRY_2";else if(near&&extreme&&earlyTransition)type="ENTRY_1";
   if(!type){debug.push("[SIGNAL] none");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
   if(type==="ENTRY_1"){const veto=exhaustion(t.direction,st.k,r,dist);if(veto){debug.push("[EXHAUST] "+veto);debug.push("[SIGNAL] none — ENTRY_1 exhaustion veto");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}debug.push("[EXHAUST] ENTRY_1 clear");}else debug.push("[EXHAUST] ENTRY_2 bypassed — exhaustion is not an ENTRY_2 veto");
   if(!hystOK(pair,type,price,now,debug)){debug.push("[SIGNAL] suppressed by hysteresis");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
@@ -126,8 +137,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   else{stop=t.direction==="LONG"?Math.min(tlPrice*0.995,price-1.5*av):Math.max(tlPrice*1.005,price+1.5*av);const minTarget=t.direction==="LONG"?price+(price-stop)*MIN_RR:price-(stop-price)*MIN_RR;target=t.direction==="LONG"?Math.max(Math.max(...highs),minTarget):Math.min(Math.min(...lows),minTarget);}
   const risk=t.direction==="LONG"?price-stop:stop-price,reward=t.direction==="LONG"?target-price:price-target,rr=risk>0?reward/risk:0;
   if(rr<MIN_RR){debug.push("[SIGNAL] "+type+" rejected — realized RR "+rr.toFixed(2)+" < "+MIN_RR);debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
-  const signal:Signal={id:pair+"_"+type+"_"+now,pair,direction:t.direction,type:type,scale:type,entry:round(price),stop:round(stop),target:round(target),rr:round(rr,2),adx:round(a,1),rsi:round(r,1),stochK:st.k,stochD:st.d,expectedMove:round(Math.abs(target-price)/Math.max(price,1)*100,1),reason:type==="ENTRY_1"?t.direction+" ENTRY_1 accumulation near break line | Stoch K"+st.k:t.direction+" ENTRY_2 confirmed 4H close beyond break line | Stoch "+st.k+"/"+st.d,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:t.direction+" | 1D "+t.strength,location:type==="ENTRY_1"?"NEAR_BREAK_LINE":"BREAK_LINE_CONFIRMED",trigger:type==="ENTRY_1"?"4H_STOCH_EXTREME_NEAR_LINE":"4H_CLOSED_BREAK",context:{ema8_1d:round(t.ema8),ema21_1d:round(t.ema21),trendlinePrice:round(tlPrice)}};
-  setHysteresis(pair,type,price,now);debug.push("[SIGNAL] "+signal.type+" "+type+" "+signal.direction+" | entry "+signal.entry+" | SL "+signal.stop+" | TP "+signal.target+" | RR "+signal.rr);debug.push(type==="ENTRY_2"?"[ALERT] SURFACE — ENTRY_2 confirmed breakout":"[ALERT] SUPPRESS — ENTRY_1 accumulation is silent");
+  const signal:Signal={id:pair+"_"+type+"_"+now,pair,direction:t.direction,type:type,scale:type,entry:round(price),stop:round(stop),target:round(target),rr:round(rr,2),adx:round(a,1),rsi:round(r,1),stochK:st.k,stochD:st.d,expectedMove:round(Math.abs(target-price)/Math.max(price,1)*100,1),reason:type==="ENTRY_1"?t.direction+" ENTRY_1 early 4H transition near break line | "+ema513.label+" | Stoch K"+st.k:t.direction+" ENTRY_2 confirmed transition + 4H break | "+ema513.label+" | Stoch "+st.k+"/"+st.d,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:t.direction+" | 1D "+t.strength,location:type==="ENTRY_1"?"NEAR_BREAK_LINE":"BREAK_LINE_CONFIRMED",trigger:type==="ENTRY_1"?"4H_EARLY_TRANSITION":"4H_CLOSED_BREAK_CONFIRMED_TRANSITION",context:{ema8_1d:round(t.ema8),ema21_1d:round(t.ema21),trendlinePrice:round(tlPrice),ema5_4h:round(ema513.ema5,4),ema13_4h:round(ema513.ema13,4),emaStage4h:ema513.stage,emaLabel4h:ema513.label}};
+  setHysteresis(pair,type,price,now);debug.push("[SIGNAL] "+signal.type+" "+type+" "+signal.direction+" | entry "+signal.entry+" | SL "+signal.stop+" | TP "+signal.target+" | RR "+signal.rr);debug.push(type==="ENTRY_2"?"[ALERT] SURFACE — ENTRY_2 confirmed transition + breakout":"[ALERT] SURFACE — ENTRY_1 early transition");
   return{signal,signals:[signal],market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug,breakout:type==="ENTRY_2"?{direction:t.direction,price:round(last.close),timestamp:last.timestamp,candleIndex:closed.length-1}:undefined};
 }
 
