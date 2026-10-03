@@ -145,7 +145,7 @@ export interface HoldResult{shouldHold:boolean;reason:string;managementState?:"S
 export function shouldHold(s:Signal,c:Candle[],p:number,now?:number):HoldResult{
   const d=aggregateTo1D(c.length>1?c.slice(0,-1):c),t=trend1D(d);if(t.direction){const rev=(s.direction==="LONG"&&t.direction==="SHORT")||(s.direction==="SHORT"&&t.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;if(rev&&!profit)return{shouldHold:false,reason:"trend_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE"};}
   const closed=c.length>1?c.slice(0,-1):c,st=stochRsi(closed.map(x=>x.close));if(s.direction==="LONG"&&st.k<20)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};if(s.direction==="SHORT"&&st.k>80)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
-  const v=isSignalStillValid(s,p,now);if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE"};return{shouldHold:true,reason:"1D trend intact; no opposite Stoch exit",managementState:"STAY",recommendation:"STAY IN TRADE"};
+  // Active positions are managed independently of the original signal TTL. The exchange TP/SL handles price exits; strategy management exits only on the agreed 1D reversal while unprofitable or opposite 4H Stoch extreme.\n  return{shouldHold:true,reason:"1D trend intact; no opposite Stoch exit",managementState:"STAY",recommendation:"STAY IN TRADE"};
 }
 
 // Compatibility stubs: connections remain intact and no Redis dependency is introduced.
