@@ -44,7 +44,11 @@ function managementAdvice(h:any,m:any){
   const tp2=h.tp2??h.target;
   const tp2Hit=!!h.tp2HitAt||(tp2!==undefined&&(h.direction==="LONG"?price>=tp2:price<=tp2));
   if(tp2Hit)return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"TP2/final structural target reached. Close the trade."};
-  return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"No confirmed 4H reversal or structural breakdown. Normal momentum cooling does not create an intermediate state."};
+  if(h.tp1HitAt)return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"TP1 reached; 50% scale-out completed and stop is at breakeven. Let the remaining 50% run to TP2."};
+  const tp1=h.tp1;
+  const tp1Hit=tp1!==undefined&&(h.direction==="LONG"?price>=tp1:price<=tp1);
+  if(tp1Hit)return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"TP1 reached; scale out 50% and move stop to breakeven."};
+  return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"No confirmed 4H reversal, structural invalidation, or TP milestone. Normal momentum cooling does not create an intermediate state."};
 }
 
 export async function GET(){
