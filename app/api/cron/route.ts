@@ -135,27 +135,25 @@ export async function GET(request:Request){
   const signal=result.signal;
   if(!signal){if(!existing)console.log(`[PAIR] ${pair} | 1D=${snapshot.dailyDirection||"—"} | 4H=${ema513.label} | WAIT`);continue;}
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr}`);
-  // ENTRY_1 is deliberately silent. It is an internal early setup; only ENTRY_2 reaches Telegram/active-position state.
-  if(signal.type==="ENTRY_1"){console.log(`[PAIR] ${pair} — ENTRY_1 silent; waiting for ENTRY_2`);continue;}
-  if(signal.type!=="ENTRY_2"){console.log(`[PAIR] ${pair} — unsupported signal type ${signal.type}; ignored`);continue;}
-  if(existing){console.log(`[PAIR] ${pair} — ENTRY_2 suppressed because position is already active`);continue;}
+  if(signal.type!=="ENTRY_1"&&signal.type!=="ENTRY_2"){console.log(`[PAIR] ${pair} — unsupported signal type ${signal.type}; ignored`);continue;}
+  if(existing){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);continue;}
   const history=await getSignalHistory();
-  if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ENTRY_2 paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});continue;}
-  if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ENTRY_2 deduped: same entry condition was alerted recently`);continue;}
+  if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});continue;}
+  if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently`);continue;}
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];
   if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);continue;}
   const cardResets=await getCardResets();
   const alertKey=telegramAlertKey(signal,cardResets[pair]);
   const claimed=await claimTelegramAlert(alertKey);
-  if(!claimed){console.log(`[PAIR] ${pair} — ENTRY_2 blocked: lifecycle alert already claimed (${alertKey})`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"telegram_deduped_blocked"});continue;}
+  if(!claimed){console.log(`[PAIR] ${pair} — ${signal.type} blocked: lifecycle alert already claimed (${alertKey})`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"telegram_deduped_blocked"});continue;}
   const jarvisReview=await reviewFiredSignal(signal,snapshot);
   try{
-    await sendAlert({symbol:signal.pair,state:"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"🟠",context:signal.context,jarvis:jarvisReview});
+    await sendAlert({symbol:signal.pair,state:"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:signal.type==="ENTRY_1"?"🟢":"🟠",context:signal.context,jarvis:jarvisReview});
   }catch(e){await releaseTelegramAlert(alertKey);throw e;}
   await appendSignalHistory(signal);
   newSignals.push(signal);
   alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
-  console.log(`[ALERT] ${pair} — ENTRY_2 sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target}`);
+  console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target}`);
   await addActiveSignal(signal);
   active=await getActiveSignals();
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
