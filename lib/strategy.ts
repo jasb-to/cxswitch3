@@ -186,22 +186,30 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     debug.push("[EXHAUST] "+type+" clear");
   }
   if(!hystOK(pair,type,signalDirection,price,now,debug)){debug.push("[SIGNAL] suppressed by hysteresis");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
-  const lows=closed.slice(-20).map(x=>x.low),highs=closed.slice(-20).map(x=>x.high);let stop:number,target:number;
+  const lows=closed.slice(-20).map(x=>x.low),highs=closed.slice(-20).map(x=>x.high);let stop:number,tp1:number,tp2:number;
   if(type==="ENTRY_1"&&tacticalRejection){
     const rejectionHigh=Math.max(...closed.slice(-6).map(x=>x.high));
     stop=Math.max(rejectionHigh,tlPrice+0.5*av);
-    target=price-2*av;
   }else if(type==="ENTRY_1"){
     stop=signalDirection==="LONG"?Math.min(Math.min(...lows),price-2*av):Math.max(Math.max(...highs),price+2*av);
-    target=signalDirection==="LONG"?price+5*av:price-5*av;
   }else{
     stop=t.direction==="LONG"?Math.min(tlPrice*0.995,price-1.5*av):Math.max(tlPrice*1.005,price+1.5*av);
-    const minTarget=t.direction==="LONG"?price+(price-stop)*MIN_RR:price-(stop-price)*MIN_RR;
-    target=t.direction==="LONG"?Math.max(Math.max(...highs),minTarget):Math.min(Math.min(...lows),minTarget);
   }
+  const structuralTarget=signalDirection==="LONG"?Math.max(...highs):Math.min(...lows);
+  const structuralValid=signalDirection==="LONG"
+    ? structuralTarget>price+1.5*av
+    : structuralTarget<price-1.5*av;
+  if(structuralValid){
+    tp2=structuralTarget;
+    tp1=price+(tp2-price)*0.5;
+  }else{
+    tp1=signalDirection==="LONG"?price+1.5*av:price-1.5*av;
+    tp2=signalDirection==="LONG"?price+3*av:price-3*av;
+  }
+  const target=tp2;
   const risk=signalDirection==="LONG"?price-stop:stop-price,reward=signalDirection==="LONG"?target-price:price-target,rr=risk>0?reward/risk:0;
   if(rr<MIN_RR){debug.push("[SIGNAL] "+type+" rejected — realized RR "+rr.toFixed(2)+" < "+MIN_RR);debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
-  const signal:Signal={id:pair+"_"+type+"_"+now,pair,direction:signalDirection,type:type,scale:type,entry:round(price),stop:round(stop),target:round(target),rr:round(rr,2),adx:round(a,1),rsi:round(r,1),stochK:st.k,stochD:st.d,expectedMove:round(Math.abs(target-price)/Math.max(price,1)*100,1),reason:tacticalRejection?"SHORT ENTRY_1 tactical rejection at descending resistance | "+ema513.label+" | Stoch K "+st.k+"/"+st.d:(type==="ENTRY_1"?t.direction+" ENTRY_1 early 4H break attempt | "+ema513.label+" | Stoch K"+st.k:t.direction+" ENTRY_2 confirmed transition + 4H break | "+ema513.label+" | Stoch "+st.k+"/"+st.d),timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:signalDirection+" | 1D "+t.strength,location:type==="ENTRY_1"?(tacticalRejection?"TRENDLINE_REJECTION":"NEAR_BREAK_LINE"):"BREAK_LINE_CONFIRMED",trigger:type==="ENTRY_1"?(tacticalRejection?"4H_TRENDLINE_REJECTION":"4H_EARLY_TRANSITION"):"4H_CLOSED_BREAK_CONFIRMED_TRANSITION",context:{ema8_1d:round(t.ema8),ema21_1d:round(t.ema21),trendlinePrice:round(tlPrice),ema5_4h:round(ema513.ema5,4),ema13_4h:round(ema513.ema13,4),emaStage4h:ema513.stage,emaLabel4h:ema513.label,trendlinePrice:round(tlPrice),trendlineSlope:tl.state.slope,trendlineIntercept:tl.state.intercept,trendlineApproach:{classification:approach.classification,stochDirection:approach.stochDirection,rejectionCandles:approach.rejectionCandles,closeBackInside:approach.closeBackInside,lastTouched:approach.lastTouched,tacticalRejection}}};
+  const signal:Signal={id:pair+"_"+type+"_"+now,pair,direction:signalDirection,type:type,scale:type,entry:round(price),stop:round(stop),target:round(tp2),tp1:round(tp1),tp2:round(tp2),rr:round(rr,2),adx:round(a,1),rsi:round(r,1),stochK:st.k,stochD:st.d,expectedMove:round(Math.abs(tp2-price)/Math.max(price,1)*100,1),reason:tacticalRejection?"SHORT ENTRY_1 tactical rejection at descending resistance | "+ema513.label+" | Stoch K "+st.k+"/"+st.d:(type==="ENTRY_1"?t.direction+" ENTRY_1 early 4H break attempt | "+ema513.label+" | Stoch K"+st.k:t.direction+" ENTRY_2 confirmed transition + 4H break | "+ema513.label+" | Stoch "+st.k+"/"+st.d),timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:signalDirection+" | 1D "+t.strength,location:type==="ENTRY_1"?(tacticalRejection?"TRENDLINE_REJECTION":"NEAR_BREAK_LINE"):"BREAK_LINE_CONFIRMED",trigger:type==="ENTRY_1"?(tacticalRejection?"4H_TRENDLINE_REJECTION":"4H_EARLY_TRANSITION"):"4H_CLOSED_BREAK_CONFIRMED_TRANSITION",context:{ema8_1d:round(t.ema8),ema21_1d:round(t.ema21),trendlinePrice:round(tlPrice),ema5_4h:round(ema513.ema5,4),ema13_4h:round(ema513.ema13,4),emaStage4h:ema513.stage,emaLabel4h:ema513.label,trendlinePrice:round(tlPrice),trendlineSlope:tl.state.slope,trendlineIntercept:tl.state.intercept,trendlineApproach:{classification:approach.classification,stochDirection:approach.stochDirection,rejectionCandles:approach.rejectionCandles,closeBackInside:approach.closeBackInside,lastTouched:approach.lastTouched,tacticalRejection}}};
   setHysteresis(pair,type,signalDirection,price,now);debug.push("[SIGNAL] "+signal.type+" "+type+" "+signal.direction+" | entry "+signal.entry+" | SL "+signal.stop+" | TP "+signal.target+" | RR "+signal.rr);debug.push(tacticalRejection?"[ALERT] SURFACE — ENTRY_1 tactical rejection SHORT":"[ALERT] SURFACE — "+(type==="ENTRY_2"?"ENTRY_2 confirmed transition + breakout":"ENTRY_1 early transition"));
   return{signal,signals:[signal],market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug,breakout:type==="ENTRY_2"?{direction:t.direction,price:round(last.close),timestamp:last.timestamp,candleIndex:closed.length-1}:undefined};
 }
@@ -219,23 +227,28 @@ export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{c
 export interface HoldResult{shouldHold:boolean;reason:string;managementState?:"STAY"|"EXIT";recommendation?:"STAY IN TRADE"|"EXIT TRADE";newStop?:number;scaleOut?:{level:number;size:number;label:string};}
 export function shouldHold(s:Signal,c:Candle[],p:number,now?:number):HoldResult{
   const closed=c.length>1?c.slice(0,-1):c;
-  // Tactical ENTRY_1 rejection trades are defined by the trendline rejection itself.
-  // If a closed 4H candle reclaims that originating line, the rejection thesis is invalidated.
-  // This is deliberately structural: no MACD/Stoch confirmation is required.
   const tacticalRejection=s.type==="ENTRY_1"&&s.context?.trendlineApproach?.tacticalRejection===true;
   if(tacticalRejection&&closed.length){
     const slope=Number(s.context?.trendlineSlope),intercept=Number(s.context?.trendlineIntercept);
     if(Number.isFinite(slope)&&Number.isFinite(intercept)){
       const lineAt=slope*(closed.length-1)+intercept,lastClose=closed.at(-1)!.close;
       const reclaimed=s.direction==="SHORT"?lastClose>lineAt:lastClose<lineAt;
-      if(reclaimed)return{shouldHold:false,reason:"tactical_rejection_trendline_reclaimed",managementState:"EXIT",recommendation:"EXIT TRADE"};
+      if(reclaimed)return{shouldHold:false,reason:"TACTICAL_REJECTION_TRENDLINE_RECLAIMED",managementState:"EXIT",recommendation:"EXIT TRADE"};
     }
+  }
+  const tp2=s.tp2??s.target;
+  const tp1=s.tp1;
+  if(tp2!==undefined){
+    const tp2Hit=s.direction==="LONG"?p>=tp2:p<=tp2;
+    if(tp2Hit)return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT",recommendation:"EXIT TRADE"};
+  }
+  if(tp1!==undefined&&!s.tp1HitAt){
+    const tp1Hit=s.direction==="LONG"?p>=tp1:p<=tp1;
+    if(tp1Hit)return{shouldHold:true,reason:"tp1_hit_scale_out",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,scaleOut:{level:tp1,size:0.5,label:"TP1"}};
   }
   const d=aggregateTo1D(closed),t=trend1D(d);if(t.direction){const rev=(s.direction==="LONG"&&t.direction==="SHORT")||(s.direction==="SHORT"&&t.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;if(rev&&!profit)return{shouldHold:false,reason:"trend_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE"};}
   const st=stochRsi(closed.map(x=>x.close));if(s.direction==="LONG"&&st.k<20)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};if(s.direction==="SHORT"&&st.k>80)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
-  // Active positions are managed independently of the original signal TTL. Exchange TP/SL handles price exits;
-  // strategy management adds tactical trendline invalidation for rejection ENTRY_1 trades.
-  return{shouldHold:true,reason:"1D trend intact; no tactical trendline invalidation or opposite Stoch exit",managementState:"STAY",recommendation:"STAY IN TRADE"};
+  return{shouldHold:true,reason:"1D trend intact; no tactical invalidation, TP exit, or opposite Stoch exit",managementState:"STAY",recommendation:"STAY IN TRADE"};
 }
 
 // Compatibility stubs: connections remain intact and no Redis dependency is introduced.
