@@ -26,11 +26,16 @@ function alertValidity(h:any,price:number,now:number,isActivePosition=false){
   return{state:"VALID" as AlertState,reason:"Alert remains actionable"};
 }
 
+function momentumState(h:any,m:any,management?:any):"IN TRADE"|"OUT OF TRADE"{
+  if(!h||h.status!=="ACTIVE")return"OUT OF TRADE";
+  if(management?.managementState==="EXIT")return"OUT OF TRADE";
+  return"IN TRADE";
+}
 function momentumStatus(h:any,m:any,management?:any){
-  if(!h||!m)return null;
-  const state=management?.managementState;
-  if(state==="EXIT")return{icon:"🔴",label:"EXIT TRADE",detail:"Confirmed trade exit condition."};
-  return{icon:"🟢",label:"STAY IN TRADE",detail:"No confirmed 4H reversal or structural breakdown."};
+  const state=momentumState(h,m,management);
+  return state==="IN TRADE"
+    ? {icon:"🟢",label:"STAY IN TRADE",detail:"Active position; management has no confirmed exit condition."}
+    : {icon:"🔴",label:"EXIT TRADE",detail:"No active position or a confirmed exit condition is present."};
 }
 function managementAdvice(h:any,m:any){
   if(!h||h.status!=="ACTIVE"||!m||h.type==="ENTRY_0")return null;
@@ -43,10 +48,10 @@ function managementAdvice(h:any,m:any){
 export async function GET(){
   const activeSignals=await getActiveSignals(),signalHistory=await getSignalHistory(),persistedLatest=await getLatestAlerts(),marketData=await getMarketData(),lastCronRun=await getLastCronRun(),now=Date.now();
   const activeByPair=Object.fromEntries(activeSignals.map((s:any)=>[s.pair,s]));
-  const v28LatestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;const active=activeByPair[pair];const price=m?.price??h.entry;const v=alertValidity(h,price,now,!!active);const management=active?managementAdvice(active,m):null;const validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`}:v;return[pair,{...h,target:h.tp2??h.target,managementAdvice:management,momentumStatus:active?momentumStatus(active,m,management):null,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];}));
+  const v28LatestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;const active=activeByPair[pair];const price=m?.price??h.entry;const v=alertValidity(h,price,now,!!active);const management=active?managementAdvice(active,m):null;const validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`}:v;return[pair,{...h,target:h.tp2??h.target,managementAdvice:management,momentumState:momentumState(active,m,management),momentumStatus:momentumStatus(active,m,management),currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];}));
   const latestAlerts=v28LatestAlerts;
   const liveMarketData=(Array.isArray(marketData)?marketData:[]).map((m:any)=>{const a:any=activeByPair[m.pair];if(!a||a.status!=="ACTIVE")return m;return{...m,price:a.currentPrice??m.price,location:a.context?.marketPhase||m.location,trigger:a.trigger||m.trigger,alertState:a.validity?.state||"VALID",alertType:a.type,alertDirection:a.direction,alertEntry:a.entry,alertTimestamp:a.timestamp};});
-  const enrichedActive=activeSignals.map((s:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===s.pair):undefined;const price=m?.price??s.entry;return{...s,scale:s.type,target:s.tp2??s.target,expectedMove:s.entry&&s.tp2?Math.round(Math.abs(s.tp2-s.entry)/s.entry*1000)/10:0,currentPrice:price,ageMinutes:Math.round((now-s.timestamp)/60000),validity:alertValidity(s,price,now,true),managementAdvice:managementAdvice(s,m),momentumStatus:momentumStatus(s,m,managementAdvice(s,m)),meta:{status:s.status,ageMinutes:Math.round((now-s.timestamp)/60000),actionable:s.status==="ACTIVE",state:"POSITION_ACTIVE"}};});
+  const enrichedActive=activeSignals.map((s:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===s.pair):undefined;const price=m?.price??s.entry;const management=managementAdvice(s,m);return{...s,scale:s.type,target:s.tp2??s.target,expectedMove:s.entry&&s.tp2?Math.round(Math.abs(s.tp2-s.entry)/s.entry*1000)/10:0,currentPrice:price,ageMinutes:Math.round((now-s.timestamp)/60000),validity:alertValidity(s,price,now,true),managementAdvice:management,momentumState:momentumState(s,m,management),momentumStatus:momentumStatus(s,m,management),meta:{status:s.status,ageMinutes:Math.round((now-s.timestamp)/60000),actionable:s.status==="ACTIVE",state:"POSITION_ACTIVE"}};});
   const enrichedHistory=signalHistory.map((h:any)=>({...h,scale:h.type,target:h.tp2??h.target,meta:{ageMinutes:Math.round((now-h.timestamp)/60000),status:h.status}}));
   const historyLogs=signalHistory.slice().sort((a,b)=>b.timestamp-a.timestamp).slice(0,8).map((h:any)=>`[ALERT] ${h.pair} — ${h.direction} ${h.type} @ ${h.entry} | SL ${h.stop} | R1 ${h.tp1??"—"} | R1.5 ${h.tp2??h.target} | ${h.status}`);
   const validityLogs=Object.entries(latestAlerts).map(([pair,a]:any)=>`[VALIDITY] ${pair} — ${a.validity.state} | ${a.validity.reason}`);
