@@ -68,9 +68,12 @@ export async function GET(request:Request){
     await updateHistoryStopMilestone(trade.id,trade.stop);
   }
   const tp1AlreadyHit=!!trade.tp1HitAt;
-  const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);if(milestoneTrade)Object.assign(trade,milestoneTrade);
-  // Re-apply liquidation-safe protection after milestone hydration. Older milestone
-  // records can contain the legacy stop and must never overwrite the safety boundary.
+  // Evaluate management before persisting a newly-hit TP1 milestone so the first
+  // touch can still produce the one-time 50% scale-out + breakeven instruction.
+  let hold=shouldHold(toSignalLike(trade),c,price);
+  const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);
+  if(milestoneTrade)Object.assign(trade,milestoneTrade);
+  // Re-apply liquidation-safe protection after milestone hydration.
   if((trade.direction==="LONG"&&trade.stop<safeStop)||(trade.direction==="SHORT"&&trade.stop>safeStop)){
     if((trade.direction==="LONG"&&price>safeStop)||(trade.direction==="SHORT"&&price<safeStop)){
       console.log("[RISK] "+trade.pair+" "+trade.direction+" — enforcing liquidation-safe SL "+safeStop);
@@ -79,7 +82,14 @@ export async function GET(request:Request){
     }
   }
   await updateHistoryMilestones(trade.id,price);
-  let hold=shouldHold(toSignalLike(trade),c,price);if(typeof hold.shouldHold!=="boolean"){console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);hold={shouldHold:true,reason:"hold_result_invalid"};}if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);hold={shouldHold:true,reason:"active_alert_stale"};}
+  if(typeof hold.shouldHold!=="boolean"){
+    console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);
+    hold={shouldHold:true,reason:"hold_result_invalid"};
+  }
+  if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){
+    console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);
+    hold={shouldHold:true,reason:"active_alert_stale"};
+  }
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | Management ${hold.managementState} | ${hold.recommendation} | ${hold.reason}`);
   if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp2_hit"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
   if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;await updateHistoryStopMilestone(trade.id,trade.stop);}
