@@ -100,13 +100,13 @@ function setHysteresis(pair:string,type:"ENTRY_1"|"ENTRY_2",direction:Direction,
 function hystOK(pair:string,type:"ENTRY_1"|"ENTRY_2",direction:Direction,price:number,now:number,debug:string[]){const s=hysteresisStore.get(pair);if(!s||now>s.lockUntil||s.lastSignalType!==type||s.lastSignalDirection!==direction)return true;const move=Math.abs(price-s.lastSignalPrice)/Math.max(s.lastSignalPrice,1);if(move< HYSTERESIS_BAND){debug.push("[STATE] hysteresis lock | "+type+" | move "+(move*100).toFixed(2)+"% < 0.50%");return false;}return true;}
 type TrendlineApproachClass="BREAK_ATTEMPT"|"REJECTION"|"NEUTRAL";
 
-export function classifyTrendlineApproach(c:Candle[],line:number,slope:number,k:number,prevK:number){
+export function classifyTrendlineApproach(c:Candle[],intercept:number,slope:number,k:number,prevK:number){
   const recent=c.slice(-3);
   const sd=k>prevK+1?"RISING":k<prevK-1?"FALLING":"FLAT";
   const isResistance=slope<0;
   let rejectionCandles=0;
   for(let i=0;i<recent.length;i++){
-    const x=recent[i],idx=c.length-recent.length+i,range=Math.max(x.high-x.low,1e-12),lineAt=slope*idx+line;
+    const x=recent[i],idx=c.length-recent.length+i,range=Math.max(x.high-x.low,1e-12),lineAt=slope*idx+intercept;
     if(isResistance){
       const upper=(x.high-Math.max(x.open,x.close))/range;
       if(upper>0.40&&x.high>=lineAt) rejectionCandles++;
@@ -115,7 +115,7 @@ export function classifyTrendlineApproach(c:Candle[],line:number,slope:number,k:
       if(lower>0.40&&x.low<=lineAt) rejectionCandles++;
     }
   }
-  const last=recent.at(-1)!,lastIndex=c.length-1,lastLine=slope*lastIndex+line;
+  const last=recent.at(-1)!,lastIndex=c.length-1,lastLine=slope*lastIndex+intercept;
   const lastTouched=isResistance?last.high>=lastLine:last.low<=lastLine;
   const closeBackInside=isResistance?lastTouched&&last.close<lastLine:lastTouched&&last.close>lastLine;
   const rejection=isResistance
@@ -166,15 +166,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     ? ema513.spread<0 && Math.abs(ema513.spreadAtr)<=0.75 && ema513.spread>ema513.spreadPrev && ema513.ema5Slope>prevEma513.ema5Slope
     : ema513.spread>0 && Math.abs(ema513.spreadAtr)<=0.75 && ema513.spread<ema513.spreadPrev && ema513.ema5Slope<prevEma513.ema5Slope;
   const confirmedTransition=t.direction==="LONG"
-    ? ema513.label==="BULLISH TREND TURNING"
-    : ema513.label==="BEARISH TREND TURNING";
-  debug.push("[TRANSITION] 4H "+ema513.label+" | early="+earlyTransition+" | confirmed="+confirmedTransition);
+    ? ema513.turning&&ema513.direction==="BULLISH"
+    : ema513.turning&&ema513.direction==="BEARISH";
+  debug.push("[TRANSITION] 4H "+ema513.label+" | early="+earlyTransition+" | confirmed="+confirmedTransition+" | spread="+round(ema513.spread,4)+" | spreadPrev="+round(ema513.spreadPrev,4)+" | ema5Slope="+round(ema513.ema5Slope,4));
   const near=Math.abs(price-tlPrice)<=Math.max(ENTRY1_ATR_DISTANCE*av,price*0.0025),beyond=t.direction==="LONG"?price>tlPrice+ENTRY2_ATR_BUFFER*av:price<tlPrice-ENTRY2_ATR_BUFFER*av;
   const last=closed.at(-1)!,lastLine=tl.state.slope*(closed.length-1)+tl.state.intercept,closedBreak=t.direction==="LONG"?last.close>lastLine+ENTRY2_ATR_BUFFER*av:last.close<lastLine-ENTRY2_ATR_BUFFER*av;
   const prevStoch=stochRsi(closes.slice(0,-1)).k;
   const approach=classifyTrendlineApproach(closed,tl.state.intercept,tl.state.slope,st.k,prevStoch);
   const turning=t.direction==="LONG"?st.k>st.d:st.k<st.d,extreme=t.direction==="LONG"?st.k<25:st.k>75;
-  const c15=candles15m.length>=2?[...candles15m].sort((x,y)=>x.timestamp-y.timestamp):[],x15=c15.at(-1),p15=c15.at(-2),trigger15=!x15||!p15||(t.direction==="LONG"?x15.close>=x15.open&&x15.close>=p15.close:x15.close<=x15.open&&x15.close<=p15.close);
+  const c15=candles15m.length>=2?[...candles15m].sort((x,y)=>x.timestamp-y.timestamp):[],x15=c15.at(-1),p15=c15.at(-2),trigger15=!!x15&&!!p15&&(t.direction==="LONG"?x15.close>=x15.open&&x15.close>=p15.close:x15.close<=x15.open&&x15.close<=p15.close);
   debug.push("[TL APPROACH] "+pair+" | "+(t.direction==="LONG"?"descending resistance":"ascending support")+" | "+approach.classification+" | stoch="+approach.stochDirection+" | rejectionCandles="+approach.rejectionCandles+" | closeBackInside="+approach.closeBackInside);
   const state=t.direction==="LONG"?(price>tlPrice?"beyond TL":near?"near TL":"below TL / far"):(price<tlPrice?"beyond TL":near?"near TL":"above TL / far");
   debug.push("[STATE] "+state+" | near="+near+" | beyond="+beyond+" | closedBreak="+closedBreak);
@@ -202,6 +202,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     exhaustionBlockedSince.delete(blockKey);
     debug.push("[EXHAUST] "+type+" clear");
   }
+  const hystState=hysteresisStore.get(pair);
+  if(hystState&&hystState.lastSignalDirection!==signalDirection){debug.push("[STATE] hysteresis direction flip bypass | "+hystState.lastSignalDirection+" -> "+signalDirection);}
   if(!hystOK(pair,type,signalDirection,price,now,debug)){debug.push("[SIGNAL] suppressed by hysteresis");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
   const lows=closed.slice(-20).map(x=>x.low),highs=closed.slice(-20).map(x=>x.high);let stop:number,tp1:number,tp2:number;
   if(type==="ENTRY_1"&&tacticalRejection){
@@ -231,7 +233,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const target=tp2;
   const risk=signalDirection==="LONG"?price-stop:stop-price,reward=signalDirection==="LONG"?target-price:price-target,rr=risk>0?reward/risk:0;
   if(rr<MIN_RR){debug.push("[SIGNAL] "+type+" rejected — realized RR "+rr.toFixed(2)+" < "+MIN_RR);debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
-  const signal:Signal={id:pair+"_"+type+"_"+now,pair,direction:signalDirection,type:type,scale:type,entry:round(price),stop:round(stop),target:round(tp2),tp1:round(tp1),tp2:round(tp2),rr:round(rr,2),adx:round(a,1),rsi:round(r,1),stochK:st.k,stochD:st.d,expectedMove:round(Math.abs(tp2-price)/Math.max(price,1)*100,1),reason:tacticalRejection?(signalDirection+" ENTRY_1 tactical rejection at "+(signalDirection==="SHORT"?"descending resistance":"ascending support")+" | "+ema513.label+" | Stoch K "+st.k+"/"+st.d):(type==="ENTRY_1"?t.direction+" ENTRY_1 early 4H break attempt | "+ema513.label+" | Stoch K"+st.k:t.direction+" ENTRY_2 confirmed transition + 4H break | "+ema513.label+" | Stoch "+st.k+"/"+st.d),timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:signalDirection+" | 1D "+t.strength,location:type==="ENTRY_1"?(tacticalRejection?"TRENDLINE_REJECTION":"NEAR_BREAK_LINE"):"BREAK_LINE_CONFIRMED",trigger:type==="ENTRY_1"?(tacticalRejection?"4H_TRENDLINE_REJECTION":"4H_EARLY_TRANSITION"):"4H_CLOSED_BREAK_CONFIRMED_TRANSITION",context:{ema8_1d:round(t.ema8),ema21_1d:round(t.ema21),trendlinePrice:round(tlPrice),ema5_4h:round(ema513.ema5,4),ema13_4h:round(ema513.ema13,4),emaStage4h:ema513.stage,emaLabel4h:ema513.label,trendlinePrice:round(tlPrice),trendlineSlope:tl.state.slope,trendlineIntercept:tl.state.intercept,trendlineApproach:{classification:approach.classification,stochDirection:approach.stochDirection,rejectionCandles:approach.rejectionCandles,closeBackInside:approach.closeBackInside,lastTouched:approach.lastTouched,tacticalRejection}}};
+  const signal:Signal={id:pair+"_"+type+"_"+now,pair,direction:signalDirection,type:type,scale:type,entry:round(price),stop:round(stop),target:round(tp2),tp1:round(tp1),tp2:round(tp2),rr:round(rr,2),adx:round(a,1),rsi:round(r,1),stochK:st.k,stochD:st.d,expectedMove:round(Math.abs(tp2-price)/Math.max(price,1)*100,1),reason:tacticalRejection?(signalDirection+" ENTRY_1 tactical rejection at "+(signalDirection==="SHORT"?"descending resistance":"ascending support")+" | "+ema513.label+" | Stoch K "+st.k+"/"+st.d):(type==="ENTRY_1"?t.direction+" ENTRY_1 early 4H break attempt | "+ema513.label+" | Stoch K"+st.k:t.direction+" ENTRY_2 confirmed transition + 4H break | "+ema513.label+" | Stoch "+st.k+"/"+st.d),timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:signalDirection+" | 1D "+t.strength,location:type==="ENTRY_1"?(tacticalRejection?"TRENDLINE_REJECTION":"NEAR_BREAK_LINE"):"BREAK_LINE_CONFIRMED",trigger:type==="ENTRY_1"?(tacticalRejection?"4H_TRENDLINE_REJECTION":"4H_EARLY_TRANSITION"):"4H_CLOSED_BREAK_CONFIRMED_TRANSITION",context:{ema8_1d:round(t.ema8),ema21_1d:round(t.ema21),trendlinePrice:round(tlPrice),ema5_4h:round(ema513.ema5,4),ema13_4h:round(ema513.ema13,4),emaStage4h:ema513.stage,emaLabel4h:ema513.label,trendlineSlope:tl.state.slope,trendlineIntercept:tl.state.intercept,trendlineApproach:{classification:approach.classification,stochDirection:approach.stochDirection,rejectionCandles:approach.rejectionCandles,closeBackInside:approach.closeBackInside,lastTouched:approach.lastTouched,tacticalRejection}}};
   setHysteresis(pair,type,signalDirection,price,now);debug.push("[SIGNAL] "+signal.type+" "+type+" "+signal.direction+" | entry "+signal.entry+" | SL "+signal.stop+" | TP "+signal.target+" | RR "+signal.rr);debug.push(tacticalRejection?"[ALERT] SURFACE — ENTRY_1 tactical rejection "+signalDirection:"[ALERT] SURFACE — "+(type==="ENTRY_2"?"ENTRY_2 confirmed transition + breakout":"ENTRY_1 early transition"));
   return{signal,signals:[signal],market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug,breakout:type==="ENTRY_2"?{direction:t.direction,price:round(last.close),timestamp:last.timestamp,candleIndex:closed.length-1}:undefined};
 }
