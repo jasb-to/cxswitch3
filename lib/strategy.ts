@@ -100,7 +100,7 @@ function setHysteresis(pair:string,type:"ENTRY_1"|"ENTRY_2",direction:Direction,
 function hystOK(pair:string,type:"ENTRY_1"|"ENTRY_2",direction:Direction,price:number,now:number,debug:string[]){const s=hysteresisStore.get(pair);if(!s||now>s.lockUntil||s.lastSignalType!==type||s.lastSignalDirection!==direction)return true;const move=Math.abs(price-s.lastSignalPrice)/Math.max(s.lastSignalPrice,1);if(move< HYSTERESIS_BAND){debug.push("[STATE] hysteresis lock | "+type+" | move "+(move*100).toFixed(2)+"% < 0.50%");return false;}return true;}
 type TrendlineApproachClass="BREAK_ATTEMPT"|"REJECTION"|"NEUTRAL";
 
-function classifyTrendlineApproach(c:Candle[],line:number,slope:number,k:number,prevK:number){
+export function classifyTrendlineApproach(c:Candle[],line:number,slope:number,k:number,prevK:number){
   const recent=c.slice(-3);
   const sd=k>prevK+1?"RISING":k<prevK-1?"FALLING":"FLAT";
   let rejectionCandles=0;
