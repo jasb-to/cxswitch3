@@ -16,51 +16,42 @@ export async function sendAlert(signal:any){
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
 
   const type=signal.signalType||signal.state;
-  const emoji=signal.signalEmoji||(type==="ENTRY_1"?"🟢":type==="ENTRY_2"?"🟠":type==="ENTRY_0"?"🟡":type==="ADD"?"🔵":type==="EXIT_0"?"🔴":type==="EXIT"?"🔴":"📊");
-  const labels:Record<string,string>={ENTRY_0:"ENTRY ⓪",ENTRY_1:"ENTRY ①",ENTRY_2:"ENTRY ②",ADD:"ADD",ENTRY:"ENTRY",EXIT_0:"EXIT ⓪",EXIT:"EXIT"};
-  const label=labels[type]||signal.state;
+  if(type!=="ENTRY_1"&&type!=="ENTRY_2"&&type!=="ENTRY"){
+    throw new Error("Unsupported alert type: "+String(type));
+  }
+
+  const emoji=signal.signalEmoji||(type==="ENTRY_1"?"🟢":type==="ENTRY_2"?"🟠":"📊");
+  const labels:Record<string,string>={ENTRY_1:"ENTRY ①",ENTRY_2:"ENTRY ②",ENTRY:"ENTRY"};
+  const label=labels[type]||type;
   const dir=signal.bias==="LONG"?"📈":"📉";
-  const singleTarget=signal.takeProfit??signal.target??signal.takeProfit2??signal.context?.stages?.tp2;
-  const tp1=signal.takeProfit1??signal.context?.stages?.tp1;
-  const tp2=signal.takeProfit2??signal.context?.stages?.tp2??singleTarget;
-  // ENTRY_2 uses one target. Keep legacy TP1/TP2 fields for compatibility,
-  // but never render duplicate targets in the Telegram alert.
-  const displayTarget=type==="ENTRY_2" ? singleTarget : tp2;
-  const expectedMove=typeof (signal.price??signal.entry)==="number"&&typeof displayTarget==="number"&&Number(signal.price??signal.entry)!==0
-    ? Math.round((Math.abs(displayTarget-Number(signal.price??signal.entry))/Math.abs(Number(signal.price??signal.entry)))*1000)/10
+  const context=signal.context||{};
+  const approach=context.trendlineApproach;
+  const singleTarget=signal.takeProfit??signal.target??signal.takeProfit2;
+  const tp1=signal.takeProfit1;
+  const tp2=signal.takeProfit2??singleTarget;
+  const displayTarget=type==="ENTRY_2"?singleTarget:tp2;
+  const entry=Number(signal.price??signal.entry);
+  const expectedMove=Number.isFinite(entry)&&Number.isFinite(Number(displayTarget))&&entry!==0
+    ? Math.round((Math.abs(Number(displayTarget)-entry)/Math.abs(entry))*1000)/10
     : signal.expectedMove??"-";
-  const addText=type==="ADD"?`\n🔵 ADD DETAILS\nSize: ${sizeMultiplier?`x${sizeMultiplier}`:"reduced"}${trendAlignment?` · ${trendAlignment}`:""}\nReason: ${signal.reason||"next wave after pullback/retest with thesis intact"}\n`:"";
-  const exitText=exitPlan?`\nExit plan: TP1 ${exitPlan.tp1Pct}% | TP2 ${exitPlan.tp2Pct}%\nAfter TP1: ${exitPlan.afterTp1} | After TP2: ${exitPlan.afterTp2}\nRunner: ${exitPlan.runner}\n`:"";
-  const entry0Text=type==="ENTRY_0"?`\nENTRY_0 confirmation: ${signal.confirmation||"1D 5/13 aligned with 4H 5/13 cross"}\nLongevity exit: 4H 8/21 opposite cross\n`:type==="EXIT_0"?`\nENTRY_0 exit: ${signal.reason||"4H 8/21 opposite cross"}\n`:"";
 
   const jarvis=signal.jarvis;
   const jarvisLine=jarvis?.verdict
     ? `JARVIS: ${jarvis.verdict} · ${jarvis.summary||""}`
     : "";
-  const context=signal.context||{};
-  const trigger=signal.trigger||context.entry1Trigger||"";
-  const dailyBreakout=context.dailyBreakout;
-  const runway=context.runway;
-  const dailyFade=context.dailyFade;
-  const setupLine=type==="ENTRY_1"&&trigger ? `Setup: ${trigger}` : "";
-  const dailyLine=type==="ENTRY_1"
-    ? dailyFade?.shortWatch
-      ? `1D Fade Watch: ${dailyFade.failedBreak?"FAILED BREAKOUT":"RESISTANCE APPROACH"} · Stoch ${dailyFade.stochK??"-"}/${dailyFade.stochD??"-"}`
-      : dailyBreakout
-        ? `1D Breakout: ${dailyBreakout.direction||"—"} · level ${formatPrice(dailyBreakout.level??dailyBreakout.price)}`
-        : "1D Breakout: not exposed"
+
+  const setupLine=signal.trigger
+    ? `Setup: ${signal.trigger}`
     : "";
-  const runwayLine=type==="ENTRY_1"&&runway
-    ? `Runway: ${runway.pct!==null&&runway.pct!==undefined?runway.pct.toFixed(2)+"%":"—"}${runway.preferred?" · preferred":""}${runway.obstacle!==null&&runway.obstacle!==undefined?` · obstacle ${formatPrice(runway.obstacle)}`:""}`
+  const approachLine=approach?.classification
+    ? `Trendline: ${approach.classification} · Stoch K ${approach.stochDirection||"—"}${approach.rejectionCandles!==undefined?` · rejection wicks ${approach.rejectionCandles}`:""}`
     : "";
-  const location=context.locationQuality;
-  const compression=context.compression;
+  const transitionLine=context.emaLabel4h
+    ? `4H transition: ${context.emaLabel4h}`
+    : "";
   const market=context.marketHealth;
-  const qualityLine=type==="ENTRY_1"&&location
-    ? `Location: ${location.quality} · Fib ${location.nearFib?"YES":"NO"} · level ${location.nearSwing?"YES":"NO"} · compression ${compression?.compressed?"YES":"NO"}`
-    : "";
   const marketLine=market
-    ? `Market: BTC.D ${market.btcDominance??"—"} (${market.btcDominanceRelative24h!=null?(market.btcDominanceRelative24h>=0?"+":"")+market.btcDominanceRelative24h.toFixed(2)+"pp":"—"}) · USDT.D ${market.usdtDominance??"—"} (${market.usdtDominanceRelative24h!=null?(market.usdtDominanceRelative24h>=0?"+":"")+market.usdtDominanceRelative24h.toFixed(2)+"pp":"—"}) · TOTAL ${market.totalMarketCapChange24h!=null?(market.totalMarketCapChange24h>=0?"+":"")+market.totalMarketCapChange24h.toFixed(2)+"%":"—"} · ALT ${market.altContext}`
+    ? `Market: BTC.D ${market.btcDominance??"—"} · USDT.D ${market.usdtDominance??"—"} · TOTAL ${market.totalMarketCapChange24h!=null?((market.totalMarketCapChange24h>=0?"+":"")+market.totalMarketCapChange24h.toFixed(2)+"%"):"—"} · ALT ${market.altContext||"—"}`
     : "";
 
   const lines=[
@@ -69,12 +60,10 @@ export async function sendAlert(signal:any){
     `Price: ${formatPrice(signal.price??signal.entry)}`,"",
     jarvisLine,
     setupLine,
-    dailyLine,
-    runwayLine,
-    qualityLine,
+    transitionLine,
+    approachLine,
     marketLine,
-    entryZone,
-    `4H 5/13: ${fourH513}`,"",
+    `4H 5/13: ${signal.fourH513||"—"}`,"",
     `SL: ${formatPrice(signal.stopLoss)}`,
     ...(type==="ENTRY_2"
       ? [`TP: ${formatPrice(displayTarget)}`]
@@ -82,7 +71,7 @@ export async function sendAlert(signal:any){
     `RR: ${signal.rr??"-"}`,"",
     `Expected Move: ${expectedMove}%`,
     signal.reason||""
-  ].filter((line,i,arr)=>line!==""||arr[i-1]!=="" ).join("\n");
+  ].filter((line,i,arr)=>line!==""||arr[i-1]!=="").join("\n");
 
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
   if(!response.ok){
@@ -90,7 +79,6 @@ export async function sendAlert(signal:any){
     throw new Error(`Telegram sendMessage failed (${response.status}): ${body.slice(0,300)}`);
   }
 }
-
 
 export async function sendJarvisUpdate(update:{
   portfolioState:string;
