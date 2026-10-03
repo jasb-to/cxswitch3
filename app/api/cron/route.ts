@@ -112,7 +112,13 @@ export async function GET(request:Request){
   const price=c1.at(-1)!.close;
   const existing=active.find(x=>x.pair===pair);
   const result=generateSignal(pair,c1,c4,c15,[],price);
-  const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);
+  const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);
+  // Persist the canonical 4H diagnostics alongside the market snapshot so the dashboard
+  // copy card reads the same live values the cron just calculated.
+  snapshot.ema8_4h=snapshot.ema8;
+  snapshot.ema21_4h=snapshot.ema21;
+  snapshot.fourH513=ema513;
+  snapshot.dailyLive={state:snapshot.trend,candidateState:snapshot.trend,direction:snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);
   const dbg=result.debug||[];
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
