@@ -22,7 +22,7 @@ const MIN_RR=1.5;
 type Direction="LONG"|"SHORT";
 interface Pivot { index:number; price:number; timestamp:number; }
 interface TrendlineState { slope:number; intercept:number; pivots:Pivot[]; lastUpdated:number; direction:Direction; r2:number; startIndex:number; endIndex:number; }
-interface HysteresisState { lastSignalType:"ENTRY_1"|"ENTRY_2"|null; lastSignalPrice:number; lockUntil:number; }
+interface HysteresisState { lastSignalType:"ENTRY_1"|"ENTRY_2"|null; lastSignalDirection:Direction|null; lastSignalPrice:number; lockUntil:number; }
 const trendlineStore=new Map<string,TrendlineState>();
 const hysteresisStore=new Map<string,HysteresisState>();
 const HYSTERESIS_BAND=0.005;
@@ -95,8 +95,8 @@ function getTrendline(pair:string,c:Candle[],d:Direction){
     if(age<=TRENDLINE_MAX_AGE&&dev<=TRENDLINE_MAX_DEVIATION){const price=old.slope*(c.length-1)+old.intercept;return{state:old,price,age};}}
   const fresh=buildTrendline(c,d);if(!fresh)return null;trendlineStore.set(pair,fresh);return{state:fresh,price:fresh.slope*(c.length-1)+fresh.intercept,age:0};
 }
-function setHysteresis(pair:string,type:"ENTRY_1"|"ENTRY_2",price:number,now:number){hysteresisStore.set(pair,{lastSignalType:type,lastSignalPrice:price,lockUntil:now+24*60*60*1000});}
-function hystOK(pair:string,type:"ENTRY_1"|"ENTRY_2",price:number,now:number,debug:string[]){const s=hysteresisStore.get(pair);if(!s||now>s.lockUntil||s.lastSignalType!==type)return true;const move=Math.abs(price-s.lastSignalPrice)/Math.max(s.lastSignalPrice,1);if(move< HYSTERESIS_BAND){debug.push("[STATE] hysteresis lock | "+type+" | move "+(move*100).toFixed(2)+"% < 0.50%");return false;}return true;}
+function setHysteresis(pair:string,type:"ENTRY_1"|"ENTRY_2",direction:Direction,price:number,now:number){hysteresisStore.set(pair,{lastSignalType:type,lastSignalDirection:direction,lastSignalPrice:price,lockUntil:now+24*60*60*1000});}
+function hystOK(pair:string,type:"ENTRY_1"|"ENTRY_2",direction:Direction,price:number,now:number,debug:string[]){const s=hysteresisStore.get(pair);if(!s||now>s.lockUntil||s.lastSignalType!==type||s.lastSignalDirection!==direction)return true;const move=Math.abs(price-s.lastSignalPrice)/Math.max(s.lastSignalPrice,1);if(move< HYSTERESIS_BAND){debug.push("[STATE] hysteresis lock | "+type+" | move "+(move*100).toFixed(2)+"% < 0.50%");return false;}return true;}
 type TrendlineApproachClass="BREAK_ATTEMPT"|"REJECTION"|"NEUTRAL";
 
 function classifyTrendlineApproach(c:Candle[],line:number,slope:number,k:number,prevK:number){
@@ -161,7 +161,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   else if(t.direction==="LONG"&&near&&approach.classification==="REJECTION"){type="ENTRY_1";signalDirection="SHORT";tacticalRejection=true;}
   if(!type){debug.push("[SIGNAL] none");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
   if(type==="ENTRY_1"){const veto=exhaustion(signalDirection,st.k,r,dist);if(veto){debug.push("[EXHAUST] "+veto);debug.push("[SIGNAL] none — ENTRY_1 exhaustion veto");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}debug.push("[EXHAUST] ENTRY_1 clear");}else debug.push("[EXHAUST] ENTRY_2 bypassed — exhaustion is not an ENTRY_2 veto");
-  if(!hystOK(pair,type,price,now,debug)){debug.push("[SIGNAL] suppressed by hysteresis");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
+  if(!hystOK(pair,type,signalDirection,price,now,debug)){debug.push("[SIGNAL] suppressed by hysteresis");debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
   const lows=closed.slice(-20).map(x=>x.low),highs=closed.slice(-20).map(x=>x.high);let stop:number,target:number;
   if(type==="ENTRY_1"&&tacticalRejection){
     const rejectionHigh=Math.max(...closed.slice(-6).map(x=>x.high));
@@ -178,7 +178,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const risk=signalDirection==="LONG"?price-stop:stop-price,reward=signalDirection==="LONG"?target-price:price-target,rr=risk>0?reward/risk:0;
   if(rr<MIN_RR){debug.push("[SIGNAL] "+type+" rejected — realized RR "+rr.toFixed(2)+" < "+MIN_RR);debug.push("[ALERT] none");return{market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug};}
   const signal:Signal={id:pair+"_"+type+"_"+now,pair,direction:signalDirection,type:type,scale:type,entry:round(price),stop:round(stop),target:round(target),rr:round(rr,2),adx:round(a,1),rsi:round(r,1),stochK:st.k,stochD:st.d,expectedMove:round(Math.abs(target-price)/Math.max(price,1)*100,1),reason:tacticalRejection?"SHORT ENTRY_1 tactical rejection at descending resistance | "+ema513.label+" | Stoch K "+st.k+"/"+st.d:(type==="ENTRY_1"?t.direction+" ENTRY_1 early 4H break attempt | "+ema513.label+" | Stoch K"+st.k:t.direction+" ENTRY_2 confirmed transition + 4H break | "+ema513.label+" | Stoch "+st.k+"/"+st.d),timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:signalDirection+" | 1D "+t.strength,location:type==="ENTRY_1"?(tacticalRejection?"TRENDLINE_REJECTION":"NEAR_BREAK_LINE"):"BREAK_LINE_CONFIRMED",trigger:type==="ENTRY_1"?(tacticalRejection?"4H_TRENDLINE_REJECTION":"4H_EARLY_TRANSITION"):"4H_CLOSED_BREAK_CONFIRMED_TRANSITION",context:{ema8_1d:round(t.ema8),ema21_1d:round(t.ema21),trendlinePrice:round(tlPrice),ema5_4h:round(ema513.ema5,4),ema13_4h:round(ema513.ema13,4),emaStage4h:ema513.stage,emaLabel4h:ema513.label,trendlineApproach:{classification:approach.classification,stochDirection:approach.stochDirection,rejectionCandles:approach.rejectionCandles,closeBackInside:approach.closeBackInside,lastTouched:approach.lastTouched,tacticalRejection}}};
-  setHysteresis(pair,type,price,now);debug.push("[SIGNAL] "+signal.type+" "+type+" "+signal.direction+" | entry "+signal.entry+" | SL "+signal.stop+" | TP "+signal.target+" | RR "+signal.rr);debug.push(tacticalRejection?"[ALERT] SURFACE — ENTRY_1 tactical rejection SHORT":"[ALERT] SURFACE — "+(type==="ENTRY_2"?"ENTRY_2 confirmed transition + breakout":"ENTRY_1 early transition"));
+  setHysteresis(pair,type,signalDirection,price,now);debug.push("[SIGNAL] "+signal.type+" "+type+" "+signal.direction+" | entry "+signal.entry+" | SL "+signal.stop+" | TP "+signal.target+" | RR "+signal.rr);debug.push(tacticalRejection?"[ALERT] SURFACE — ENTRY_1 tactical rejection SHORT":"[ALERT] SURFACE — "+(type==="ENTRY_2"?"ENTRY_2 confirmed transition + breakout":"ENTRY_1 early transition"));
   return{signal,signals:[signal],market:market(pair,price,t,tlPrice,st.k,st.d,r,a,e8,e21,now),debug,breakout:type==="ENTRY_2"?{direction:t.direction,price:round(last.close),timestamp:last.timestamp,candleIndex:closed.length-1}:undefined};
 }
 
