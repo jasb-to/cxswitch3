@@ -100,63 +100,63 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// Exchange position sync is optional. When it is unavailable, CXSwitch must
-// never interpret an empty response as "the user has no position".
-export function isExchangeSyncConfigured(): boolean {
-  return Boolean(process.env.KRAKEN_API_KEY && process.env.KRAKEN_API_SECRET);
-}
+// Kraken Futures private API
+const KRAKEN_FUTURES_URL = "https://futures.kraken.com/derivatives/api/v3";
 
-function getKrakenSignature(path: string, nonce: string, body: string, secret: string): string {
+function futuresAuthent(endpointPath:string, postData:string, nonce:string, secret:string):string {
   const crypto = require("crypto");
-  const message = nonce + body;
-  const hash = crypto.createHash("sha256").update(message).digest();
-  const hmac = crypto.createHmac("sha512", Buffer.from(secret, "base64"));
-  hmac.update(path + hash);
-  return hmac.digest("base64");
+  const encoded = postData;
+  const sha = crypto.createHash("sha256").update(encoded + nonce + endpointPath).digest();
+  return crypto.createHmac("sha512", Buffer.from(secret, "base64")).update(sha).digest("base64");
 }
 
-export async function getExchangePositions(): Promise<{ symbol: string; side: string; size: number }[]> {
-  const apiKey = process.env.KRAKEN_API_KEY;
-  const apiSecret = process.env.KRAKEN_API_SECRET;
-
-  if (!apiKey || !apiSecret) {
-    console.log("[KRAKEN] No API credentials, position sync unavailable");
-    return [];
-  }
-
-  const path = "/0/private/OpenPositions";
-  const nonce = String(Date.now());
-  const body = new URLSearchParams({ nonce }).toString();
-
-  const res = await rateFetch(`${KRAKEN_API_URL}${path}`, {
-    method: "POST",
-    headers: {
-      "API-Key": apiKey,
-      "API-Sign": getKrakenSignature(path, nonce, body, apiSecret),
-      "Content-Type": "application/x-www-form-urlencoded",
+async function futuresPrivateGet(path:string):Promise<any> {
+  const apiKey=process.env.KRAKEN_FUTURES_API_KEY;
+  const secret=process.env.KRAKEN_FUTURES_API_SECRET;
+  if(!apiKey||!secret) throw new Error("Kraken Futures API credentials are not configured");
+  const nonce=String(Date.now());
+  const endpointPath=path.replace("/derivatives","");
+  const postData="";
+  const res=await rateFetch(KRAKEN_FUTURES_URL+path,{
+    method:"GET",
+    headers:{
+      "APIKey":apiKey,
+      "Authent":futuresAuthent(endpointPath,postData,nonce,secret),
+      "Nonce":nonce,
+      "Accept":"application/json",
     },
-    body,
   });
+  if(!res.ok) throw new Error(`Kraken Futures HTTP ${res.status}`);
+  const data=await res.json();
+  if(data?.result==="error"||data?.error) throw new Error(`Kraken Futures error: ${data.error||JSON.stringify(data)}`);
+  return data;
+}
 
-  if (!res.ok) throw new Error(`Kraken OpenPositions HTTP ${res.status}`);
+export function isExchangeSyncConfigured():boolean {
+  return Boolean(process.env.KRAKEN_FUTURES_API_KEY && process.env.KRAKEN_FUTURES_API_SECRET);
+}
 
-  const data = await res.json();
-  if (data.error?.length > 0) {
-    throw new Error(`Kraken OpenPositions error: ${data.error.join(", ")}`);
+export interface FuturesPosition {
+  symbol:string;
+  side:"LONG"|"SHORT";
+  size:number;
+  entryPrice:number;
+}
+
+export async function getFuturesPositions():Promise<FuturesPosition[]> {
+  const data=await futuresPrivateGet("/openpositions");
+  if(!Array.isArray(data?.openPositions)) {
+    throw new Error("Kraken Futures response missing openPositions array");
   }
+  return data.openPositions.map((p:any)=>({
+    symbol:String(p.symbol||"").toUpperCase(),
+    side:String(p.side||"").toLowerCase()==="long"?"LONG":"SHORT",
+    size:Number(p.size||0),
+    entryPrice:Number(p.price||0),
+  })).filter((p:FuturesPosition)=>p.symbol&&Number.isFinite(p.size)&&p.size>0);
+}
 
-  const positions = data.result || {};
-  const result: { symbol: string; side: string; size: number }[] = [];
-
-  for (const [, pos] of Object.entries(positions)) {
-    const p = pos as any;
-    result.push({
-      symbol: p.pair || "",
-      side: p.type === "buy" ? "LONG" : p.type === "sell" ? "SHORT" : p.type?.toUpperCase() || "",
-      size: parseFloat(p.vol || "0"),
-    });
-  }
-
-  console.log(`[KRAKEN] Found ${result.length} open positions`);
-  return result;
+// Compatibility name retained for callers during the migration; it now reads Futures, never Spot.
+export async function getExchangePositions():Promise<FuturesPosition[]> {
+  return getFuturesPositions();
 }
