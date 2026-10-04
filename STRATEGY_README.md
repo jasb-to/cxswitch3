@@ -38,7 +38,11 @@ Order is: stop hit -> TP2 -> TP1 scale-out/breakeven -> 4H EMA reversal -> 1D EM
 
 ## Jarvis State Narration
 
-Each cron cycle emits one greppable `[JARVIS STATE]` line per pair with 1D/4H direction, StochRSI, zone distance, missing gates, the next actionable condition, and a QUIET/WATCHING/NEAR/BLOCKED/FIRED verdict.
+Each cron cycle emits one greppable `[JARVIS STATE]` line per pair as a calm, plain-English sentence. The verdict and gate logic are unchanged; only the wording is human-readable.
+
+Examples:
+- `[JARVIS STATE] ETH — Watching. 1D bullish, 4H has turned up. Price is at the zone, just above the 4H EMA21. Stoch is at 50 and needs to pull back below 40 before a long can fire. Not yet.`
+- `[JARVIS STATE] BTC — Quiet. 1D bullish, 4H is bullish. Price is well away from the support zone. Waiting for a pullback toward support before considering an entry.`
 
 ## Compatibility
 
