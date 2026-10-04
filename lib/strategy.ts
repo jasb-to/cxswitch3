@@ -72,6 +72,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const entryType=Math.abs(p-trendlinePrice)/Math.max(p,EPS)*100<=0.3?"MARKET":"LIMIT";
   const entryBase=entryType==="MARKET"?p:trendlinePrice;
+  debug.push(`[ENTRY] ${entryType} | anchor ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
   const stop=d.direction==="LONG"?trendlinePrice-.25*a:trendlinePrice+.25*a;
   const tp1=d.direction==="LONG"?entryBase*1.05:entryBase*.95;
   const tp2=d.direction==="LONG"?entryBase*1.10:entryBase*.90;
@@ -82,7 +83,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
   }
 
-  const s:Signal={id:`${pair}_${signalType}_${now}`,pair,direction:d.direction,type:signalType,entry:r(entryBase),entryType,stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,reason:`${d.direction} ${signalType} + ${trendlineType} location + 4H Stoch`,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,structuralAnchor:r(trendlinePrice),ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}};
+  const s:Signal={id:`${pair}_${signalType}_${now}`,pair,direction:d.direction,type:signalType,entry:r(entryBase),entryType,stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,reason:`${d.direction} ${signalType} + ${trendlineType} location + 4H Stoch`,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,entryAnchor:"4H trendline",structuralAnchor:r(trendlinePrice),ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}};
   const [verdict,reason]=jarvis(s,d,e8,e21);
   debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
   debug.push(`[JARVIS] ${verdict} | ${reason}`);
