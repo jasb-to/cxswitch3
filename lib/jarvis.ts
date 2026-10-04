@@ -149,16 +149,23 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const oneD=directionFromDaily(market?.dailyDirection);
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   if(!c.length)return "[JARVIS STATE] "+pair+" — Status unavailable.";
-  if(oneD==="NEUTRAL")return "[JARVIS STATE] "+pair+" — Quiet. 1D EMA8/21 spread is under 0.5%. Waiting for the daily trend to establish itself.";
-  const dir=oneD==="BULL"?"LONG":"SHORT",p=Number(market?.price||c.at(-1)?.close||0),q=c.map(x=>x.close),st=stochState(q),tr=swingsState(c,dir==="SHORT").slice(-5);
-  let slope=0,trendlinePrice=0;
-  if(tr.length>=2){const n=tr.length,sx=tr.reduce((z,x)=>z+x.index,0),sy=tr.reduce((z,x)=>z+x.price,0),sxy=tr.reduce((z,x)=>z+x.index*x.price,0),sx2=tr.reduce((z,x)=>z+x.index*x.index,0),den=n*sx2-sx*sx;if(den){slope=(n*sxy-sx*sy)/den;trendlinePrice=slope*(c.length-1)+(sy-slope*sx)/n;}}
-  const valid=tr.length>=2&&((dir==="LONG"&&slope>0)||(dir==="SHORT"&&slope<0)),distancePct=valid?Math.abs(p-trendlinePrice)/Math.max(p,1e-12)*100:Infinity,trendText=dir==="LONG"?"ascending support":"descending resistance";
-  if(signal)return "[JARVIS STATE] "+pair+" — Fired. "+signal.direction+" "+signal.type+" "+signal.entryType+" at "+signal.entry.toFixed(2)+". 4H Stoch at "+signal.stochK.toFixed(1)+". Setup: 1D "+(dir==="LONG"?"bullish":"bearish")+", price at "+trendText+".";
-  if(!valid)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+". Waiting for a validated 4H "+trendText+" and a pullback to the line.";
-  if(distancePct>1.2)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line.";
-  if(dir==="LONG"&&st.k<20)return "[JARVIS STATE] "+pair+" — Watching. 1D bullish, 4H ascending support at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% above the line. 4H Stoch is at "+st.k.toFixed(0)+" and the pullback trigger is active.";
-  if(dir==="SHORT"&&st.k>80)return "[JARVIS STATE] "+pair+" — Watching. 1D bearish, 4H descending resistance at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. 4H Stoch is at "+st.k.toFixed(0)+" and the pullback trigger is active.";
-  if((dir==="LONG"&&st.k>st.d&&st.k>=20)||(dir==="SHORT"&&st.k<st.d&&st.k<=80))return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. 4H Stoch is turning in the trade direction for ENTRY_2.";
-  return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. 4H Stoch is at "+st.k.toFixed(0)+" and needs to "+(dir==="LONG"?"fall below 20 for a long entry.":"rise above 80 for a short entry.");
+  if(oneD==="NEUTRAL")return "[JARVIS STATE] "+pair+" — Quiet. 1D EMA8/21 spread is under 0.5%. Waiting for the daily trend to establish itself. Missing: —";
+  const dir=oneD==="BULL"?"LONG":"SHORT",p=Number(market?.price||c.at(-1)?.close||0),q=c.map(x=>x.close),st=stochState(q),trendlineState=getTrendline(pair,c,dir),trendlinePrice=trendlineState?trendlineState.slope*(c.length-1)+trendlineState.intercept:0,valid=!!trendlineState&&((dir==="LONG"&&trendlineState.slope>0)||(dir==="SHORT"&&trendlineState.slope<0)),distancePct=valid?Math.abs(p-trendlinePrice)/Math.max(p,1e-12)*100:Infinity,trendText=dir==="LONG"?"ascending support":"descending resistance";
+  const k=st.k,d=st.d,kText=k.toFixed(1),dText=d.toFixed(1);
+  let stochText:string;
+  if(dir==="LONG"){
+    if(k<20)stochText=`4H Stoch K ${kText} is in the ENTRY_1 pullback zone.`;
+    else if(k>=80)stochText=`4H Stoch K ${kText} is above 80 — no long entry until it pulls back.`;
+    else if(k>d)stochText=`4H Stoch K ${kText} / D ${dText} — ENTRY_2 cross is live.`;
+    else stochText=`4H Stoch K ${kText} / D ${dText} — needs K to cross above D for ENTRY_2.`;
+  }else{
+    if(k>80)stochText=`4H Stoch K ${kText} is in the ENTRY_1 pullback zone.`;
+    else if(k<=20)stochText=`4H Stoch K ${kText} is below 20 — no short entry until it pulls back.`;
+    else if(k<d)stochText=`4H Stoch K ${kText} / D ${dText} — ENTRY_2 cross is live.`;
+    else stochText=`4H Stoch K ${kText} / D ${dText} — needs K to cross below D for ENTRY_2.`;
+  }
+  if(signal)return "[JARVIS STATE] "+pair+" — Fired. "+signal.direction+" "+signal.type+" "+signal.entryType+" at "+signal.entry.toFixed(2)+". 1D "+(dir==="LONG"?"bullish":"bearish")+", price at "+trendText+". "+stochText;
+  if(!valid)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+". Waiting for a validated 4H "+trendText+" and a pullback to the line. "+stochText;
+  if(distancePct>1.2)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line. "+stochText;
+  return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText;
 }
