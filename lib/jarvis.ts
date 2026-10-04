@@ -1,5 +1,6 @@
 // lib/jarvis.ts — deterministic bounded veto layer for the simple directional strategy
 import { Redis } from "./supabase-kv";
+import { getTrendline } from "./strategy";
 import type { Candle, Signal } from "./strategy";
 
 const redis = new Redis();
@@ -148,9 +149,17 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   void candles15m;
   const oneD=directionFromDaily(market?.dailyDirection);
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
-  if(!c.length)return "[JARVIS STATE] "+pair+" — Status unavailable.";
+  if(!c.length)return "[JARVIS STATE] "+pair+" — Status unavailable. Missing: —";
   if(oneD==="NEUTRAL")return "[JARVIS STATE] "+pair+" — Quiet. 1D EMA8/21 spread is under 0.5%. Waiting for the daily trend to establish itself. Missing: —";
-  const dir=oneD==="BULL"?"LONG":"SHORT",p=Number(market?.price||c.at(-1)?.close||0),q=c.map(x=>x.close),st=stochState(q),trendlineState=getTrendline(pair,c,dir),trendlinePrice=trendlineState?trendlineState.slope*(c.length-1)+trendlineState.intercept:0,valid=!!trendlineState&&((dir==="LONG"&&trendlineState.slope>0)||(dir==="SHORT"&&trendlineState.slope<0)),distancePct=valid?Math.abs(p-trendlinePrice)/Math.max(p,1e-12)*100:Infinity,trendText=dir==="LONG"?"ascending support":"descending resistance";
+  const dir=oneD==="BULL"?"LONG":"SHORT";
+  const p=Number(market?.price||c.at(-1)?.close||0);
+  const q=c.map(x=>x.close);
+  const st=stochState(q);
+  const trendlineState=getTrendline(pair,c,dir);
+  const trendlinePrice=trendlineState?trendlineState.slope*(c.length-1)+trendlineState.intercept:0;
+  const valid=!!trendlineState&&((dir==="LONG"&&trendlineState.slope>0)||(dir==="SHORT"&&trendlineState.slope<0));
+  const distancePct=valid?Math.abs(p-trendlinePrice)/Math.max(p,1e-12)*100:Infinity;
+  const trendText=dir==="LONG"?"ascending support":"descending resistance";
   const k=st.k,d=st.d,kText=k.toFixed(1),dText=d.toFixed(1);
   let stochText:string;
   if(dir==="LONG"){
@@ -164,8 +173,34 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
     else if(k<d)stochText=`4H Stoch K ${kText} / D ${dText} — ENTRY_2 cross is live.`;
     else stochText=`4H Stoch K ${kText} / D ${dText} — needs K to cross below D for ENTRY_2.`;
   }
-  if(signal)return "[JARVIS STATE] "+pair+" — Fired. "+signal.direction+" "+signal.type+" "+signal.entryType+" at "+signal.entry.toFixed(2)+". 1D "+(dir==="LONG"?"bullish":"bearish")+", price at "+trendText+". "+stochText;
-  if(!valid)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+". Waiting for a validated 4H "+trendText+" and a pullback to the line. "+stochText;
-  if(distancePct>1.2)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line. "+stochText;
-  return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText;
+
+  const missing:string[]=[];
+  if(!valid||distancePct>1.2)missing.push("zone");
+  const entry1=dir==="LONG"?k<20:k>80;
+  const entry2=dir==="LONG"?k>d&&k>=20:k<d&&k<=80;
+  if(!entry1&&!entry2){
+    if(dir==="LONG"&&k>=20&&k<=d)missing.push("stoch_cross");
+    else if(dir==="SHORT"&&k<=80&&k>=d)missing.push("stoch_cross");
+    else if(!entry1)missing.push("stoch_extreme");
+  }
+  if(valid){
+    const rsi=Number(market?.rsi),e21=Number(market?.ema21_4h);
+    if(Number.isFinite(rsi)&&Number.isFinite(e21)&&exhaustionState(dir,k,rsi,p,e21))missing.push("exhaustion");
+    const a=atrState(c);
+    if(a>0){
+      const entryBase=Math.abs(p-trendlinePrice)/Math.max(p,1e-12)*100<=0.3?p:trendlinePrice;
+      const stop=dir==="LONG"?trendlinePrice-.5*a:trendlinePrice+.5*a;
+      const risk=dir==="LONG"?entryBase-stop:stop-entryBase;
+      const tp1=dir==="LONG"?entryBase*1.05:entryBase*.95;
+      const rr=(dir==="LONG"?tp1-entryBase:entryBase-tp1)/Math.max(risk,1e-12);
+      if(rr<1.5)missing.push("rr");
+    }
+  }
+  const missingText=missing.length?missing.join(", "):"—";
+  const suffix=` Missing: ${missingText}.`;
+
+  if(signal)return "[JARVIS STATE] "+pair+" — Fired. "+signal.direction+" "+signal.type+" "+signal.entryType+" at "+signal.entry.toFixed(2)+". 1D "+(dir==="LONG"?"bullish":"bearish")+", price at "+trendText+". "+stochText+suffix;
+  if(!valid)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+". Waiting for a validated 4H "+trendText+" and a pullback to the line. "+stochText+suffix;
+  if(distancePct>1.2)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line. "+stochText+suffix;
+  return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText+suffix;
 }
