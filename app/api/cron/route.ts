@@ -262,6 +262,7 @@ export async function GET(request:Request){
   await addActiveSignal(signal);
   active=await getActiveSignals();
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
+ await setMarketData(marketData);
  // Jarvis refresh completes before management.
  try{
    const jarvis=await runJarvis(marketData,await getActiveSignals());
