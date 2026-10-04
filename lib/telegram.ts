@@ -36,7 +36,7 @@ export async function sendAlert(signal:any){
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type}`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,"",
     `Entry: ${formatPrice(entry)}${signal.entryType ? ` · ${signal.entryType}` : ""}`,
-    `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,
+    `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,`Risk: ${signal.context?.stopCalc?.riskPct!=null ? signal.context.stopCalc.riskPct.toFixed(2)+"% ("+(signal.context.stopCalc.marginUsagePct?.toFixed(0)??"-")+"% of margin at 20x)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${signal.context?.stopCalc?.liquidationBufferPct!=null ? signal.context.stopCalc.liquidationBufferPct.toFixed(2)+"%" : "-"}`,signal.context?.stopCalc?.liquidationBufferPct!=null&&signal.context.stopCalc.liquidationBufferPct<1?"⚠️ TIGHT — reduce size":"",
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
     `RR (TP1): ${signal.rr??"-"}`,
