@@ -154,7 +154,6 @@ export async function GET(request:Request){
   const signal=result.signal;
   if(!signal){if(!existing)console.log(`[PAIR] ${pair} | 1D=${snapshot.dailyDirection||"—"} | 4H=${ema513.label} | WAIT`);continue;}
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr}`);
-  if(signal.type!=="ENTRY_1"&&signal.type!=="ENTRY_2"){console.log(`[PAIR] ${pair} — unsupported signal type ${signal.type}; ignored`);continue;}
   if(existing){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);continue;}
   const history=await getSignalHistory();
   if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});continue;}
