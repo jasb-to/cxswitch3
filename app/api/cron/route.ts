@@ -221,10 +221,8 @@ export async function GET(request:Request){
   const existing=active.find(x=>x.pair===pair);
   const result=generateSignal(pair,c1,c4,c15,price);
   const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);stateMarket=snapshot;
-  // Persist the canonical 4H diagnostics alongside the market snapshot so the dashboard
-  // copy card reads the same live values the cron just calculated.
-  snapshot.ema8_4h=snapshot.ema8;
-  snapshot.ema21_4h=snapshot.ema21;
+  // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
+  // non-existent legacy snapshot keys before deriving the coarse 4H direction.
   snapshot.fourH513=ema513;
   const dailyPrice=Number(snapshot.price||price),dailyE8=Number(snapshot.ema8_1d),dailyE21=Number(snapshot.ema21_1d),dailySpread=Math.abs(dailyE8-dailyE21)/Math.max(dailyPrice,1e-12)*100;
   snapshot.dailyDirection=dailySpread<=0.5?"NEUTRAL":dailyE8>dailyE21?"BULL":"BEAR";
