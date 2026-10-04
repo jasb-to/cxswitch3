@@ -16,14 +16,14 @@ function alertValidity(h:any,price:number,now:number,isActivePosition=false){
   // An executed 4H position does not expire because its entry alert is old.
   // TTL only applies to an unexecuted/latest alert; active positions remain live
   // until SL, final target, or the confirmed management lifecycle closes them.
-  const ttl=h.type==="ADD"?4*60*60*1000:24*60*60*1000;
+  const ttl=24*60*60*1000;
   if(!isActivePosition&&now-h.timestamp>ttl)return{state:"STALE" as AlertState,reason:"Alert expired by age"};
   if(h.direction==="LONG"&&price<=h.stop)return{state:"INVALID" as AlertState,reason:"Price is at/below alert SL"};
   if(h.direction==="SHORT"&&price>=h.stop)return{state:"INVALID" as AlertState,reason:"Price is at/above alert SL"};
   const finalTarget=h.tp2;
   if(finalTarget!==undefined&&h.direction==="LONG"&&price>=finalTarget)return{state:"STALE" as AlertState,reason:"Final target reached — original alert has completed"};
   if(finalTarget!==undefined&&h.direction==="SHORT"&&price<=finalTarget)return{state:"STALE" as AlertState,reason:"Final target reached — original alert has completed"};
-  const drift=Math.abs((price-h.entry)/h.entry),limit=h.type==="ADD"?0.04:0.06;
+  const drift=Math.abs((price-h.entry)/h.entry),limit=0.06;
   if(drift>limit)return{state:"STALE" as AlertState,reason:`Price is ${((drift)*100).toFixed(1)}% from alert entry`};
   return{state:"VALID" as AlertState,reason:"Alert remains actionable"};
 }
@@ -40,7 +40,7 @@ function momentumStatus(h:any,m:any,management?:any){
     : {icon:"🔴",label:"EXIT TRADE",detail:"No active position or a confirmed exit condition is present."};
 }
 function managementAdvice(h:any,m:any){
-  if(!h||h.status!=="ACTIVE"||h.type==="ENTRY_0")return null;
+  if(!h||h.status!=="ACTIVE")return null;
   const price=Number(m?.price);
   const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
   if(Number.isFinite(price)&&candles.length){
