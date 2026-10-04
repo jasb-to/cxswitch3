@@ -46,6 +46,9 @@ function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
 }
 
 export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
+  if(signal.signalClass==="REVERSAL" || signal.type==="REVERSAL_SHORT" || signal.type==="REVERSAL_LONG"){
+    return { verdict:"WARN", reason:"counter-trend reversal — reduce size, tighter management" };
+  }
   const oneD = directionFromDaily(snapshot?.dailyDirection);
   if(oneD === "BULL" && signal.direction === "SHORT") {
     return { verdict:"VETO", reason:"SHORT into BULL 1D" };
@@ -80,7 +83,10 @@ function pairState(m:any, active:any): JarvisPairState {
         id:String(active.id||"active"),
         pair:String(active.pair||m?.pair||"?"),
         direction:active.direction,
-        type:active.type==="ENTRY_2"?"ENTRY_2":"ENTRY_1",
+        type:active.type==="REVERSAL_SHORT"?"REVERSAL_SHORT":active.type==="REVERSAL_LONG"?"REVERSAL_LONG":active.type==="ENTRY_2"?"ENTRY_2":"ENTRY_1",
+        entryType:active.entryType==="LIMIT"?"LIMIT":"MARKET",
+        signalClass:active.signalClass==="REVERSAL"?"REVERSAL":"TREND",
+        sizeMultiplier:active.sizeMultiplier===0.5?0.5:1,
         entry:Number(active.entry||0),
         stop:Number(active.stop||0),
         tp1:Number(active.tp1||0),
