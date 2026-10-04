@@ -78,7 +78,7 @@ function pairState(m:any, active:any): JarvisPairState {
         id:String(active.id||"active"),
         pair:String(active.pair||m?.pair||"?"),
         direction:active.direction,
-        type:"ENTRY",
+        type:active.type==="ENTRY_2"?"ENTRY_2":"ENTRY_1",
         entry:Number(active.entry||0),
         stop:Number(active.stop||0),
         tp1:Number(active.tp1||0),
@@ -145,72 +145,20 @@ function stochState(a:number[]){const rs:number[]=[];if(a.length<=14)return{k:50
 function exhaustionState(dir:"LONG"|"SHORT",k:number,rsi:number,p:number,e21:number){if(dir==="LONG"&&k>=95)return"K "+roundState(k)+" > 95";if(dir==="SHORT"&&k<=5)return"K "+roundState(k)+" < 5";if(dir==="LONG"&&rsi>=78)return"RSI "+roundState(rsi)+" > 78";if(dir==="SHORT"&&rsi<=22)return"RSI "+roundState(rsi)+" < 22";if(dir==="LONG"&&p>e21*1.03)return"price >3% above EMA21";if(dir==="SHORT"&&p<e21*.97)return"price >3% below EMA21";return null}
 
 export function narratePairState(pair:string,market:any,candles4h:Candle[],signal:Signal|undefined,candles15m:Candle[]=[]):string{
+  void candles15m;
   const oneD=directionFromDaily(market?.dailyDirection);
-  const fourHLabel=String(market?.fourH513?.label||"—");
-  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),c15=[...candles15m].sort((a,b)=>a.timestamp-b.timestamp);
-  if(!c.length || !c15.length) return "[JARVIS STATE] "+pair+" — Status unavailable.";
-  if(oneD==="NEUTRAL")return "[JARVIS STATE] "+pair+" — Quiet. The daily trend has no clear direction because the 8/21 EMA spread is under 0.5%. Waiting for the daily trend to establish itself. Nothing to do yet.";
-  const dir=oneD==="BULL"?"LONG":"SHORT",p=Number(market?.price||c.at(-1)?.close||0);
-  const q=c.map(x=>x.close),q15=c15.map(x=>x.close),e8=emaState(q,8).at(-1)??0,e21=emaState(q,21).at(-1)??0,a=atrState(c),st=stochState(q),st15=stochState(q15),d=market?.stochK!=null?Number(market.stochK):st.k,dd=market?.stochD!=null?Number(market.stochD):st.d;
-  const zone=zoneState(c,dir,p,a,e21),distAtr=zone&&a?zone.distance/a:Infinity,zoneStateName=distAtr<=1?"in zone":distAtr<=2?"approaching zone":"far from zone";
-  const dCandles=dailyState(c),de8=emaState(dCandles.map(x=>x.close),8).at(-1)??0,de21=emaState(dCandles.map(x=>x.close),21).at(-1)??0,dailySpread=Math.abs(de8-de21)/Math.max(p,1e-12)*100;
-  const directionPass=oneD!=="NEUTRAL",zonePass=!!zone&&distAtr<=1.5;
-  const fired=!!signal;
-  const trigger=dir==="LONG"?st15.pk<=st15.pd&&st15.k>st15.d&&st15.k<20:st15.pk>=st15.pd&&st15.k<st15.d&&st15.k>80;
-  const wrongSide=dir==="LONG"?st15.k>=20&&st15.k>st15.d:st15.k<=80&&st15.k<st15.d;
-  const ex4=exhaustionState(dir,st.k,Number(market?.rsi??50),p,e21),ex15=dir==="LONG"?(st15.k>=95?"K "+roundState(st15.k)+" > 95":null):(st15.k<=5?"K "+roundState(st15.k)+" < 5":null),ex=ex4??ex15;
-  let rrEligible=false;
-  if(signal)rrEligible=signal.rr>=1.5;
-  else if(zone){const sw=swingsState(c,dir==="SHORT"),structural=sw.at(-1)?.price??zone.price,stop=dir==="LONG"?structural-.25*a:structural+.25*a,entry=distAtr<=0.3?p:zone.price,tp1=dir==="LONG"?entry*1.05:entry*.95,risk=dir==="LONG"?entry-stop:stop-entry;rrEligible=risk>0&&((dir==="LONG"?tp1-entry:entry-tp1)/risk)>=1.5}
-  const missing:string[]=[];
-  if(!directionPass)missing.push("direction");
-  if(!zonePass)missing.push("zone");
-  if(!trigger)missing.push(wrongSide?"trigger_side":"trigger");
-  if(ex)missing.push("exhaustion ("+ex+")");
-  if(!rrEligible)missing.push("rr");
-  let verdict:"QUIET"|"WATCHING"|"NEAR"|"BLOCKED"|"FIRED"="QUIET";
-  if(fired)verdict="FIRED";else if(ex||(!rrEligible&&zonePass&&trigger))verdict="BLOCKED";else if(directionPass&&zonePass&&trigger&&!ex&&rrEligible)verdict="NEAR";else if(directionPass&&zoneStateName!=="far from zone")verdict="WATCHING";
-  let watching="—";const first=missing[0];
-  if(first==="direction")watching="1D spread > 0.5% (currently "+dailySpread.toFixed(1)+"%)";
-  else if(first==="zone")watching=zone?"pullback to "+roundState(zone.price)+" ("+zone.type+")":"price to a valid 4H zone within 2 ATR";
-  else if(first==="trigger")watching=dir==="LONG"?"15M Stoch K to cross above D and stay < 20":"15M Stoch K to cross below D and stay > 80";
-  else if(first==="trigger_side")watching=dir==="LONG"?"15M Stoch K below 20 (currently "+roundState(st15.k)+")":"15M Stoch K above 80 (currently "+roundState(st15.k)+")";
-  else if(first?.startsWith("exhaustion"))watching="exhaustion clear (currently K "+roundState(st.k)+")";
-  else if(first==="rr")watching="4H setup stop to improve TP1 RR above 1.5";
-  const zoneText=zone
-    ? (zoneStateName==="in zone"?"Price is at the zone":zoneStateName==="approaching zone"?"Price is approaching the zone":"Price is well away from the zone")+
-      (zone.type==="EMA21"?(p>=zone.price?", just above the 4H EMA21":", just below the 4H EMA21"):zone.type==="swing low"?", near the swing-low support":zone.type==="swing high"?", near the swing-high resistance":"")+
-      (zoneStateName==="far from zone"?", about "+roundState(Math.abs(p-zone.price)/Math.max(p,1e-12)*100,1)+"% away":"")
-    : "Price is away from a valid 4H support or resistance zone";
-  const fourHText=oneD==="BULL"
-    ? (fourHLabel.includes("CROSS")?"4H has crossed up":fourHLabel.includes("TURNING")?"4H is turning up":fourHLabel.includes("LOW")?"4H has turned up":"4H is bullish")
-    : (fourHLabel.includes("CROSS")?"4H has crossed down":fourHLabel.includes("TURNING")?"4H is turning down":fourHLabel.includes("LOW")?"4H has turned down":"4H is bearish");
-  const directionText="1D "+(oneD==="BULL"?"bullish":"bearish")+", "+fourHText+".";
-  const stochText=()=>{
-    const value=Math.round(st15.k);
-    if(ex)return "Stoch is at "+value+" and momentum is stretched beyond the entry limit.";
-    if(first==="trigger")return dir==="LONG"
-      ?"Stoch is at "+value+" on the 15M and needs to cross up while still below 20."
-      :"Stoch is at "+value+" on the 15M and needs to cross down while still above 80.";
-    if(first==="trigger_side")return dir==="LONG"
-      ?"Stoch is at "+value+" on the 15M and needs to pull back below 20 before a long can fire."
-      :"Stoch is at "+value+" on the 15M and needs to rise above 80 before a short can fire.";
-    if(first==="rr")return "The setup is visible, but the risk-reward is too tight for the required 1.5 minimum.";
-    if(first==="zone")return "Waiting for price to return to a valid 4H support or resistance zone.";
-    return "The entry conditions are aligned.";
-  };
-  const opening=verdict==="FIRED"?"Fired.":verdict==="BLOCKED"?"Blocked.":verdict==="NEAR"?"Near.":verdict==="WATCHING"?"Watching.":"Quiet.";
-  let body="";
-  if(verdict==="FIRED"&&signal){
-    body=" "+signal.direction+" "+signal.entryType+" at "+signal.entry.toFixed(2)+", stop "+signal.stop.toFixed(2)+", TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+". Setup: "+directionText+" 4H zone at "+(signal.context?.zonePrice??signal.entry).toFixed(2)+" ("+String(signal.context?.zone||"zone").toLowerCase()+"). "+(signal.direction==="LONG"?"Stoch crossed up.":"Stoch crossed down.");
-  }else if(verdict==="BLOCKED"){
-    body=" "+directionText+" "+zoneText+". "+stochText()+" No entry while this condition blocks the setup.";
-  }else if(verdict==="NEAR"){
-    body=" "+directionText+" "+zoneText+". "+stochText()+" The setup is close; wait for the confirming 4H close.";
-  }else if(verdict==="WATCHING"){
-    body=" "+directionText+" "+zoneText+". "+stochText()+" "+(zone&&distAtr>0.3&&distAtr<=1.5?"A limit order at "+roundState(zone.price)+" would be the entry.":"Not yet.");
-  }else{
-    body=" "+directionText+" "+zoneText+". "+stochText()+" Nothing to do until the next condition is met.";
-  }
-  return "[JARVIS STATE] "+pair+" — "+opening+body;
+  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
+  if(!c.length)return "[JARVIS STATE] "+pair+" — Status unavailable.";
+  if(oneD==="NEUTRAL")return "[JARVIS STATE] "+pair+" — Quiet. 1D EMA8/21 spread is under 0.5%. Waiting for the daily trend to establish itself.";
+  const dir=oneD==="BULL"?"LONG":"SHORT",p=Number(market?.price||c.at(-1)?.close||0),q=c.map(x=>x.close),st=stochState(q),tr=swingsState(c,dir==="SHORT").slice(-5);
+  let slope=0,trendlinePrice=0;
+  if(tr.length>=2){const n=tr.length,sx=tr.reduce((z,x)=>z+x.index,0),sy=tr.reduce((z,x)=>z+x.price,0),sxy=tr.reduce((z,x)=>z+x.index*x.price,0),sx2=tr.reduce((z,x)=>z+x.index*x.index,0),den=n*sx2-sx*sx;if(den){slope=(n*sxy-sx*sy)/den;trendlinePrice=slope*(c.length-1)+(sy-slope*sx)/n;}}
+  const valid=tr.length>=2&&((dir==="LONG"&&slope>0)||(dir==="SHORT"&&slope<0)),distancePct=valid?Math.abs(p-trendlinePrice)/Math.max(p,1e-12)*100:Infinity,trendText=dir==="LONG"?"ascending support":"descending resistance";
+  if(signal)return "[JARVIS STATE] "+pair+" — Fired. "+signal.direction+" "+signal.type+" "+signal.entryType+" at "+signal.entry.toFixed(2)+". 4H Stoch at "+signal.stochK.toFixed(1)+". Setup: 1D "+(dir==="LONG"?"bullish":"bearish")+", price at "+trendText+".";
+  if(!valid)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+". Waiting for a validated 4H "+trendText+" and a pullback to the line.";
+  if(distancePct>1.2)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line.";
+  if(dir==="LONG"&&st.k<20)return "[JARVIS STATE] "+pair+" — Watching. 1D bullish, 4H ascending support at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% above the line. 4H Stoch is at "+st.k.toFixed(0)+" and the pullback trigger is active.";
+  if(dir==="SHORT"&&st.k>80)return "[JARVIS STATE] "+pair+" — Watching. 1D bearish, 4H descending resistance at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. 4H Stoch is at "+st.k.toFixed(0)+" and the pullback trigger is active.";
+  if((dir==="LONG"&&st.k>st.d&&st.k>=20)||(dir==="SHORT"&&st.k<st.d&&st.k<=80))return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. 4H Stoch is turning in the trade direction for ENTRY_2.";
+  return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. 4H Stoch is at "+st.k.toFixed(0)+" and needs to "+(dir==="LONG"?"fall below 20 for a long entry.":"rise above 80 for a short entry.");
 }
