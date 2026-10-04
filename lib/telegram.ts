@@ -16,57 +16,38 @@ export async function sendAlert(signal:any){
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
 
   const type=signal.signalType||signal.state;
-  if(type!=="ENTRY_1"&&type!=="ENTRY_2"&&type!=="ENTRY"){
-    throw new Error("Unsupported alert type: "+String(type));
-  }
+  if(type!=="ENTRY") throw new Error("Unsupported alert type: "+String(type));
 
-  const emoji=signal.signalEmoji||(type==="ENTRY_1"?"🟢":type==="ENTRY_2"?"🟠":"📊");
-  const labels:Record<string,string>={ENTRY_1:"ENTRY ①",ENTRY_2:"ENTRY ②",ENTRY:"ENTRY"};
-  const label=labels[type]||type;
+  const emoji=signal.signalEmoji||"📊";
   const dir=signal.bias==="LONG"?"📈":"📉";
-  const context=signal.context||{};
-  const approach=context.trendlineApproach;
-  const displayTarget=signal.target??signal.takeProfit??signal.takeProfit2;
   const entry=Number(signal.price??signal.entry);
-  const expectedMove=Number.isFinite(entry)&&Number.isFinite(Number(displayTarget))&&entry!==0
-    ? Math.round((Math.abs(Number(displayTarget)-entry)/Math.abs(entry))*1000)/10
+  const tp1=Number(signal.takeProfit1??signal.tp1);
+  const tp2=Number(signal.takeProfit2??signal.tp2);
+  const expectedMove=Number.isFinite(entry)&&Number.isFinite(tp2)&&entry!==0
+    ? Math.round((Math.abs(tp2-entry)/Math.abs(entry))*1000)/10
     : signal.expectedMove??"-";
 
   const jarvis=signal.jarvis;
   const jarvisLine=jarvis?.verdict
-    ? `JARVIS: ${jarvis.verdict} · ${jarvis.summary||""}`
-    : "";
-
-  const setupLine=signal.trigger
-    ? `Setup: ${signal.trigger}`
-    : "";
-  const approachLine=approach?.classification
-    ? `Trendline: ${approach.classification} · Stoch K ${approach.stochDirection||"—"}${approach.rejectionCandles!==undefined?` · rejection wicks ${approach.rejectionCandles}`:""}`
-    : "";
-  const transitionLine=context.emaLabel4h
-    ? `4H transition: ${context.emaLabel4h}`
-    : "";
-  const market=context.marketHealth;
-  const marketLine=market
-    ? `Market: BTC.D ${market.btcDominance??"—"} · USDT.D ${market.usdtDominance??"—"} · TOTAL ${market.totalMarketCapChange24h!=null?((market.totalMarketCapChange24h>=0?"+":"")+market.totalMarketCapChange24h.toFixed(2)+"%"):"—"} · ALT ${market.altContext||"—"}`
-    : "";
+    ? `JARVIS: ${jarvis.verdict} · ${jarvis.reason||""}`
+    : "JARVIS: —";
 
   const lines=[
-    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}`,"",
+    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ENTRY`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,"",
-    `Price: ${formatPrice(signal.price??signal.entry)}`,"",
+    `Entry: ${formatPrice(entry)}`,
+    `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,
+    `TP1: ${formatPrice(tp1)}`,
+    `TP2: ${formatPrice(tp2)}`,
+    `RR (TP1): ${signal.rr??"-"}`,
     jarvisLine,
-    setupLine,
-    transitionLine,
-    approachLine,
-    marketLine,
-    `4H 5/13: ${signal.fourH513||context.emaLabel4h||"—"}`,"",
-    `SL: ${formatPrice(signal.stopLoss)}`,
-    `TP: ${formatPrice(displayTarget)}`,
-    `RR: ${signal.rr??"-"}`,"",
     `Expected Move: ${expectedMove}%`,
     signal.reason||""
-  ].filter((line,i,arr)=>line!==""||arr[i-1]!=="").join("\n");
+  ].join("\n");
+
+  if(Number.isFinite(tp1)&&Number.isFinite(tp2)&&tp1===tp2){
+    throw new Error("Telegram alert refused: TP1 and TP2 are identical");
+  }
 
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
   if(!response.ok){
@@ -91,7 +72,6 @@ export async function sendJarvisUpdate(update:{
     `${emoji} JARVIS — ${decision}`,"",
     ...update.changes.map(x=>`${x.pair}: ${x.decision}${x.reason?" — "+x.reason:""}`),
     "",
-    "JARVIS active-trade decision changed; portfolio/momentum diagnostics remain dashboard-only.",
     `Time: ${update.timestamp||new Date().toISOString()}`
   ].join("\n");
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
