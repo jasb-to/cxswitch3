@@ -167,11 +167,13 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   let stochText:string;
   if(dir==="LONG"){
     if(k<20)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_1 pullback zone.`;
+    else if(k>d && k>55)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — cross is too late. Waiting for a pullback.`;
     else if(k>=80)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — above 80, no long until pullback.`;
     else if(k>d)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_2 cross is live.`;
     else stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — needs K to cross above D for ENTRY_2.`;
   }else{
     if(k>80)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_1 pullback zone.`;
+    else if(k<d && k<45)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — cross is too late. Waiting for a pullback.`;
     else if(k<=20)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — below 20, no short until pullback.`;
     else if(k<d)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_2 cross is live.`;
     else stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — needs K to cross below D for ENTRY_2.`;
