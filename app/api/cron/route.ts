@@ -276,6 +276,7 @@ export async function GET(request:Request){
   const dbg=result.debug||[];
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
   if(pair==="BTC"&&gateDebug)console.log(`[GATES] BTC — ${gateDebug.slice(8)}`);
+  dbg.filter(x=>x.startsWith("[SWINGS]")||x.startsWith("[TL]")).forEach(x=>console.log(x));
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
   const signal=result.signal;
