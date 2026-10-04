@@ -184,14 +184,14 @@ export async function GET(request:Request){
      const inRange=rp!==undefined&&(h.direction==="SHORT"?rp<h.stop&&rp>tp2:rp>h.stop&&rp<tp2);
      if(inRange){
        await updateSignalHistoryStatus(h.id,"ACTIVE",undefined,undefined);
-       active.push({...h,status:"ACTIVE",scale:h.type,target:h.tp2??h.target});
+       active.push({...h,status:"ACTIVE",scale:h.type});
        console.log(`[STATE] Recovered legacy tactical ACTIVE position: ${h.pair}_${h.direction}_${h.type} @ ${rp}`);
      }
    }catch(e){console.error(`[STATE] Legacy tactical recovery failed for ${h.pair}`,e);}
  }
  const activeKeys=new Set(active.map((x:any)=>`${x.pair}|${x.direction}`));
  const recoverable=historyAtStart
-   .filter((h:any)=>h.status==="ACTIVE"&&!activeKeys.has(`${h.pair}|${h.direction}`))
+   .filter((h:any)=>h.status==="ACTIVE"&&h.type==="ENTRY"&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
    .reduce((map:any,h:any)=>{
      const key=`${h.pair}|${h.direction}`;
      if(!map.has(key)||h.timestamp>map.get(key).timestamp)map.set(key,h);
@@ -199,7 +199,7 @@ export async function GET(request:Request){
    },new Map<string,any>());
  if(recoverable.size){
    for(const h of recoverable.values()){
-     active.push({...h,status:"ACTIVE",scale:h.type,target:h.tp2??h.target});
+     active.push({...h,status:"ACTIVE",scale:h.type,});
      console.log(`[STATE] Recovered ACTIVE position from history: ${h.pair}_${h.direction}_${h.type}`);
    }
    await setActiveSignals(active);
