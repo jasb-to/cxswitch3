@@ -1,6 +1,6 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
-import { getCandles, krakenPairFormat } from "@/lib/kraken";
+import { getCandles, krakenPairFormat, getFuturesPositions, isExchangeSyncConfigured } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
@@ -67,7 +67,58 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
  return active;
 }
 
-export async function GET(request:Request){
+function pairFromFuturesSymbol(symbol:string):string|undefined{
+  const s=symbol.toUpperCase().replace(/^(PI|PF)_/,"").replace(/[^A-Z0-9]/g,"");
+  const map:Record<string,string>={XBTUSD:"BTC",ETHUSD:"ETH",SOLUSD:"SOL",HYPEUSD:"HYPE",DOGEUSD:"DOGE",LINKUSD:"LINK",AVAXUSD:"AVAX",ZECUSD:"ZEC"};
+  return map[s];
+}
+
+async function reconcileExchangePositions(activeInput:any[]):Promise<any[]>{
+  if(!isExchangeSyncConfigured()){
+    console.log("[SYNC] Kraken Futures credentials not configured; preserving internal state");
+    return activeInput;
+  }
+  try{
+    const exchange=await getFuturesPositions();
+    const next=[...activeInput];
+    const exchangeByKey=new Map(exchange.map(p=>[`${pairFromFuturesSymbol(p.symbol)}|${p.side}`,p]));
+    for(const trade of [...next]){
+      const ex=exchangeByKey.get(`${trade.pair}|${trade.direction}`);
+      if(!ex){
+        await updateSignalHistoryStatus(trade.id,"FAILED","exchange_position_gone",undefined);
+        next.splice(next.indexOf(trade),1);
+        console.log(`[SYNC] ${trade.pair} ${trade.direction} — position gone from exchange`);
+        continue;
+      }
+      if(Math.abs(Number(trade.entry)-ex.entryPrice)>Math.max(0.01,Math.abs(ex.entryPrice)*0.0005)){
+        console.warn(`[SYNC] ${trade.pair} ${trade.direction} — entry mismatch internal=${trade.entry} exchange=${ex.entryPrice}; trusting Kraken`);
+        trade.entry=ex.entryPrice;
+      }
+      if(Number(trade.exchangeSize)!==ex.size){
+        console.warn(`[SYNC] ${trade.pair} ${trade.direction} — size mismatch internal=${trade.exchangeSize??"unknown"} exchange=${ex.size}; trusting Kraken`);
+        trade.exchangeSize=ex.size;
+      }
+      exchangeByKey.delete(`${trade.pair}|${trade.direction}`);
+    }
+    for(const [key,ex] of exchangeByKey){
+      const [pair,direction]=key.split("|") as [string,"LONG"|"SHORT"];
+      if(!pair) continue;
+      const recovered:any={
+        id:`EXCHANGE_RECOVERY_${pair}_${direction}_${Date.now()}`,
+        pair,direction,type:"ENTRY",entry:ex.entryPrice,stop:0,tp1:0,tp2:0,rr:0,
+        timestamp:Date.now(),status:"ACTIVE",version:29,context:{recoveredFromExchange:true},
+        exchangeSize:ex.size,recoveredFromExchange:true
+      };
+      next.push(recovered);
+      console.log(`[SYNC] recovered orphan position ${pair} ${direction} @ ${ex.entryPrice} size=${ex.size}`);
+    }
+    return next;
+  }catch(error){
+    console.error("[SYNC] Kraken Futures reconciliation failed; preserving internal state",error);
+    return activeInput;
+  }
+}
+\nexport async function GET(request:Request){
  const started=Date.now(),url=new URL(request.url),secret=url.searchParams.get("secret"),auth=request.headers.get("authorization");
  if(secret!==process.env.CRON_SECRET&&auth!==`Bearer ${process.env.CRON_SECRET}`)return NextResponse.json({error:"Unauthorized"},{status:401});
  const last=await getLastCronRun();
@@ -75,6 +126,7 @@ export async function GET(request:Request){
  await setLastCronRun(started);
  console.log("========================================");console.log(`[CRON v${CXSWITCH_VERSION}] Started at ${new Date(started).toISOString()}`);
  let active=await getActiveSignals();
+ active=await reconcileExchangePositions(active);
  // Reconcile the persistent position store against ACTIVE history before any
  // management runs. This recovers a live position if the active-state key was
  // lost/reset while its corresponding history entry remained ACTIVE.
