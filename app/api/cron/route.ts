@@ -47,6 +47,25 @@ export async function GET(request:Request){
  // management runs. This recovers a live position if the active-state key was
  // lost/reset while its corresponding history entry remained ACTIVE.
  const historyAtStart=await getSignalHistory();
+ // Recover tactical rejection positions that were incorrectly closed by the
+ // pre-fix 1D reversal rule. Only restore the latest matching position per pair
+ // and only while current price remains between its SL and TP2.
+ const legacyTactical=historyAtStart
+   .filter((h:any)=>h.status==="FAILED"&&h.exitReason==="trend_reversed_unprofitable"&&h.type==="ENTRY_1"&&h.context?.trendlineApproach?.tacticalRejection===true)
+   .reduce((map:any,h:any)=>{if(!map.has(h.pair)||h.timestamp>map.get(h.pair).timestamp)map.set(h.pair,h);return map;},new Map<string,any>());
+ for(const h of legacyTactical.values()){
+   try{
+     const rc=await getCandles(krakenPairFormat(h.pair+"/USD"),240);
+     const rp=rc.at(-1)?.close;
+     const tp2=h.tp2??h.target;
+     const inRange=rp!==undefined&&(h.direction==="SHORT"?rp<h.stop&&rp>tp2:rp>h.stop&&rp<tp2);
+     if(inRange){
+       await updateSignalHistoryStatus(h.id,"ACTIVE",undefined,undefined);
+       active.push({...h,status:"ACTIVE",scale:h.type,target:h.tp2??h.target});
+       console.log(`[STATE] Recovered legacy tactical ACTIVE position: ${h.pair}_${h.direction}_${h.type} @ ${rp}`);
+     }
+   }catch(e){console.error(`[STATE] Legacy tactical recovery failed for ${h.pair}`,e);}
+ }
  const activeKeys=new Set(active.map((x:any)=>`${x.pair}|${x.direction}`));
  const recoverable=historyAtStart
    .filter((h:any)=>h.status==="ACTIVE"&&!activeKeys.has(`${h.pair}|${h.direction}`))
