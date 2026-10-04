@@ -23,15 +23,8 @@ const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=10
 function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&h.exitReason!=="manual_symbol_reset"&&now-h.timestamp<SIGNAL_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<SIGNAL_DEDUP_ENTRY_PCT);}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 function telegramAlertKey(signal:Signal,resetAt?:number):string{
-  const record=signal.context?.breakoutRecord;
-  if(signal.type==="ENTRY_1"||signal.type==="ENTRY_2"){
-    const resetSuffix=resetAt?`:reset:${resetAt}`:"";
-    if(record) return `${signal.pair}:${signal.direction}:${signal.type}:candle:${record.candleIndex}:${record.price}${resetSuffix}`;
-    const candleTs=signal.context?.entry1CandleTimestamp;
-    if(candleTs) return `${signal.pair}:${signal.direction}:${signal.type}:candleTs:${candleTs}${resetSuffix}`;
-    return `${signal.pair}:${signal.direction}:${signal.type}:entry:${signal.entry}${resetSuffix}`;
-  }
-  return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}`;
+  const resetSuffix=resetAt?`:reset:${resetAt}`:"";
+  return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
 async function manageActivePositions(initialActive:any[], marketData:any[], managementByPair:Record<string,any>, alerts:any[]){
@@ -288,21 +281,6 @@ export async function GET(request:Request){
   await addActiveSignal(signal);
   active=await getActiveSignals();
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
- // Dedicated BTC/ETH cycle-runner entry alert. It does not create a normal CX trade.
- const cycleState=await getCycleRunnerState();
- for(const pair of ["BTC","ETH"] as const){
-   const cm=marketData.find((m:any)=>m?.pair===pair)?.cycleRunner;
-   if(!cm?.ready) continue;
-   const existing=cycleState[pair];
-   if(existing?.status==="IN_POSITION") continue;
-   const key=`CYCLE_RUNNER:${pair}:${cm.direction}:${cm.fourHFib?.nearest?.level||"zone"}`;
-   const claimed=await claimTelegramAlert(key);
-   if(claimed){
-     try{
-       await sendAlert({symbol:pair,state:"CYCLE RUNNER ENTRY",price:round(marketData.find((m:any)=>m?.pair===pair)?.price||0),bias:cm.direction,stopLoss:0,takeProfit:0,rr:0,expectedMove:0,adx:0,rsi:0,stochK:cm.oneHStoch?.k||0,stochD:cm.oneHStoch?.d||0,reason:"Weekly direction + 4H major Fib retest + 1H momentum confirmation",trend:`WEEKLY ${cm.weeklyDirection} · 4H ${cm.fourHDirection}`,location:"4H_FIB_RETEST",trigger:"1H_PRECISION_CONFIRM",updatedAt:new Date().toISOString(),signalType:"CYCLE_RUNNER",signalEmoji:"🟣",context:{cycleRunner:cm}});
-     }catch(e){await releaseTelegramAlert(key);console.error("[CYCLE RUNNER] Telegram alert failed",e);}
-   }
- }
  // Jarvis refresh completes before management.
  try{
    const jarvis=await runJarvis(marketData,await getActiveSignals());
