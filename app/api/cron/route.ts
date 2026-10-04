@@ -1,7 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
@@ -96,29 +96,12 @@ export async function GET(request:Request){
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],managementByPair:Record<string,any>={};
  for(const trade of [...active]){try{
   const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
-  // Existing positions may pre-date the 20x liquidation-safe SL fix. Bring them
-  // up to the same protection before evaluating the rest of the hold logic.
-  const safeStop=liquidationSafeStop(trade.entry,trade.direction);
-  const unsafe=(trade.direction==="LONG"&&trade.stop<safeStop)||(trade.direction==="SHORT"&&trade.stop>safeStop);
-  if(unsafe&&((trade.direction==="LONG"&&price>safeStop)||(trade.direction==="SHORT"&&price<safeStop))){
-    console.log(`[RISK] ${trade.pair} ${trade.direction} — legacy SL ${trade.stop} -> liquidation-safe ${safeStop}`);
-    trade.stop=safeStop;
-    await updateHistoryStopMilestone(trade.id,trade.stop);
-  }
   const tp1AlreadyHit=!!trade.tp1HitAt;
   // Evaluate management before persisting a newly-hit TP1 milestone so the first
   // touch can still produce the one-time 50% scale-out + breakeven instruction.
   let hold=shouldHold(toSignalLike(trade),c,price);
   const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);
   if(milestoneTrade)Object.assign(trade,milestoneTrade);
-  // Re-apply liquidation-safe protection after milestone hydration.
-  if((trade.direction==="LONG"&&trade.stop<safeStop)||(trade.direction==="SHORT"&&trade.stop>safeStop)){
-    if((trade.direction==="LONG"&&price>safeStop)||(trade.direction==="SHORT"&&price<safeStop)){
-      console.log("[RISK] "+trade.pair+" "+trade.direction+" — enforcing liquidation-safe SL "+safeStop);
-      trade.stop=safeStop;
-      await updateHistoryStopMilestone(trade.id,trade.stop);
-    }
-  }
   await updateHistoryMilestones(trade.id,price);
   if(typeof hold.shouldHold!=="boolean"){
     console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);
