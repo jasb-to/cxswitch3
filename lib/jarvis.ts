@@ -189,7 +189,7 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const suffix=` Missing: ${missingText}.`;
 
   if(signal){const stopCtx=signal.context?.stopCalc;const riskText=stopCtx?" Stop would be "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk, "+stopCtx.marginUsagePct.toFixed(0)+"% margin at 20x).":"";const reversal=signal.signalClass==="REVERSAL";const classText=reversal?" 50% size. Counter-trend.":"";return "[JARVIS STATE] "+pair+" — Fired. "+signal.direction+" "+signal.type+" "+signal.entryType+" at "+signal.entry.toFixed(2)+". 1D "+(dir==="LONG"?"bullish":"bearish")+", price at "+trendText+". "+stochText+riskText+classText+suffix;}
-  if(!evaluation.zone)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+". Waiting for a validated 4H "+trendText+" and a pullback to the line. "+stochText+suffix;
+  if(!evaluation.zone){const why=evaluation.missing.includes("trendline_invalid")?"4H trendline invalid for the 1D direction — slope sign is wrong.":"Waiting for a validated 4H "+trendText+".";return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+". "+why+" "+stochText+suffix;}
   if(distancePct>1.2)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line. "+stochText+suffix;
   return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText+suffix;
 }
