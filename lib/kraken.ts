@@ -185,13 +185,13 @@ export async function getExchangePositions():Promise<FuturesPosition[]> {
   return getFuturesPositions();
 }
 export async function placeFuturesReduceOnlyMarketOrder(pair:string,direction:"LONG"|"SHORT",size:number):Promise<{orderId?:string;symbol:string;requestedSize:number;remainingSize:number}> {
-  if(!Number.isFinite(size)||size<=0) throw new Error("Invalid Futures order size");
+  if(!Number.isFinite(size)||size<0) throw new Error("Invalid Futures order size");
   const positions=await getFuturesPositions();
   const expectedSide=direction==="LONG"?"LONG":"SHORT";
   const position=positions.find(p=>pairFromFuturesSymbolForOrder(p.symbol)===pair&&p.side===expectedSide);
   if(!position) throw new Error(`No Kraken Futures ${direction} position found for ${pair}`);
   const closeSide=direction==="LONG"?"sell":"buy";
-  const requested=Math.min(size,position.size);
+  const requested=size===0?position.size:Math.min(size,position.size);
   const data=await futuresPrivatePost("/sendorder",{orderType:"mkt",symbol:position.symbol,side:closeSide,size:requested,reduceOnly:true});
   const orderId=data?.sendStatus?.order_id;
   let remaining=position.size;
