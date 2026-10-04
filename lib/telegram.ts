@@ -80,3 +80,24 @@ export async function sendJarvisUpdate(update:{
     throw new Error(`Telegram JARVIS update failed (${response.status}): ${body.slice(0,300)}`);
   }
 }
+
+
+export async function sendManagementAlert(update:{
+  pair:string;
+  direction:"LONG"|"SHORT";
+  kind:"TRAIL"|"1D_REVERSAL"|"4H_REVERSAL";
+  stop?:number;
+}){
+  const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
+  if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
+  const text=update.kind==="TRAIL"
+    ? `CX — ${update.pair} ${update.direction}. Trail stop raised to ${formatPrice(update.stop)}.`
+    : update.kind==="1D_REVERSAL"
+      ? `CX — ${update.pair} ${update.direction}. 1D trend reversed. Exit now.`
+      : `CX — ${update.pair} ${update.direction}. 4H trend reversed. Exit now.`;
+  const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
+  if(!response.ok){
+    const body=await response.text().catch(()=>"");
+    throw new Error(`Telegram management alert failed (${response.status}): ${body.slice(0,300)}`);
+  }
+}
