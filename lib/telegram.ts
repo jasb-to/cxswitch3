@@ -35,7 +35,7 @@ export async function sendAlert(signal:any){
   const lines=[
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ENTRY`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,"",
-    `Entry: ${formatPrice(entry)}`,
+    `Entry: ${formatPrice(entry)}${signal.entryType ? ` · ${signal.entryType}` : ""}`,
     `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
