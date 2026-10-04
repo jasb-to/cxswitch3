@@ -6,7 +6,7 @@ export interface Signal {
   reason:string; timestamp:number; version:number; context?:any;
 }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
-export const CURRENT_SIGNAL_VERSION=30;
+export const CURRENT_SIGNAL_VERSION=31;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
@@ -24,7 +24,71 @@ function line(p:Swing[]){if(p.length<2)return null;const n=p.length,sx=p.reduce(
 function zone(c:Candle[],dir:Direction,p:number,a:number,e21:number){if(!a)return null;const z:{type:string;price:number;distance:number}[]=[];const tr=swings(c,dir==="SHORT").slice(-5),f=line(tr);if(f&&((dir==="LONG"&&f.slope>0)||(dir==="SHORT"&&f.slope<0))){const lp=f.slope*(c.length-1)+f.intercept;z.push({type:dir==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:lp,distance:Math.abs(p-lp)})}z.push({type:"EMA21",price:e21,distance:Math.abs(p-e21)});const s=[...swings(c,dir==="SHORT")].reverse()[0];if(s)z.push({type:dir==="LONG"?"SWING_LOW":"SWING_HIGH",price:s.price,distance:Math.abs(p-s.price)});z.sort((x,y)=>x.distance-y.distance);const q=z[0];return q?{...q,distancePct:q.distance/Math.max(p,EPS)*100}:null}
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 function jarvis(s:Signal,d:ReturnType<typeof dailyTrend>,e8:number,e21:number){if(s.direction!==d.direction)return["VETO","signal direction disagrees with 1D trend"] as const;const four=e8>e21?"LONG":e8<e21?"SHORT":null;if(four&&four!==s.direction)return["WARN","signal agrees with 1D but disagrees with 4H trend"] as const;if(s.direction==="LONG"&&s.stochK>90)return["WARN","4H Stoch is already in the trade-direction exhaustion zone"] as const;if(s.direction==="SHORT"&&s.stochK<10)return["WARN","4H Stoch is already in the trade-direction exhaustion zone"] as const;return["GOOD","all deterministic Jarvis checks passed"] as const}
-export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number):SignalResult{void candles1h;const debug:string[]=[];const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),c15=[...candles15m].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();if(daily(c).length<25){debug.push("[1D] NEUTRAL | fewer than 25 daily candles");debug.push("[ZONE] none in range");debug.push("[TRIGGER] unavailable | fired=false");debug.push("[EXHAUST] clear");debug.push("[SIGNAL] none");debug.push("[JARVIS] not evaluated");debug.push("[ALERT] none");return{debug}}const d=dailyTrend(c),cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c),q15=c15.map(x=>x.close),st15=stoch(q15),a15=atr(c15);debug.push(`[1D] ${d.direction??"NEUTRAL"} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} | spread ${d.spread.toFixed(2)}%`);if(!d.direction){debug.push("[ZONE] none in range");debug.push("[TRIGGER] K/D unavailable | fired=false");debug.push("[EXHAUST] clear");debug.push("[SIGNAL] none");debug.push("[JARVIS] not evaluated");debug.push("[ALERT] none");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug}}const z=zone(c,d.direction,p,a,e21);const zoneDistanceAtr=z&&a?z.distance/a:Infinity;debug.push(z?`[ZONE] ${z.type} @ ${r(z.price)} | distance ${z.distancePct.toFixed(2)}% | ${zoneDistanceAtr.toFixed(2)} ATR`:"[ZONE] none");const fired=d.direction==="LONG"?st15.pk<=st15.pd&&st15.k>st15.d&&st15.k<20:st15.pk>=st15.pd&&st15.k<st15.d&&st15.k>80;debug.push(`[TRIGGER] 15M K ${st15.k.toFixed(1)} / D ${st15.d.toFixed(1)} | fired=${fired}`);if(!z||zoneDistanceAtr>1.5||!fired){debug.push("[EXHAUST] clear");debug.push("[SIGNAL] none");debug.push("[JARVIS] not evaluated");debug.push("[ALERT] none");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug}}const ex4=exhaust(d.direction,st4.k,rv,p,e21,"4H"),ex15=d.direction==="LONG"?(st15.k>=95?`LONG blocked: 15M Stoch K ${r(st15.k,1)} >= 95`:null):(st15.k<=5?`SHORT blocked: 15M Stoch K ${r(st15.k,1)} <= 5`:null),ex=ex4??ex15;debug.push(`[EXHAUST] ${ex??"clear"}`);if(ex){debug.push("[SIGNAL] none — exhaustion veto");debug.push("[JARVIS] not evaluated");debug.push("[ALERT] none");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug}}const swings4=swings(c,d.direction==="SHORT"),structural=swings4.at(-1),structuralPrice=structural?.price??z.price,entryType=z.distance<=0.3*a?"MARKET":"LIMIT",entryBase=entryType==="MARKET"?p:z.price,stop=d.direction==="LONG"?structuralPrice-.25*a:structuralPrice+.25*a,tp1=d.direction==="LONG"?entryBase*1.05:entryBase*.95,tp2=d.direction==="LONG"?entryBase*1.10:entryBase*.90,risk=d.direction==="LONG"?entryBase-stop:stop-entryBase,rr=(d.direction==="LONG"?tp1-entryBase:entryBase-tp1)/Math.max(risk,EPS);if(rr<MIN_RR){debug.push(`[SIGNAL] none — RR(TP1) ${rr.toFixed(2)} < 1.50`);debug.push("[JARVIS] not evaluated");debug.push("[ALERT] none");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug}}const s:Signal={id:`${pair}_ENTRY_${now}`,pair,direction:d.direction,type:"ENTRY",entry:r(entryBase),entryType,stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,expectedMove:5,reason:`${d.direction} 1D direction + ${z.type} location + 15M StochRSI cross`,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{zone:z.type,zonePrice:z.price,zoneDistancePct:z.distancePct,zoneDistanceAtr:zoneDistanceAtr,entryType,structuralAnchor:structuralPrice,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_15m:st15.k,stochD_15m:st15.d}};const [verdict,reason]=jarvis(s,d,e8,e21);debug.push(`[SIGNAL] ${s.direction} ${s.entryType} | entry ${s.entry} | zone ${r(z.price)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);debug.push(`[JARVIS] ${verdict} | ${reason}`);if(verdict==="VETO"){debug.push(`[JARVIS VETO] ${reason}`);debug.push("[ALERT] none");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug}}if(verdict==="WARN")s.reason+=` | JARVIS WARN: ${reason}`;debug.push("[ALERT] SURFACE");return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug}}
+export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number){
+  void candles1h;
+  const debug:string[]=[];
+  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),c15=[...candles15m].sort((a,b)=>a.timestamp-b.timestamp);
+  const p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
+  if(daily(c).length<25){
+    debug.push("[1D] NEUTRAL | fewer than 25 daily candles");
+    debug.push("[ZONE] none in range");
+    debug.push("[TRIGGER] unavailable | fired=false");
+    debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
+    return{debug};
+  }
+  const d=dailyTrend(c),cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c),q15=c15.map(x=>x.close),st15=stoch(q15);
+  debug.push(\`[1D] \${d.direction??"NEUTRAL"} | EMA8 \${r(d.e8)} | EMA21 \${r(d.e21)} | spread \${d.spread.toFixed(2)}%\`);
+  if(!d.direction){
+    debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false"); debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+  }
+
+  const tr=swings(c,d.direction==="SHORT").slice(-5),f=line(tr);
+  const trendlineType=d.direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE";
+  const trendlinePrice=f?f.slope*(c.length-1)+f.intercept:0;
+  const validTrendline=!!f&&((d.direction==="LONG"&&f.slope>0)||(d.direction==="SHORT"&&f.slope<0));
+  const trendlineDistancePct=validTrendline?Math.abs(p-trendlinePrice)/Math.max(p,EPS)*100:Infinity;
+  const zone=validTrendline?{type:trendlineType,price:trendlinePrice,distance:Math.abs(p-trendlinePrice),distancePct:trendlineDistancePct}:null;
+  const zoneDistanceAtr=zone&&a?zone.distance/a:Infinity;
+  debug.push(zone?\`[ZONE] \${zone.type} @ \${r(zone.price)} | distance \${zone.distancePct.toFixed(2)}% | \${zoneDistanceAtr.toFixed(2)} ATR\`:"[ZONE] none | validated 4H trendline unavailable");
+
+  const fired=d.direction==="LONG"?st4.k<20:st4.k>80;
+  debug.push(\`[TRIGGER] 4H Stoch K \${st4.k.toFixed(1)} / D \${st4.d.toFixed(1)} | \${trendlineType} distance \${Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2):"—"}% | fired=\${fired}\`);
+  if(!zone||trendlineDistancePct>1.2||!fired){
+    debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+  }
+
+  const ex4=exhaust(d.direction,st4.k,rv,p,e21,"4H");
+  const ex15=d.direction==="LONG"?(st15.k>=95?\`LONG blocked: 15M Stoch K \${r(st15.k,1)} >= 95\`:null):(st15.k<=5?\`SHORT blocked: 15M Stoch K \${r(st15.k,1)} <= 5\`:null);
+  const ex=ex4??ex15;
+  debug.push(\`[EXHAUST] \${ex??"clear"}\`);
+  if(ex){
+    debug.push("[SIGNAL] none — exhaustion veto"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+  }
+
+  const entryType=Math.abs(p-trendlinePrice)<=0.3*a?"MARKET":"LIMIT";
+  const entryBase=entryType==="MARKET"?p:trendlinePrice;
+  const stop=d.direction==="LONG"?trendlinePrice-.25*a:trendlinePrice+.25*a;
+  const tp1=d.direction==="LONG"?entryBase*1.05:entryBase*.95;
+  const tp2=d.direction==="LONG"?entryBase*1.10:entryBase*.90;
+  const risk=d.direction==="LONG"?entryBase-stop:stop-entryBase;
+  const rr=(d.direction==="LONG"?tp1-entryBase:entryBase-tp1)/Math.max(risk,EPS);
+  if(rr<MIN_RR){
+    debug.push(\`[SIGNAL] none — RR(TP1) \${rr.toFixed(2)} < 1.50\`); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+  }
+
+  const s:Signal={id:\`\${pair}_ENTRY_\${now}\`,pair,direction:d.direction,type:"ENTRY",entry:r(entryBase),entryType,stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,expectedMove:5,reason:\`\${d.direction} 1D direction + \${trendlineType} location + 4H Stoch extreme\`,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,structuralAnchor:r(trendlinePrice),ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d,stochK_15m:st15.k,stochD_15m:st15.d}};
+  const [verdict,reason]=jarvis(s,d,e8,e21);
+  debug.push(\`[SIGNAL] \${s.direction} \${s.entryType} | entry \${s.entry} | trendline \${r(trendlinePrice)} | SL \${s.stop} | TP1 \${s.tp1} | TP2 \${s.tp2} | RR \${s.rr}\`);
+  debug.push(\`[JARVIS] \${verdict} | \${reason}\`);
+  if(verdict==="VETO"){debug.push(\`[JARVIS VETO] \${reason}\`);debug.push("[ALERT] none");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug}}
+  if(verdict==="WARN")s.reason+=\` | JARVIS WARN: \${reason}\`;
+  debug.push("[ALERT] SURFACE");
+  return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+}
 export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
   void now;
   const x=[...c].sort((a,b)=>a.timestamp-b.timestamp);
