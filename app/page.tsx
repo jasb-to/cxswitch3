@@ -34,7 +34,7 @@ function JarvisCard({m,a,j,isActive}:{m?:Market;a?:Alert;j?:JarvisPair;isActive:
  const management=isActive?(m?.positionManagementRecommendation==="EXIT TRADE"||m?.positionManagementState==="EXIT"?"EXIT TRADE":"STAY IN TRADE"):null;
  return <div className={"mt-3 rounded-xl border p-3 "+border}>
   <div className="flex items-center justify-between gap-2"><div className="text-[8px] uppercase tracking-widest text-white/25">JARVIS: {verdict}</div></div>
-  <div className="mt-2 text-[9px] leading-4 text-white/60">{m?.jarvisState??"—"}</div>
+  <div className={`mt-2 text-[9px] leading-4 ${m?.dailyDirection==="BULL"?"text-green-300":m?.dailyDirection==="BEAR"?"text-red-300":"text-white/60"}`}>{m?.jarvisState??"—"}</div>
   {j?.currentAnalysis&&<div className="mt-1 text-[8px] leading-4 text-white/30">{j.currentAnalysis}</div>}
   {management&&<div className="mt-2 text-[8px] uppercase tracking-wider text-white/30">Management: {management}</div>}
  </div>
