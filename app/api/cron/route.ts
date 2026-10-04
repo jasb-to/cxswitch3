@@ -1,6 +1,6 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
-import { getCandles, krakenPairFormat, getFuturesPositions, isExchangeSyncConfigured } from "@/lib/kraken";
+import { getCandles, krakenPairFormat, getFuturesPositions, isExchangeSyncConfigured, placeFuturesReduceOnlyMarketOrder } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
@@ -37,6 +37,10 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
 async function manageActivePositions(initialActive:any[], marketData:any[], managementByPair:Record<string,any>, alerts:any[]){
  let active=initialActive;
  for(const trade of [...active]){try{
+  if(trade.recoveredFromExchange){
+    console.log(`[MANAGE] ${trade.pair} ${trade.direction} — recovered exchange position; awaiting matching internal signal before strategy management`);
+    continue;
+  }
   const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
   const tp1AlreadyHit=!!trade.tp1HitAt;
   // Evaluate management before persisting a newly-hit TP1 milestone so the first
@@ -54,7 +58,20 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
     hold={shouldHold:true,reason:"active_alert_stale"};
   }
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | Management ${hold.managementState} | ${hold.recommendation} | ${hold.reason}`);
-  if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp2_hit"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
+  if(!hold.shouldHold){
+    try{
+      const execution=await placeFuturesReduceOnlyMarketOrder(trade.pair,trade.direction,Number(trade.exchangeSize||0));
+      console.log(`[EXIT] ${trade.pair} ${trade.direction} — Kraken Futures close confirmed ${execution.requestedSize} remaining=${execution.remainingSize} @ ${price}`);
+    }catch(error){
+      console.error(`[EXIT] ${trade.pair} ${trade.direction} — Kraken Futures close failed; keeping position active`,error);
+      alerts.push({pair:trade.pair,status:"exit_failed",reason:hold.reason,price,error:String(error)});
+      continue;
+    }
+    await updateSignalHistoryStatus(trade.id,hold.reason==="tp2_hit"?"TP_HIT":"FAILED",hold.reason,price);
+    active=active.filter(x=>x.id!==trade.id);
+    alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});
+    continue;
+  }
   if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;await updateHistoryStopMilestone(trade.id,trade.stop);}
   // TP1 scale-out is a one-time lifecycle event. shouldHold() remains deliberately
   // permissive for management, but must not re-emit the same 50% instruction on
