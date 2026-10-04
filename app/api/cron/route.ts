@@ -46,8 +46,6 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
   // Evaluate management before persisting a newly-hit TP1 milestone so the first
   // touch can still produce the one-time 50% scale-out + breakeven instruction.
   let hold=shouldHold(toSignalLike(trade),c,price);
-  const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);
-  if(milestoneTrade)Object.assign(trade,milestoneTrade);
   await updateHistoryMilestones(trade.id,price);
   if(typeof hold.shouldHold!=="boolean"){
     console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);
@@ -71,6 +69,23 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
     active=active.filter(x=>x.id!==trade.id);
     alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});
     continue;
+  }
+  if(hold.scaleOut && !tp1AlreadyHit){
+    try{
+      const positions=await getFuturesPositions();
+      const exchangePosition=positions.find(p=>pairFromFuturesSymbol(p.symbol)===trade.pair&&p.side===trade.direction);
+      if(!exchangePosition) throw new Error(`No Kraken Futures ${trade.direction} position found for TP1 scale-out`);
+      const halfSize=exchangePosition.size*0.5;
+      const execution=await placeFuturesReduceOnlyMarketOrder(trade.pair,trade.direction,halfSize);
+      trade.exchangeSize=execution.remainingSize;
+      const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);
+      if(milestoneTrade)Object.assign(trade,milestoneTrade);
+      console.log(`[MGT] ${trade.pair} — TP1 scale-out confirmed ${execution.requestedSize}; remaining=${execution.remainingSize}`);
+    }catch(error){
+      console.error(`[MGT] ${trade.pair} — TP1 scale-out failed; keeping position active`,error);
+      alerts.push({pair:trade.pair,status:"scaleout_failed",reason:hold.reason,error:String(error)});
+      continue;
+    }
   }
   if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;await updateHistoryStopMilestone(trade.id,trade.stop);}
   // TP1 scale-out is a one-time lifecycle event. shouldHold() remains deliberately
