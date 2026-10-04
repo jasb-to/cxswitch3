@@ -271,8 +271,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const signalType=evaluation.trigger.signalType!;
   const entryType=trendlineDistancePct<=0.3?"MARKET":"LIMIT";
   const entryBase=entryType==="MARKET"?p:trendlinePrice;
-    debug.push(`[ENTRY] ${entryType} | anchor ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
-  const calculatedStop=calculateStop(evaluation.direction,entryBase,trendlinePrice,a,c);
+  debug.push(`[ENTRY] ${entryType} | anchor ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
+  const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
   const stop=calculatedStop.stop;
   const tp1=evaluation.direction==="LONG"?entryBase*1.05:entryBase*.95;
   const tp2=evaluation.direction==="LONG"?entryBase*1.10:entryBase*.90;
@@ -285,7 +285,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,entryAnchor:"4H trendline",structuralAnchor:r(trendlinePrice),stopCalc:calculatedStop.calc,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
-debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
+  debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
   debug.push("[JARVIS] GOOD | shared gate evaluation passed");
   debug.push("[ALERT] SURFACE");
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
