@@ -268,7 +268,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now?:number):HoldResult{
     const tp1Hit=s.direction==="LONG"?p>=tp1:p<=tp1;
     if(tp1Hit)return{shouldHold:true,reason:"tp1_hit_scale_out",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,scaleOut:{level:tp1,size:0.5,label:"TP1"}};
   }
-  const d=aggregateTo1D(closed),t=trend1D(d);if(t.direction){const rev=(s.direction==="LONG"&&t.direction==="SHORT")||(s.direction==="SHORT"&&t.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;if(rev&&!profit)return{shouldHold:false,reason:"trend_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE"};}
+  const d=aggregateTo1D(closed),t=trend1D(d);if(!tacticalRejection&&t.direction){const rev=(s.direction==="LONG"&&t.direction==="SHORT")||(s.direction==="SHORT"&&t.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;if(rev&&!profit)return{shouldHold:false,reason:"trend_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE"};}
   const st=stochRsi(closed.map(x=>x.close));if(s.direction==="LONG"&&st.k<20)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};if(s.direction==="SHORT"&&st.k>80)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
   return{shouldHold:true,reason:"1D trend intact; no tactical invalidation, TP exit, or opposite Stoch exit",managementState:"STAY",recommendation:"STAY IN TRADE"};
 }
