@@ -208,6 +208,39 @@ export async function placeFuturesReduceOnlyMarketOrder(pair:string,direction:"L
   return {orderId,symbol:position.symbol,requestedSize:requested,remainingSize:remaining};
 }
 
+export async function moveFuturesStopToBreakeven(pair:string,direction:"LONG"|"SHORT",size:number,stopPrice:number):Promise<{symbol:string;stopOrderId?:string}> {
+  if(!Number.isFinite(size)||size<=0) throw new Error("Invalid remaining Futures position size");
+  if(!Number.isFinite(stopPrice)||stopPrice<=0) throw new Error("Invalid breakeven stop price");
+  const positions=await getFuturesPositions();
+  const position=positions.find(p=>pairFromFuturesSymbolForOrder(p.symbol)===pair&&p.side===direction);
+  if(!position) throw new Error(`No Kraken Futures ${direction} position found for breakeven stop`);
+  const ordersData=await futuresPrivateGet("/openorders");
+  const orders=Array.isArray(ordersData?.openOrders)?ordersData.openOrders:[];
+  const stopSide=direction==="LONG"?"sell":"buy";
+  for(const order of orders){
+    if(String(order.symbol||"").toUpperCase()!==position.symbol.toUpperCase()) continue;
+    if(String(order.side||"").toLowerCase()!==stopSide) continue;
+    if(order.reduceOnly!==true) continue;
+    if(!["stp","stop","stop_loss"].includes(String(order.orderType||"").toLowerCase())) continue;
+    const orderId=order.order_id||order.orderId;
+    if(orderId){
+      await futuresPrivatePost("/cancelorder",{order_id:String(orderId)});
+    }
+  }
+  const data=await futuresPrivatePost("/sendorder",{
+    orderType:"stp",
+    symbol:position.symbol,
+    side:stopSide,
+    size,
+    stopPrice,
+    triggerSignal:"mark",
+    reduceOnly:true,
+  });
+  const status=String(data?.sendStatus?.status||"");
+  if(status!=="placed"&&status!=="filled") throw new Error(`Breakeven stop was not accepted by Kraken Futures: ${status||"unknown"}`);
+  return {symbol:position.symbol,stopOrderId:data?.sendStatus?.order_id};
+}
+
 function pairFromFuturesSymbolForOrder(symbol:string):string|undefined {
   const s=symbol.toUpperCase().replace(/^(PI|PF)_/,"").replace(/[^A-Z0-9]/g,"");
   const map:Record<string,string>={XBTUSD:"BTC",ETHUSD:"ETH",SOLUSD:"SOL",HYPEUSD:"HYPE",DOGEUSD:"DOGE",LINKUSD:"LINK",AVAXUSD:"AVAX",ZECUSD:"ZEC"};
