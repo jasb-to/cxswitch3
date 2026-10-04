@@ -110,6 +110,30 @@ function futuresAuthent(endpointPath:string, postData:string, nonce:string, secr
   return crypto.createHmac("sha512", Buffer.from(secret, "base64")).update(sha).digest("base64");
 }
 
+async function futuresPrivatePost(path:string, params:Record<string,string|number|boolean>):Promise<any> {
+  const apiKey=process.env.KRAKEN_FUTURES_API_KEY;
+  const secret=process.env.KRAKEN_FUTURES_API_SECRET;
+  if(!apiKey||!secret) throw new Error("Kraken Futures API credentials are not configured");
+  const nonce=String(Date.now());
+  const postData=new URLSearchParams(Object.entries(params).map(([k,v])=>[k,String(v)])).toString();
+  const endpointPath=path.replace("/derivatives","");
+  const res=await rateFetch(KRAKEN_FUTURES_URL+path,{
+    method:"POST",
+    headers:{
+      "APIKey":apiKey,
+      "Authent":futuresAuthent(endpointPath,postData,nonce,secret),
+      "Nonce":nonce,
+      "Content-Type":"application/x-www-form-urlencoded",
+      "Accept":"application/json",
+    },
+    body:postData,
+  });
+  if(!res.ok) throw new Error(`Kraken Futures HTTP ${res.status}`);
+  const data=await res.json();
+  if(data?.result==="error"||data?.error) throw new Error(`Kraken Futures order error: ${data.error||JSON.stringify(data)}`);
+  return data;
+}
+
 async function futuresPrivateGet(path:string):Promise<any> {
   const apiKey=process.env.KRAKEN_FUTURES_API_KEY;
   const secret=process.env.KRAKEN_FUTURES_API_SECRET;
@@ -159,4 +183,33 @@ export async function getFuturesPositions():Promise<FuturesPosition[]> {
 // Compatibility name retained for callers during the migration; it now reads Futures, never Spot.
 export async function getExchangePositions():Promise<FuturesPosition[]> {
   return getFuturesPositions();
+}
+export async function placeFuturesReduceOnlyMarketOrder(pair:string,direction:"LONG"|"SHORT",size:number):Promise<{orderId?:string;symbol:string;requestedSize:number;remainingSize:number}> {
+  if(!Number.isFinite(size)||size<=0) throw new Error("Invalid Futures order size");
+  const positions=await getFuturesPositions();
+  const expectedSide=direction==="LONG"?"LONG":"SHORT";
+  const position=positions.find(p=>pairFromFuturesSymbolForOrder(p.symbol)===pair&&p.side===expectedSide);
+  if(!position) throw new Error(`No Kraken Futures ${direction} position found for ${pair}`);
+  const closeSide=direction==="LONG"?"sell":"buy";
+  const requested=Math.min(size,position.size);
+  const data=await futuresPrivatePost("/sendorder",{orderType:"mkt",symbol:position.symbol,side:closeSide,size:requested,reduceOnly:true});
+  const orderId=data?.sendStatus?.order_id;
+  let remaining=position.size;
+  for(let i=0;i<8;i++){
+    await new Promise(r=>setTimeout(r,750));
+    const after=await getFuturesPositions();
+    const current=after.find(p=>p.symbol===position.symbol&&p.side===expectedSide);
+    remaining=current?.size||0;
+    if(remaining<=Math.max(0.00000001,position.size-requested+0.00000001)) break;
+  }
+  if(remaining>Math.max(0.00000001,position.size-requested+0.00000001)){
+    throw new Error(`Kraken Futures order accepted but position size did not confirm: ${position.size} -> ${remaining}`);
+  }
+  return {orderId,symbol:position.symbol,requestedSize:requested,remainingSize:remaining};
+}
+
+function pairFromFuturesSymbolForOrder(symbol:string):string|undefined {
+  const s=symbol.toUpperCase().replace(/^(PI|PF)_/,"").replace(/[^A-Z0-9]/g,"");
+  const map:Record<string,string>={XBTUSD:"BTC",ETHUSD:"ETH",SOLUSD:"SOL",HYPEUSD:"HYPE",DOGEUSD:"DOGE",LINKUSD:"LINK",AVAXUSD:"AVAX",ZECUSD:"ZEC"};
+  return map[s];
 }
