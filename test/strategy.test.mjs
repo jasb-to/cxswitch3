@@ -60,3 +60,69 @@ test("RR gate and management geometry",()=>{
   assert.equal(shouldHold(short,candles(40,"bull"),110).reason,"stop_hit");
   assert.equal(shouldHold(short,candles(40,"bull"),90).reason,"tp2_hit");
 });
+
+function reversalCandles(direction="LONG"){
+  const out=[];
+  const start=Date.UTC(2026,0,1);
+  for(let i=0;i<240;i++){
+    const close=direction==="LONG"?(i<239?100+i*0.2:120):(i<239?200-i*0.2:180);
+    out.push({timestamp:start+i*4*60*60*1000,open:close,high:close+1,low:close-1,close,volume:1000});
+  }
+  return out;
+}
+
+function managementSignal(direction){
+  return {
+    id:direction+"_REVERSAL",pair:"BTC",direction,type:"ENTRY",
+    entry:100,stop:direction==="LONG"?90:110,
+    tp1:direction==="LONG"?200:0,tp2:direction==="LONG"?300:-100,
+    rr:2,adx:30,rsi:50,stochK:50,stochD:50,expectedMove:5,
+    reason:"test",timestamp:Date.now(),version:29
+  };
+}
+
+test("4H reversal exits LONG when not meaningfully profitable",()=>{
+  const result=shouldHold(managementSignal("LONG"),reversalCandles("LONG"),101);
+  assert.equal(result.shouldHold,false);
+  assert.equal(result.reason,"4h_momentum_reversal");
+});
+
+test("4H reversal protects profitable LONG while 1D remains aligned",()=>{
+  const signal=managementSignal("LONG");
+  const result=shouldHold(signal,reversalCandles("LONG"),103);
+  assert.equal(result.shouldHold,true);
+  assert.equal(result.reason,"4h_momentum_reversed_profit_protected");
+  assert.ok(result.newStop>signal.stop);
+});
+
+test("4H reversal exits profitable LONG when 1D also reverses",()=>{
+  const candles=reversalCandles("LONG");
+  const signal=managementSignal("LONG");
+  const flipped=candles.map((x,i)=>i===239?{...x,close:50,open:50,high:51,low:49}:x);
+  const result=shouldHold(signal,flipped,103);
+  assert.equal(result.shouldHold,false);
+  assert.equal(result.reason,"4h_momentum_reversal");
+});
+
+test("4H reversal exits SHORT when not meaningfully profitable",()=>{
+  const result=shouldHold(managementSignal("SHORT"),reversalCandles("SHORT"),99);
+  assert.equal(result.shouldHold,false);
+  assert.equal(result.reason,"4h_momentum_reversal");
+});
+
+test("4H reversal protects profitable SHORT while 1D remains aligned",()=>{
+  const signal=managementSignal("SHORT");
+  const result=shouldHold(signal,reversalCandles("SHORT"),97);
+  assert.equal(result.shouldHold,true);
+  assert.equal(result.reason,"4h_momentum_reversed_profit_protected");
+  assert.ok(result.newStop<signal.stop);
+});
+
+test("4H reversal exits profitable SHORT when 1D also reverses",()=>{
+  const candles=reversalCandles("SHORT");
+  const signal=managementSignal("SHORT");
+  const flipped=candles.map((x,i)=>i===239?{...x,close:250,open:250,high:251,low:249}:x);
+  const result=shouldHold(signal,flipped,97);
+  assert.equal(result.shouldHold,false);
+  assert.equal(result.reason,"4h_momentum_reversal");
+});

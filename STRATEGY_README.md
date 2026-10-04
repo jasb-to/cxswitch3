@@ -34,7 +34,7 @@ Jarvis cannot create or flip a direction.
 
 ## Management
 
-Order is: stop hit -> TP2 -> TP1 scale-out/breakeven -> 4H EMA reversal -> 1D EMA reversal -> opposite Stoch extreme -> thesis intact.
+Order is: stop hit -> TP2 -> TP1 scale-out/breakeven -> 4H EMA reversal -> 1D EMA reversal -> opposite Stoch extreme -> thesis intact. Exit on 4H EMA(8/21) reversal unless the trade is +2% in profit and the 1D is still aligned, in which case the stop is tightened and the trade is held.
 
 ## Compatibility
 
