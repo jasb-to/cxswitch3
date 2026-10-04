@@ -49,6 +49,19 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
     console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);
     hold={shouldHold:true,reason:"active_alert_stale"};
   }
+  if(hold.reason==="1d_ema_reversal"){
+    const key=`management:${trade.id}:1d_reversal`;
+    if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"1D_REVERSAL"});
+  }else if(hold.reason==="4h_ema_reversal_confirmed"){
+    const key=`management:${trade.id}:4h_reversal`;
+    if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"4H_REVERSAL"});
+  }else if(hold.reason==="chandelier_trailing"&&hold.newStop!==undefined){
+    const improves=trade.direction==="LONG"?hold.newStop>Number(trade.stop):hold.newStop<Number(trade.stop);
+    if(improves){
+      const key=`management:${trade.id}:trail:${round(Number(hold.newStop))}`;
+      if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"TRAIL",stop:Number(hold.newStop)});
+    }
+  }
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | Management ${hold.managementState} | ${hold.recommendation} | ${hold.reason}`);
   if(!hold.shouldHold){
     try{
@@ -88,7 +101,7 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
       const stopExecution=await moveFuturesStopToBreakeven(trade.pair,trade.direction,remainingSize,hold.newStop);
       trade.stop=hold.newStop;
       await updateHistoryStopMilestone(trade.id,trade.stop);
-      console.log(`[MGT] ${trade.pair} — Kraken Futures stop moved to breakeven ${hold.newStop} (${stopExecution.stopOrderId||"accepted"})`);
+      console.log(`[MGT] ${trade.pair} — Kraken Futures stop moved to ${hold.reason==="chandelier_trailing"?"chandelier trail":"breakeven"} ${hold.newStop} (${stopExecution.stopOrderId||"accepted"})`);
     }catch(error){
       console.error(`[MGT] ${trade.pair} — breakeven stop update failed; keeping position active`,error);
       alerts.push({pair:trade.pair,status:"breakeven_stop_failed",reason:hold.reason,error:String(error)});
