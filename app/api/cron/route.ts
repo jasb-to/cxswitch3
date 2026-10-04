@@ -255,6 +255,7 @@ export async function GET(request:Request){
     await sendAlert({symbol:signal.pair,state:"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",context:signal.context,jarvis:jarvisReview});
   }catch(e){await releaseTelegramAlert(alertKey);throw e;}
   await appendSignalHistory(signal);
+  stateSignal=signal;
   newSignals.push(signal);
   alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
   console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
@@ -262,7 +263,7 @@ export async function GET(request:Request){
    await addActiveSignal(signal);
    active=await getActiveSignals();
   }
- }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}finally{console.log(narratePairState(pair,stateMarket,stateCandles4h,stateSignal));}}
+ }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}finally{const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal);if(stateMarket)stateMarket.jarvisState=jarvisState;console.log(jarvisState);}}
  await setMarketData(marketData);
  // Jarvis refresh completes before management.
  try{
