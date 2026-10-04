@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test:strategy": "node --experimental-strip-types --test test/strategy.test.mjs"
+    "test:strategy": "node --experimental-strip-types --test test/strategy.test.mjs",
+    "backtest:entry": "node --experimental-strip-types scripts/backtest-entry.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
