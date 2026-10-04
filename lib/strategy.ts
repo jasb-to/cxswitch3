@@ -198,7 +198,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tp2=evaluation.direction==="LONG"?entryBase*1.10:entryBase*.90;
 
   const s:Signal={
-    id:`${pair}_${signalType}_${now`,pair,direction:evaluation.direction,type:signalType,entry:r(entryBase),entryType,
+    id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:r(entryBase),entryType,
     stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(evaluation.rr??0),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
     reason:`${evaluation.direction} ${signalType} + ${trendlineType} location + 4H Stoch`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
