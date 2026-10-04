@@ -25,7 +25,7 @@ const CLEANUP_KEY = "cxswitch:cleanup:bandwidth_20261002_v1";
 const LEGACY_1D_LOG_KEY = "cxswitch:1d_trend_log_v2";
 
 export interface ActiveTrade {
-  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2";
+  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ENTRY"; entryType?: "MARKET" | "LIMIT";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number; tp3?: number;
   tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
   status: "ACTIVE"; context: any; version: number;
@@ -84,7 +84,7 @@ export async function getActiveSignals(): Promise<ActiveTrade[]> {
 export async function setActiveSignals(signals: ActiveTrade[]): Promise<void> { await redis.set(ACTIVE_SIGNALS_KEY, signals); }
 export async function addActiveSignal(signal: Signal): Promise<void> {
   const active = await getActiveSignals();
-  const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? signal.target,tp1:signal.tp1,tp2:signal.tp2,tp3:signal.tp3,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",context:signal.context,version:1};
+  const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entryType:signal.entryType,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? signal.target,tp1:signal.tp1,tp2:signal.tp2,tp3:signal.tp3,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",context:signal.context,version:1};
   const idx = active.findIndex(a => a.pair === signal.pair && a.direction === signal.direction);
   if (idx >= 0) active[idx] = {...active[idx],...trade}; else active.push(trade);
   await setActiveSignals(active);
