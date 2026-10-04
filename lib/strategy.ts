@@ -73,7 +73,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const entryType=Math.abs(p-trendlinePrice)/Math.max(p,EPS)*100<=0.3?"MARKET":"LIMIT";
   const entryBase=entryType==="MARKET"?p:trendlinePrice;
   debug.push(`[ENTRY] ${entryType} | anchor ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
-  const stop=d.direction==="LONG"?trendlinePrice-.25*a:trendlinePrice+.25*a;
+  const stop=d.direction==="LONG"?trendlinePrice-.5*a:trendlinePrice+.5*a;
   const tp1=d.direction==="LONG"?entryBase*1.05:entryBase*.95;
   const tp2=d.direction==="LONG"?entryBase*1.10:entryBase*.90;
   const risk=d.direction==="LONG"?entryBase-stop:stop-entryBase;
