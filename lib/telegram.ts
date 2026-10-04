@@ -16,7 +16,7 @@ export async function sendAlert(signal:any){
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
 
   const type=signal.signalType||signal.state;
-  if(type!=="ENTRY") throw new Error("Unsupported alert type: "+String(type));
+  if(type!=="ENTRY_1"&&type!=="ENTRY_2") throw new Error("Unsupported alert type: "+String(type));
 
   const emoji=signal.signalEmoji||"📊";
   const dir=signal.bias==="LONG"?"📈":"📉";
@@ -33,7 +33,7 @@ export async function sendAlert(signal:any){
     : "JARVIS: —";
 
   const lines=[
-    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ENTRY`,"",
+    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type}`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,"",
     `Entry: ${formatPrice(entry)}${signal.entryType ? ` · ${signal.entryType}` : ""}`,
     `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,
