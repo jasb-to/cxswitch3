@@ -1,6 +1,6 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
-import { getCandles, krakenPairFormat, getFuturesPositions, isExchangeSyncConfigured, placeFuturesReduceOnlyMarketOrder } from "@/lib/kraken";
+import { getCandles, krakenPairFormat, getFuturesPositions, isExchangeSyncConfigured, placeFuturesReduceOnlyMarketOrder, moveFuturesStopToBreakeven } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
@@ -87,7 +87,20 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
       continue;
     }
   }
-  if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;await updateHistoryStopMilestone(trade.id,trade.stop);}
+  if(hold.newStop&&hold.newStop!==trade.stop&&trade.tp1HitAt){
+    try{
+      const remainingSize=Number(trade.exchangeSize||0);
+      if(remainingSize<=0) throw new Error("Missing remaining Kraken Futures size for breakeven stop");
+      const stopExecution=await moveFuturesStopToBreakeven(trade.pair,trade.direction,remainingSize,hold.newStop);
+      trade.stop=hold.newStop;
+      await updateHistoryStopMilestone(trade.id,trade.stop);
+      console.log(`[MGT] ${trade.pair} — Kraken Futures stop moved to breakeven ${hold.newStop} (${stopExecution.stopOrderId||"accepted"})`);
+    }catch(error){
+      console.error(`[MGT] ${trade.pair} — breakeven stop update failed; keeping position active`,error);
+      alerts.push({pair:trade.pair,status:"breakeven_stop_failed",reason:hold.reason,error:String(error)});
+      continue;
+    }
+  }
   // TP1 scale-out is a one-time lifecycle event. shouldHold() remains deliberately
   // permissive for management, but must not re-emit the same 50% instruction on
   // every cron run once the TP1 milestone has already been persisted.
