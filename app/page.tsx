@@ -60,6 +60,7 @@ export default function Dashboard(){
         <KV l="4H Direction (8/21)" v={m?.fourHDirection??"—"} tone={m?.fourHDirection==="BULL"?"green":m?.fourHDirection==="BEAR"?"red":undefined}/>
       </div>
       <div className="mt-2 grid grid-cols-2 gap-3">
+      <div className="mt-2 text-[7px] leading-4 text-white/25">Direction (8/21) is the structural trend used for the direction lock. State (5/13) is the immediate momentum used for entry timing. They may briefly disagree during transitions.</div>
         <KV l="4H State (5/13)" v={m?.fourH513?.label??"—"}/>
       </div>
     </div>
