@@ -16,12 +16,12 @@ Implemented in `lib/strategy.ts`. The existing UI/design/layout is preserved.
 
 1. **1D direction only:** aggregate 4H candles to 1D; EMA(8) > EMA(21) with >0.5% spread = LONG only; EMA(8) < EMA(21) with >0.5% spread = SHORT only; otherwise NEUTRAL.
 2. **4H location:** nearest permitted zone within 1 ATR: ascending swing-low trendline / EMA21 / prior swing low for LONG; descending swing-high trendline / EMA21 / prior swing high for SHORT.
-3. **4H StochRSI timing:** LONG K crosses above D while K <40; SHORT K crosses below D while K >60.
-4. **Execution:** current price entry; swing low/high +/-0.75 ATR stop; TP1 +/-5%; TP2 +/-10%; reject TP1 RR <1.5; management scales 50% at TP1 and moves stop to breakeven.
+3. **15M StochRSI timing:** LONG prev K <= prev D, current K > current D and K <20; SHORT prev K >= prev D, current K < current D and K >80.
+4. **Execution:** current price entry; last 20 closed 15M swing low/high with a 0.5× 15M ATR buffer stop; TP1 +/-5%; TP2 +/-10%; reject TP1 RR <1.5; management scales 50% at TP1 and moves stop to breakeven.
 
 ## Exhaustion veto
 
-Exactly six entry vetoes: LONG K >=95, SHORT K <=5, LONG RSI >=78, SHORT RSI <=22, LONG close >3% above 4H EMA21, SHORT close >3% below 4H EMA21.
+Six exhaustion rule types remain unchanged: LONG Stoch K >=95 / SHORT Stoch K <=5 are checked on both 4H and 15M; LONG RSI >=78 / SHORT RSI <=22 and the 3% price-vs-4H-EMA21 checks remain on 4H.
 
 ## Jarvis
 
@@ -41,8 +41,8 @@ Order is: stop hit -> TP2 -> TP1 scale-out/breakeven -> 4H EMA reversal -> 1D EM
 Each cron cycle emits one greppable `[JARVIS STATE]` line per pair as a calm, plain-English sentence. The verdict and gate logic are unchanged; only the wording is human-readable.
 
 Examples:
-- `[JARVIS STATE] ETH — Watching. 1D bullish, 4H has turned up. Price is at the zone, just above the 4H EMA21. Stoch is at 50 and needs to pull back below 40 before a long can fire. Not yet.`
-- `[JARVIS STATE] BTC — Quiet. 1D bullish, 4H is bullish. Price is well away from the support zone. Waiting for a pullback toward support before considering an entry.`
+- `[JARVIS STATE] ETH — Watching. 1D bullish, 4H has turned up. Price is at the zone, just above the 4H EMA21. Stoch is at 50 on the 15M and needs to pull back below 20 before a long can fire. Not yet.`
+- `[JARVIS STATE] BTC — Quiet. 1D bullish, 4H is bullish. Price is well away from the support zone. The 15M Stoch is waiting for a qualifying cross before considering an entry.`
 
 ## Compatibility
 

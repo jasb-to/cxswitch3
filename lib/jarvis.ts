@@ -144,24 +144,24 @@ function zoneState(c:Candle[],dir:"LONG"|"SHORT",p:number,a:number,e21:number){i
 function stochState(a:number[]){const rs:number[]=[];if(a.length<=14)return{k:50,d:50,pk:50,pd:50};let g=0,l=0;for(let i=1;i<=14;i++){const x=a[i]-a[i-1];if(x>=0)g+=x;else l-=x}let ag=g/14,al=l/14;rs.push(al===0?100:100-100/(1+ag/al));for(let i=15;i<a.length;i++){const x=a[i]-a[i-1];ag=(ag*13+Math.max(x,0))/14;al=(al*13+Math.max(-x,0))/14;rs.push(al===0?100:100-100/(1+ag/al))}const raw:number[]=[];for(let i=13;i<rs.length;i++){const w=rs.slice(i-13,i+1),lo=Math.min(...w),hi=Math.max(...w);raw.push(hi===lo?50:(rs[i]-lo)/(hi-lo)*100)}const k:number[]=[],d:number[]=[];for(let i=2;i<raw.length;i++)k.push(raw.slice(i-2,i+1).reduce((x,y)=>x+y,0)/3);for(let i=2;i<k.length;i++)d.push(k.slice(i-2,i+1).reduce((x,y)=>x+y,0)/3);return{k:k.at(-1)??50,d:d.at(-1)??50,pk:k.at(-2)??50,pd:d.at(-2)??50}}
 function exhaustionState(dir:"LONG"|"SHORT",k:number,rsi:number,p:number,e21:number){if(dir==="LONG"&&k>=95)return"K "+roundState(k)+" > 95";if(dir==="SHORT"&&k<=5)return"K "+roundState(k)+" < 5";if(dir==="LONG"&&rsi>=78)return"RSI "+roundState(rsi)+" > 78";if(dir==="SHORT"&&rsi<=22)return"RSI "+roundState(rsi)+" < 22";if(dir==="LONG"&&p>e21*1.03)return"price >3% above EMA21";if(dir==="SHORT"&&p<e21*.97)return"price >3% below EMA21";return null}
 
-export function narratePairState(pair:string,market:any,candles4h:Candle[],signal:Signal|undefined):string{
+export function narratePairState(pair:string,market:any,candles4h:Candle[],signal:Signal|undefined,candles15m:Candle[]=[]):string{
   const oneD=directionFromDaily(market?.dailyDirection);
   const fourHLabel=String(market?.fourH513?.label||"—");
-  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
-  if(!c.length || (market?.stochK==null && c.length<29)) return "[JARVIS STATE] "+pair+" — Status unavailable.";
+  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),c15=[...candles15m].sort((a,b)=>a.timestamp-b.timestamp);
+  if(!c.length || !c15.length) return "[JARVIS STATE] "+pair+" — Status unavailable.";
   if(oneD==="NEUTRAL")return "[JARVIS STATE] "+pair+" — Quiet. The daily trend has no clear direction because the 8/21 EMA spread is under 0.5%. Waiting for the daily trend to establish itself. Nothing to do yet.";
   const dir=oneD==="BULL"?"LONG":"SHORT",p=Number(market?.price||c.at(-1)?.close||0);
-  const q=c.map(x=>x.close),e8=emaState(q,8).at(-1)??0,e21=emaState(q,21).at(-1)??0,a=atrState(c),st=stochState(q),d=market?.stochK!=null?Number(market.stochK):st.k,dd=market?.stochD!=null?Number(market.stochD):st.d;
+  const q=c.map(x=>x.close),q15=c15.map(x=>x.close),e8=emaState(q,8).at(-1)??0,e21=emaState(q,21).at(-1)??0,a=atrState(c),st=stochState(q),st15=stochState(q15),d=market?.stochK!=null?Number(market.stochK):st.k,dd=market?.stochD!=null?Number(market.stochD):st.d;
   const zone=zoneState(c,dir,p,a,e21),distAtr=zone&&a?zone.distance/a:Infinity,zoneStateName=distAtr<=1?"in zone":distAtr<=2?"approaching zone":"far from zone";
   const dCandles=dailyState(c),de8=emaState(dCandles.map(x=>x.close),8).at(-1)??0,de21=emaState(dCandles.map(x=>x.close),21).at(-1)??0,dailySpread=Math.abs(de8-de21)/Math.max(p,1e-12)*100;
   const directionPass=oneD!=="NEUTRAL",zonePass=!!zone&&distAtr<=2;
   const fired=!!signal;
-  const trigger=dir==="LONG"?st.pk<=st.pd&&st.k>st.d&&st.k<40:st.pk>=st.pd&&st.k<st.d&&st.k>60;
-  const wrongSide=dir==="LONG"?st.k>=40&&st.k>st.d:st.k<=60&&st.k<st.d;
-  const ex=exhaustionState(dir,st.k,Number(market?.rsi??50),p,e21);
+  const trigger=dir==="LONG"?st15.pk<=st15.pd&&st15.k>st15.d&&st15.k<20:st15.pk>=st15.pd&&st15.k<st15.d&&st15.k>80;
+  const wrongSide=dir==="LONG"?st15.k>=20&&st15.k>st15.d:st15.k<=80&&st15.k<st15.d;
+  const ex4=exhaustionState(dir,st.k,Number(market?.rsi??50),p,e21),ex15=dir==="LONG"?(st15.k>=95?"K "+roundState(st15.k)+" > 95":null):(st15.k<=5?"K "+roundState(st15.k)+" < 5":null),ex=ex4??ex15;
   let rrEligible=false;
   if(signal)rrEligible=signal.rr>=1.5;
-  else if(zone){const lows=swingsState(c,false),highs=swingsState(c,true),sl=lows.at(-1)?.price??Math.min(...c.slice(-10).map(x=>x.low)),sh=highs.at(-1)?.price??Math.max(...c.slice(-10).map(x=>x.high)),stop=dir==="LONG"?sl-.75*a:sh+.75*a,tp1=dir==="LONG"?p*1.05:p*.95,risk=dir==="LONG"?p-stop:stop-p;rrEligible=risk>0&&((dir==="LONG"?tp1-p:p-tp1)/risk)>=1.5}
+  else if(zone){const c15Closed=c15.slice(-20),lows15=swingsState(c15Closed,false),highs15=swingsState(c15Closed,true),sl15=lows15.at(-1)?.price??Math.min(...c15Closed.map(x=>x.low)),sh15=highs15.at(-1)?.price??Math.max(...c15Closed.map(x=>x.high)),a15=atrState(c15),stop=dir==="LONG"?sl15-.5*a15:sh15+.5*a15,tp1=dir==="LONG"?p*1.05:p*.95,risk=dir==="LONG"?p-stop:stop-p;rrEligible=risk>0&&((dir==="LONG"?tp1-p:p-tp1)/risk)>=1.5}
   const missing:string[]=[];
   if(!directionPass)missing.push("direction");
   if(!zonePass)missing.push("zone");
@@ -173,8 +173,8 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   let watching="—";const first=missing[0];
   if(first==="direction")watching="1D spread > 0.5% (currently "+dailySpread.toFixed(1)+"%)";
   else if(first==="zone")watching=zone?"pullback to "+roundState(zone.price)+" ("+zone.type+")":"price to a valid 4H zone within 2 ATR";
-  else if(first==="trigger")watching=dir==="LONG"?"4H Stoch K to cross above D and stay < 40":"4H Stoch K to cross below D and stay > 60";
-  else if(first==="trigger_side")watching=dir==="LONG"?"4H Stoch K below 40 (currently "+roundState(st.k)+")":"4H Stoch K above 60 (currently "+roundState(st.k)+")";
+  else if(first==="trigger")watching=dir==="LONG"?"15M Stoch K to cross above D and stay < 20":"15M Stoch K to cross below D and stay > 80";
+  else if(first==="trigger_side")watching=dir==="LONG"?"15M Stoch K below 20 (currently "+roundState(st15.k)+")":"15M Stoch K above 80 (currently "+roundState(st15.k)+")";
   else if(first?.startsWith("exhaustion"))watching="exhaustion clear (currently K "+roundState(st.k)+")";
   else if(first==="rr")watching="4H setup stop to improve TP1 RR above 1.5";
   const zoneText=zone
@@ -187,14 +187,14 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
     : (fourHLabel.includes("CROSS")?"4H has crossed down":fourHLabel.includes("TURNING")?"4H is turning down":fourHLabel.includes("LOW")?"4H has turned down":"4H is bearish");
   const directionText="1D "+(oneD==="BULL"?"bullish":"bearish")+", "+fourHText+".";
   const stochText=()=>{
-    const value=Math.round(st.k);
+    const value=Math.round(st15.k);
     if(ex)return "Stoch is at "+value+" and momentum is stretched beyond the entry limit.";
     if(first==="trigger")return dir==="LONG"
-      ?"Stoch is at "+value+" and needs to cross up while still below 40."
-      :"Stoch is at "+value+" and needs to cross down while still above 60.";
+      ?"Stoch is at "+value+" on the 15M and needs to cross up while still below 20."
+      :"Stoch is at "+value+" on the 15M and needs to cross down while still above 80.";
     if(first==="trigger_side")return dir==="LONG"
-      ?"Stoch is at "+value+" and needs to pull back below 40 before a long can fire."
-      :"Stoch is at "+value+" and needs to rise above 60 before a short can fire.";
+      ?"Stoch is at "+value+" on the 15M and needs to pull back below 20 before a long can fire."
+      :"Stoch is at "+value+" on the 15M and needs to rise above 80 before a short can fire.";
     if(first==="rr")return "The setup is visible, but the risk-reward is too tight for the required 1.5 minimum.";
     if(first==="zone")return "Waiting for price to return to a valid 4H support or resistance zone.";
     return "The entry conditions are aligned.";

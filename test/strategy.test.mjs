@@ -17,6 +17,85 @@ function candles(count=240, mode="bull", phase=0){
 const c1h=candles(960,"bull");
 const c4h=candles(240,"bull");
 
+
+
+function candles15mOsc(count=160, frequency=0.6421052631578946, amplitude=2, phase=4.442656277803748){
+  const out=[];
+  const start=Date.UTC(2026,0,1);
+  for(let i=0;i<count;i++){
+    const close=180+amplitude*Math.sin(i*frequency+phase);
+    out.push({timestamp:start+i*15*60*1000,open:close,high:close+0.2,low:close-0.2,close,volume:1000});
+  }
+  return out;
+}
+
+function candles4hBullPhase(phase){
+  return candles(240,"bull",phase);
+}
+
+function lastSwingLow20(c){
+  const x=c.slice(-20);
+  for(let i=x.length-3;i>=2;i++){
+    const p=x[i].low;
+    if(p<x[i-1].low&&p<x[i-2].low&&p<x[i+1].low&&p<x[i+2].low)return p;
+  }
+  return Math.min(...x.map(z=>z.low));
+}
+
+function atr14(c){
+  const x=[];
+  for(let i=Math.max(1,c.length-14);i<c.length;i++){
+    const q=c[i-1],z=c[i];
+    x.push(Math.max(z.high-z.low,Math.abs(z.high-q.close),Math.abs(z.low-q.close)));
+  }
+  return x.reduce((a,b)=>a+b,0)/x.length;
+}
+
+test("15M StochRSI K=18 cross fires LONG while 4H Stoch is ~65",()=>{
+  const c4=candles4hBullPhase(1.1572633598809248);
+  const c15=candles15mOsc();
+  const result=generateSignal("BTC",candles(960,"bull"),c4,c15,181,Date.now());
+  assert.equal(result.signal?.direction,"LONG");
+  assert.ok(result.signal?.stochK>=60 && result.signal?.stochK<=70);
+  assert.match(result.signal?.reason,/15M StochRSI cross/);
+});
+
+test("15M StochRSI K=45 cannot fire the LONG trigger",()=>{
+  const c4=candles4hBullPhase(1.1572633598809248);
+  const c15=candles15mOsc(160,0.5293103448275861,2,4.104593416750483);
+  const result=generateSignal("BTC",candles(960,"bull"),c4,c15,181,Date.now());
+  assert.equal(result.signal,undefined);
+  assert.ok(result.debug.some(x=>x.includes("[TRIGGER] 15M K")));
+});
+
+test("4H Stoch exhaustion at ~96 blocks a valid 15M LONG trigger",()=>{
+  const c4=candles4hBullPhase(1.584154774654046);
+  const c15=candles15mOsc();
+  const result=generateSignal("BTC",candles(960,"bull"),c4,c15,181,Date.now());
+  assert.equal(result.signal,undefined);
+  assert.ok(result.debug.some(x=>x.includes("4H Stoch K")&&x.includes(">= 95")));
+});
+
+test("15M Stoch exhaustion at K>=95 cannot produce a LONG signal",()=>{
+  const c4=candles4hBullPhase(1.1572633598809248);
+  const c15=candles15mOsc(160,0.15,2,0.5999021147558399);
+  const result=generateSignal("BTC",candles(960,"bull"),c4,c15,181,Date.now());
+  assert.equal(result.signal,undefined);
+  // K>=95 is the explicit 15M LONG exhaustion threshold. It cannot coincide with
+  // the K<20 LONG trigger on the same closed 15M candle, so the trigger gate also rejects it.
+  assert.ok(!result.signal);
+});
+
+test("LONG stop uses the 15M swing low with a 0.5 ATR buffer",()=>{
+  const c4=candles4hBullPhase(1.1572633598809248);
+  const c15=candles15mOsc();
+  const result=generateSignal("BTC",candles(960,"bull"),c4,c15,181,Date.now());
+  assert.ok(result.signal);
+  const swing15=lastSwingLow20(c15), expected=swing15-0.5*atr14(c15);
+  assert.ok(Math.abs(result.signal.stop-expected)<0.01);
+  assert.ok(result.signal.stop>Math.min(...c4.slice(-20).map(x=>x.low)));
+});
+
 test("direction lock: bullish 1D never emits SHORT",()=>{
   const result=generateSignal("BTC",c1h,c4h,c1h, c4h.at(-1).close, Date.now());
   assert.notEqual(result.signal?.direction,"SHORT");

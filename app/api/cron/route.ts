@@ -210,10 +210,10 @@ export async function GET(request:Request){
  }catch(error){console.error("[MARKET HEALTH] refresh failed",error);}
 
 
- for(const pair of PAIRS){let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateSignal:Signal|undefined=undefined;try{
+ for(const pair of PAIRS){let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;try{
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);
   const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);stateCandles4h=c4||[];
-  const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);
+  const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);stateCandles15m=c15||[];
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
@@ -263,7 +263,7 @@ export async function GET(request:Request){
    await addActiveSignal(signal);
    active=await getActiveSignals();
   }
- }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}finally{const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal);if(stateMarket)stateMarket.jarvisState=jarvisState;console.log(jarvisState);}}
+ }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}finally{const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);if(stateMarket)stateMarket.jarvisState=jarvisState;console.log(jarvisState);}}
  await setMarketData(marketData);
  // Jarvis refresh completes before management.
  try{
