@@ -21,7 +21,28 @@ function dailyTrend(c:Candle[]){const d=daily(c);if(d.length<25)return{direction
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
 function line(p:Swing[]){if(p.length<2)return null;const n=p.length,sx=p.reduce((s,x)=>s+x.index,0),sy=p.reduce((s,x)=>s+x.price,0),sxy=p.reduce((s,x)=>s+x.index*x.price,0),sx2=p.reduce((s,x)=>s+x.index*x.index,0),den=n*sx2-sx*sx;if(!den)return null;const slope=(n*sxy-sx*sy)/den;return{slope,intercept:(sy-slope*sx)/n}}
-function zone(c:Candle[],dir:Direction,p:number,a:number,e21:number){if(!a)return null;const z:{type:string;price:number;distance:number}[]=[];const tr=swings(c,dir==="SHORT").slice(-5),f=line(tr);if(f&&((dir==="LONG"&&f.slope>0)||(dir==="SHORT"&&f.slope<0))){const lp=f.slope*(c.length-1)+f.intercept;z.push({type:dir==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:lp,distance:Math.abs(p-lp)})}z.push({type:"EMA21",price:e21,distance:Math.abs(p-e21)});const s=[...swings(c,dir==="SHORT")].reverse()[0];if(s)z.push({type:dir==="LONG"?"SWING_LOW":"SWING_HIGH",price:s.price,distance:Math.abs(p-s.price)});z.sort((x,y)=>x.distance-y.distance);const q=z[0];return q?{...q,distancePct:q.distance/Math.max(p,EPS)*100}:null}
+export interface TrendlineState{slope:number;intercept:number;pivots:Swing[];lastUpdated:number;direction:Direction;r2:number}
+const trendlineStore=new Map<string,TrendlineState>();
+export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
+  const now=candles.at(-1)?.timestamp;
+  if(now===undefined)return null;
+  const existing=trendlineStore.get(pair);
+  if(existing&&existing.direction===direction){
+    const ageDays=(now-existing.lastUpdated)/(24*60*60*1000);
+    const recentSwings=swings(candles,direction==="SHORT").slice(-5);
+    const currentLinePrice=existing.slope*(candles.length-1)+existing.intercept;
+    const lastSwing=recentSwings.at(-1);
+    const deviation=lastSwing?Math.abs(lastSwing.price-currentLinePrice)/Math.max(currentLinePrice,EPS):0;
+    if(ageDays<7&&deviation<0.02)return existing;
+  }
+  const tr=swings(candles,direction==="SHORT").slice(-5);
+  const f=line(tr);
+  if(!f)return null;
+  const state:TrendlineState={slope:f.slope,intercept:f.intercept,pivots:tr,lastUpdated:now,direction,r2:0};
+  trendlineStore.set(pair,state);
+  return state;
+}
+function zone(c:Candle[],dir:Direction,p:number,a:number,e21:number,pair=""){if(!a)return null;const z:{type:string;price:number;distance:number}[]=[];const tr=pair?getTrendline(pair,c,dir):null;if(tr&&((dir==="LONG"&&tr.slope>0)||(dir==="SHORT"&&tr.slope<0))){const lp=tr.slope*(c.length-1)+tr.intercept;z.push({type:dir==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:lp,distance:Math.abs(p-lp)})}z.push({type:"EMA21",price:e21,distance:Math.abs(p-e21)});const sw=swings(c,dir==="SHORT"),lastSwing=sw.at(-1);if(lastSwing)z.push({type:dir==="LONG"?"SWING_LOW":"SWING_HIGH",price:lastSwing.price,distance:Math.abs(p-lastSwing.price)});z.sort((x,y)=>x.distance-y.distance);const q=z[0];return q?{...q,distancePct:q.distance/Math.max(p,EPS)*100}:null}
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 function jarvis(s:Signal,d:ReturnType<typeof dailyTrend>,e8:number,e21:number){if(s.direction!==d.direction)return["VETO","signal direction disagrees with 1D trend"] as const;const four=e8>e21?"LONG":e8<e21?"SHORT":null;if(four&&four!==s.direction)return["WARN","signal agrees with 1D but disagrees with 4H trend"] as const;if(s.direction==="LONG"&&s.stochK>90)return["WARN","4H Stoch is already in the trade-direction exhaustion zone"] as const;if(s.direction==="SHORT"&&s.stochK<10)return["WARN","4H Stoch is already in the trade-direction exhaustion zone"] as const;return["GOOD","all deterministic Jarvis checks passed"] as const}
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number){
@@ -45,10 +66,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
   }
 
-  const tr=swings(c,d.direction==="SHORT").slice(-5),f=line(tr);
+  const trendlineState=getTrendline(pair,c,d.direction);
   const trendlineType=d.direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE";
-  const trendlinePrice=f?f.slope*(c.length-1)+f.intercept:0;
-  const validTrendline=!!f&&((d.direction==="LONG"&&f.slope>0)||(d.direction==="SHORT"&&f.slope<0));
+  const trendlinePrice=trendlineState?trendlineState.slope*(c.length-1)+trendlineState.intercept:0;
+  const validTrendline=!!trendlineState&&((d.direction==="LONG"&&trendlineState.slope>0)||(d.direction==="SHORT"&&trendlineState.slope<0));
   const trendlineDistancePct=validTrendline?Math.abs(p-trendlinePrice)/Math.max(p,EPS)*100:Infinity;
   const zone=validTrendline?{type:trendlineType,price:trendlinePrice,distance:Math.abs(p-trendlinePrice),distancePct:trendlineDistancePct}:null;
   const zoneDistanceAtr=zone&&a?zone.distance/a:Infinity;
