@@ -118,7 +118,8 @@ async function reconcileExchangePositions(activeInput:any[]):Promise<any[]>{
     return activeInput;
   }
 }
-\nexport async function GET(request:Request){
+
+export async function GET(request:Request){
  const started=Date.now(),url=new URL(request.url),secret=url.searchParams.get("secret"),auth=request.headers.get("authorization");
  if(secret!==process.env.CRON_SECRET&&auth!==`Bearer ${process.env.CRON_SECRET}`)return NextResponse.json({error:"Unauthorized"},{status:401});
  const last=await getLastCronRun();
