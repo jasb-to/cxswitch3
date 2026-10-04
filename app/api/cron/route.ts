@@ -13,6 +13,7 @@ import { getMarketHealth } from "@/lib/market-health";
 export const dynamic="force-dynamic";
 export const revalidate=0;
 const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","ZEC"] as const;
+const EXECUTION_MODE="MANUAL" as const;
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
 const MIN_CRON_INTERVAL_MS=2*60*1000;
@@ -165,7 +166,7 @@ export async function GET(request:Request){
  await setLastCronRun(started);
  console.log("========================================");console.log(`[CRON v${CXSWITCH_VERSION}] Started at ${new Date(started).toISOString()}`);
  let active=await getActiveSignals();
- active=await reconcileExchangePositions(active);
+ if(EXECUTION_MODE==="AUTO") active=await reconcileExchangePositions(active);
  // Reconcile the persistent position store against ACTIVE history before any
  // management runs. This recovers a live position if the active-state key was
  // lost/reset while its corresponding history entry remained ACTIVE.
@@ -259,8 +260,10 @@ export async function GET(request:Request){
   newSignals.push(signal);
   alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
   console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
-  await addActiveSignal(signal);
-  active=await getActiveSignals();
+  if(EXECUTION_MODE==="AUTO"){
+   await addActiveSignal(signal);
+   active=await getActiveSignals();
+  }
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
  await setMarketData(marketData);
  // Jarvis refresh completes before management.
@@ -270,8 +273,10 @@ export async function GET(request:Request){
  }catch(error){
    console.error("[JARVIS] State refresh failed; existing strategy continues unchanged",error);
  }
- active=await manageActivePositions(active,marketData,managementByPair,alerts);
- await setActiveSignals(active);
+ if(EXECUTION_MODE==="AUTO"){
+  active=await manageActivePositions(active,marketData,managementByPair,alerts);
+  await setActiveSignals(active);
+ }
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
  console.log("========================================");
