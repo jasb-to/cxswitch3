@@ -36,7 +36,6 @@ export async function clearMonitorState(_pair:string){return}
 export async function setMonitorState(_pair:string,_state:any){return}
 export function setRedisClient(_client:any){return}
 export function rebuildStateFromTrades(_trades:Record<string,any>){return}
-export function getCycleRunnerSnapshot(){return{enabled:false as const,status:"DISABLED" as const}}
 export function isSignalStillValidBool(s:Signal,p:number){return isSignalStillValid(s,p).valid}
 export async function generateSignalCompat(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],_activeTrades:any[]=[],currentPrice?:number,_lastBreakout?:any,_dailyLive?:any,_candlesWeekly:Candle[]=[],_marketHealth?:any,nowOverride?:number){return generateSignal(pair,candles1h,candles4h,candles15m,currentPrice,nowOverride)}
 export function shouldHoldCompat(s:Signal,c4:Candle[],_c1:Candle[],p:number){return shouldHold(s,c4,p)}

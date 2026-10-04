@@ -5,8 +5,7 @@ import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, getCycleRunnerState, setCycleRunnerState } from "@/lib/state";
-import { getLastBreakout, setLastBreakout } from "@/lib/v28-breakout-state";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 import { runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 import { getMarketHealth } from "@/lib/market-health";
@@ -136,7 +135,6 @@ export async function GET(request:Request){
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);
   const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);
   const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);
-  const cW=await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000));
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
@@ -150,24 +148,8 @@ export async function GET(request:Request){
   snapshot.ema21_4h=snapshot.ema21;
   snapshot.fourH513=ema513;
   snapshot.dailyLive={state:snapshot.trend,candidateState:snapshot.trend,direction:snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
-  if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);
   const dbg=result.debug||[];
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
-  if(result.breakout){await setLastBreakout(pair,result.breakout);if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — recorded ${result.breakout.direction}@${result.breakout.price} candle=${result.breakout.candleIndex}`);}
-  if(existing){
-    snapshot.positionState="ACTIVE";
-    snapshot.positionDirection=existing.direction;
-    snapshot.positionEntry=existing.entry;
-    snapshot.positionStop=existing.stop;
-    snapshot.positionTarget=existing.tp2??existing.target;
-    snapshot.positionTp1=existing.tp1;
-    snapshot.positionTp2=existing.tp2;
-    const mg=managementByPair[pair];
-    if(mg){snapshot.positionManagementState=mg.state;snapshot.positionManagementRecommendation=mg.recommendation;snapshot.positionManagementReason=mg.reason;}
-    snapshot.positionTp1HitAt=existing.tp1HitAt;
-    snapshot.positionTp2HitAt=existing.tp2HitAt;
-    console.log(`[PAIR] ${pair} | ACTIVE ${existing.direction} | entry engine paused`);
-  }
   marketData.push(snapshot);
   const signal=result.signal;
   if(!signal){if(!existing)console.log(`[PAIR] ${pair} | 1D=${snapshot.dailyDirection||"—"} | 4H=${ema513.label} | WAIT`);continue;}
