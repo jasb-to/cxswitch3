@@ -154,14 +154,14 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const q=c.map(x=>x.close),q15=c15.map(x=>x.close),e8=emaState(q,8).at(-1)??0,e21=emaState(q,21).at(-1)??0,a=atrState(c),st=stochState(q),st15=stochState(q15),d=market?.stochK!=null?Number(market.stochK):st.k,dd=market?.stochD!=null?Number(market.stochD):st.d;
   const zone=zoneState(c,dir,p,a,e21),distAtr=zone&&a?zone.distance/a:Infinity,zoneStateName=distAtr<=1?"in zone":distAtr<=2?"approaching zone":"far from zone";
   const dCandles=dailyState(c),de8=emaState(dCandles.map(x=>x.close),8).at(-1)??0,de21=emaState(dCandles.map(x=>x.close),21).at(-1)??0,dailySpread=Math.abs(de8-de21)/Math.max(p,1e-12)*100;
-  const directionPass=oneD!=="NEUTRAL",zonePass=!!zone&&distAtr<=2;
+  const directionPass=oneD!=="NEUTRAL",zonePass=!!zone&&distAtr<=1.5;
   const fired=!!signal;
   const trigger=dir==="LONG"?st15.pk<=st15.pd&&st15.k>st15.d&&st15.k<20:st15.pk>=st15.pd&&st15.k<st15.d&&st15.k>80;
   const wrongSide=dir==="LONG"?st15.k>=20&&st15.k>st15.d:st15.k<=80&&st15.k<st15.d;
   const ex4=exhaustionState(dir,st.k,Number(market?.rsi??50),p,e21),ex15=dir==="LONG"?(st15.k>=95?"K "+roundState(st15.k)+" > 95":null):(st15.k<=5?"K "+roundState(st15.k)+" < 5":null),ex=ex4??ex15;
   let rrEligible=false;
   if(signal)rrEligible=signal.rr>=1.5;
-  else if(zone){const c15Closed=c15.slice(-20),lows15=swingsState(c15Closed,false),highs15=swingsState(c15Closed,true),sl15=lows15.at(-1)?.price??Math.min(...c15Closed.map(x=>x.low)),sh15=highs15.at(-1)?.price??Math.max(...c15Closed.map(x=>x.high)),a15=atrState(c15),stop=dir==="LONG"?sl15-.5*a15:sh15+.5*a15,tp1=dir==="LONG"?p*1.05:p*.95,risk=dir==="LONG"?p-stop:stop-p;rrEligible=risk>0&&((dir==="LONG"?tp1-p:p-tp1)/risk)>=1.5}
+  else if(zone){const sw=swingsState(c,dir==="SHORT"),structural=sw.at(-1)?.price??zone.price,stop=dir==="LONG"?structural-.25*a:structural+.25*a,entry=distAtr<=0.3?p:zone.price,tp1=dir==="LONG"?entry*1.05:entry*.95,risk=dir==="LONG"?entry-stop:stop-entry;rrEligible=risk>0&&((dir==="LONG"?tp1-entry:entry-tp1)/risk)>=1.5}
   const missing:string[]=[];
   if(!directionPass)missing.push("direction");
   if(!zonePass)missing.push("zone");
@@ -202,13 +202,13 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const opening=verdict==="FIRED"?"Fired.":verdict==="BLOCKED"?"Blocked.":verdict==="NEAR"?"Near.":verdict==="WATCHING"?"Watching.":"Quiet.";
   let body="";
   if(verdict==="FIRED"&&signal){
-    body=" "+signal.direction+" at "+signal.entry.toFixed(2)+", stop "+signal.stop.toFixed(2)+", TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+". Setup: "+directionText+" "+(signal.direction==="LONG"?"Stoch crossed up.":"Stoch crossed down.");
+    body=" "+signal.direction+" "+signal.entryType+" at "+signal.entry.toFixed(2)+", stop "+signal.stop.toFixed(2)+", TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+". Setup: "+directionText+" 4H zone at "+(signal.context?.zonePrice??signal.entry).toFixed(2)+" ("+String(signal.context?.zone||"zone").toLowerCase()+"). "+(signal.direction==="LONG"?"Stoch crossed up.":"Stoch crossed down.");
   }else if(verdict==="BLOCKED"){
     body=" "+directionText+" "+zoneText+". "+stochText()+" No entry while this condition blocks the setup.";
   }else if(verdict==="NEAR"){
     body=" "+directionText+" "+zoneText+". "+stochText()+" The setup is close; wait for the confirming 4H close.";
   }else if(verdict==="WATCHING"){
-    body=" "+directionText+" "+zoneText+". "+stochText()+" Not yet.";
+    body=" "+directionText+" "+zoneText+". "+stochText()+" "+(zone&&distAtr>0.3&&distAtr<=1.5?"A limit order at "+roundState(zone.price)+" would be the entry.":"Not yet.");
   }else{
     body=" "+directionText+" "+zoneText+". "+stochText()+" Nothing to do until the next condition is met.";
   }
