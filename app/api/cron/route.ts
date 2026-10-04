@@ -220,7 +220,7 @@ export async function GET(request:Request){
   const price=c1.at(-1)!.close;
   const existing=active.find(x=>x.pair===pair);
   const result=generateSignal(pair,c1,c4,c15,price);
-  const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);stateMarket=snapshot;
+  const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
   // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
   snapshot.fourH513=ema513;
