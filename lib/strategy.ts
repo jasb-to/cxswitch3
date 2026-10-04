@@ -124,7 +124,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
       if((s.direction==="LONG"&&p<=trail)||(s.direction==="SHORT"&&p>=trail))
         return{shouldHold:false,reason:"chandelier_trailing_stop",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const,newStop:trail};
       if(trailImproves)
-        return{shouldHold:true,reason:"chandelier_trailing",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:trail};
+        return{shouldHold:true,reason:"chandelier_stop",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:trail};
     }
   }
 
