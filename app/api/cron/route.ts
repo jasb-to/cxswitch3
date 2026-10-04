@@ -177,7 +177,7 @@ export async function GET(request:Request){
   if(jarvisReview?.verdict==="VETO"){
     await releaseTelegramAlert(alertKey);
     console.log(`[JARVIS] ${pair} — ${signal.type} ${signal.direction} vetoed: ${jarvisReview.reason}`);
-    alerts.push({pair,direction:signal.direction,type:signal.type,status:"jarvis_veto",reason:jarvisReview.summary});
+    alerts.push({pair,direction:signal.direction,type:signal.type,status:"jarvis_veto",reason:jarvisReview.reason});
     continue;
   }
   try{
@@ -205,15 +205,15 @@ export async function GET(request:Request){
      }catch(e){await releaseTelegramAlert(key);console.error("[CYCLE RUNNER] Telegram alert failed",e);}
    }
  }
- // Management runs after strategy generation, Jarvis review, and alert surfacing.
- active=await manageActivePositions(active,marketData,managementByPair,alerts);
- await setActiveSignals(active);
+ // Jarvis refresh completes before management.
  try{
    const jarvis=await runJarvis(marketData,await getActiveSignals());
    console.log(`[JARVIS] Portfolio ${jarvis.portfolioState} | ${jarvis.whatChanged}`);
  }catch(error){
    console.error("[JARVIS] State refresh failed; existing strategy continues unchanged",error);
  }
+ active=await manageActivePositions(active,marketData,managementByPair,alerts);
+ await setActiveSignals(active);
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
  console.log("========================================");
