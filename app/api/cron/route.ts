@@ -34,6 +34,39 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}`;
 }
 
+async function manageActivePositions(initialActive:any[], marketData:any[], managementByPair:Record<string,any>, alerts:any[]){
+ let active=initialActive;
+ for(const trade of [...active]){try{
+  const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
+  const tp1AlreadyHit=!!trade.tp1HitAt;
+  // Evaluate management before persisting a newly-hit TP1 milestone so the first
+  // touch can still produce the one-time 50% scale-out + breakeven instruction.
+  let hold=shouldHold(toSignalLike(trade),c,price);
+  const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);
+  if(milestoneTrade)Object.assign(trade,milestoneTrade);
+  await updateHistoryMilestones(trade.id,price);
+  if(typeof hold.shouldHold!=="boolean"){
+    console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);
+    hold={shouldHold:true,reason:"hold_result_invalid"};
+  }
+  if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){
+    console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);
+    hold={shouldHold:true,reason:"active_alert_stale"};
+  }
+  console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | Management ${hold.managementState} | ${hold.recommendation} | ${hold.reason}`);
+  if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp2_hit"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
+  if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;await updateHistoryStopMilestone(trade.id,trade.stop);}
+  // TP1 scale-out is a one-time lifecycle event. shouldHold() remains deliberately
+  // permissive for management, but must not re-emit the same 50% instruction on
+  // every cron run once the TP1 milestone has already been persisted.
+  if(hold.scaleOut && tp1AlreadyHit) delete hold.scaleOut;
+  if(hold.scaleOut)console.log(`[MGT] ${trade.pair} — scale-out ${hold.scaleOut.label} ${hold.scaleOut.size*100}% @ ${hold.scaleOut.level}`);
+  const snapshot=getMarketSnapshot(trade.pair,c,c,c);snapshot.positionState="ACTIVE";snapshot.positionDirection=trade.direction;snapshot.positionEntry=trade.entry;snapshot.positionStop=trade.stop;snapshot.positionTarget=trade.tp2??trade.target;snapshot.positionTp1=trade.tp1;snapshot.positionTp2=trade.tp2;snapshot.positionTp1HitAt=trade.tp1HitAt;snapshot.positionTp2HitAt=trade.tp2HitAt;snapshot.positionManagementState=hold.managementState;snapshot.positionManagementRecommendation=hold.recommendation;snapshot.positionManagementReason=hold.reason;snapshot.positionThesis=hold.reason;managementByPair[trade.pair]={state:hold.managementState,recommendation:hold.recommendation,reason:hold.reason};marketData.push(snapshot);
+ }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
+ await setActiveSignals(active);
+ return active;
+}
+
 export async function GET(request:Request){
  const started=Date.now(),url=new URL(request.url),secret=url.searchParams.get("secret"),auth=request.headers.get("authorization");
  if(secret!==process.env.CRON_SECRET&&auth!==`Bearer ${process.env.CRON_SECRET}`)return NextResponse.json({error:"Unauthorized"},{status:401});
@@ -93,34 +126,7 @@ export async function GET(request:Request){
  }
  console.log(`[STATE] Active signals on entry: ${active.map(a=>`${a.pair}_${a.direction}_${a.type}`).join(", ")||"none"}`);
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],managementByPair:Record<string,any>={};
- for(const trade of [...active]){try{
-  const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
-  const tp1AlreadyHit=!!trade.tp1HitAt;
-  // Evaluate management before persisting a newly-hit TP1 milestone so the first
-  // touch can still produce the one-time 50% scale-out + breakeven instruction.
-  let hold=shouldHold(toSignalLike(trade),c,price);
-  const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);
-  if(milestoneTrade)Object.assign(trade,milestoneTrade);
-  await updateHistoryMilestones(trade.id,price);
-  if(typeof hold.shouldHold!=="boolean"){
-    console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);
-    hold={shouldHold:true,reason:"hold_result_invalid"};
-  }
-  if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){
-    console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);
-    hold={shouldHold:true,reason:"active_alert_stale"};
-  }
-  console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | Management ${hold.managementState} | ${hold.recommendation} | ${hold.reason}`);
-  if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp2_hit"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
-  if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;await updateHistoryStopMilestone(trade.id,trade.stop);}
-  // TP1 scale-out is a one-time lifecycle event. shouldHold() remains deliberately
-  // permissive for management, but must not re-emit the same 50% instruction on
-  // every cron run once the TP1 milestone has already been persisted.
-  if(hold.scaleOut && tp1AlreadyHit) delete hold.scaleOut;
-  if(hold.scaleOut)console.log(`[MGT] ${trade.pair} — scale-out ${hold.scaleOut.label} ${hold.scaleOut.size*100}% @ ${hold.scaleOut.level}`);
-  const snapshot=getMarketSnapshot(trade.pair,c,c,c);snapshot.positionState="ACTIVE";snapshot.positionDirection=trade.direction;snapshot.positionEntry=trade.entry;snapshot.positionStop=trade.stop;snapshot.positionTarget=trade.tp2??trade.target;snapshot.positionTp1=trade.tp1;snapshot.positionTp2=trade.tp2;snapshot.positionTp1HitAt=trade.tp1HitAt;snapshot.positionTp2HitAt=trade.tp2HitAt;snapshot.positionManagementState=hold.managementState;snapshot.positionManagementRecommendation=hold.recommendation;snapshot.positionManagementReason=hold.reason;snapshot.positionThesis=hold.reason;managementByPair[trade.pair]={state:hold.managementState,recommendation:hold.recommendation,reason:hold.reason};marketData.push(snapshot);
- }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
- await setActiveSignals(active);
+
 
  // The 1D experiment is now live context for entry timing. It still does not
  // execute trades by itself; the strategy supplies the execution-grade entry/SL/TP model.
@@ -199,7 +205,9 @@ export async function GET(request:Request){
      }catch(e){await releaseTelegramAlert(key);console.error("[CYCLE RUNNER] Telegram alert failed",e);}
    }
  }
- await setMarketData(marketData);
+ // Management runs after strategy generation, Jarvis review, and alert surfacing.
+ active=await manageActivePositions(active,marketData,managementByPair,alerts);
+ await setActiveSignals(active);
  try{
    const jarvis=await runJarvis(marketData,await getActiveSignals());
    console.log(`[JARVIS] Portfolio ${jarvis.portfolioState} | ${jarvis.whatChanged}`);
