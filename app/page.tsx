@@ -60,7 +60,6 @@ export default function Dashboard(){
         <KV l="4H Direction (8/21)" v={m?.fourHDirection??"—"} tone={m?.fourHDirection==="BULL"?"green":m?.fourHDirection==="BEAR"?"red":undefined}/>
       </div>
       <div className="mt-2 grid grid-cols-2 gap-3">
-      <div className="mt-2 text-[7px] leading-4 text-white/25">Direction (8/21) is the structural trend used for the direction lock. State (5/13) is the immediate momentum used for entry timing. They may briefly disagree during transitions.</div>
         <KV l="4H State (5/13)" v={m?.fourH513?.label??"—"}/>
       </div>
     </div>
@@ -79,5 +78,5 @@ export default function Dashboard(){
  </main>
 }
 function Badge({icon,text}:{icon:React.ReactNode;text:string}){return <div className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.07] bg-white/[0.02] px-2 py-1 text-white/35">{icon}{text}</div>}
-function KV({l,v,tone}:{l:string;v:string;tone?:"red"|"green"}){return <div><div className="text-[7px] uppercase tracking-widest text-white/20">{l}</div><div className={`mt-0.5 text-[9px] font-semibold ${tone==="red"?"text-red-300":tone==="green"?"text-green-300":"text-white/60"}`}>{v}</div></div>}
+function KV({l,v,tone}:{l:string;v:string;tone?:"red"|"green"}){const t=tone||( /BULL|BULLISH|LONG/i.test(v)?"green":/BEAR|BEARISH|SHORT/i.test(v)?"red":undefined);return <div><div className="text-[7px] uppercase tracking-widest text-white/20">{l}</div><div className={`mt-0.5 text-[9px] font-semibold ${t==="red"?"text-red-300":t==="green"?"text-green-300":"text-white/60"}`}>{v}</div></div>}
 function TrendKV({label,value,fourH}:{label:string;value:string;fourH?:Market["fourH513"]}){const red=value.startsWith("SHORT")||value.includes("BEARISH")||value.startsWith("BEAR_")||value.includes("BEAR_DEVELOPING")||value.includes("BEAR_CONFIRMED"),green=value.startsWith("LONG")||value.includes("BULLISH")||value.startsWith("BULL_");return <div><div className="text-[7px] uppercase tracking-widest text-white/20">{label}</div><div className={`mt-0.5 text-[9px] font-bold ${red?"text-red-400":green?"text-green-400":"text-white/55"}`}>{value}</div>{fourH?.label&&<div className="mt-0.5 text-[7px] text-white/25">{fourH.label}</div>}</div>}
