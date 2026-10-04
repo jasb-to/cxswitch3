@@ -6,7 +6,7 @@ import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert } from "@/lib/state";
-import { sendAlert } from "@/lib/telegram";
+import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 import { getMarketHealth } from "@/lib/market-health";
 
@@ -104,6 +104,38 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
  }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
  await setActiveSignals(active);
  return active;
+}
+
+async function observeManualManagement(active:any[],marketData:any[]){
+  if(EXECUTION_MODE!=="MANUAL")return;
+  for(const trade of active){
+    const m=marketData.find((x:any)=>x?.pair===trade.pair);
+    const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
+    const price=Number(m?.price);
+    if(!candles.length||!Number.isFinite(price))continue;
+    const hold=shouldHold(toSignalLike(trade),candles,price);
+    if(hold.reason==="chandelier_trailing"&&hold.newStop!==undefined){
+      const improves=trade.direction==="LONG"?hold.newStop>Number(trade.stop):hold.newStop<Number(trade.stop);
+      if(!improves)continue;
+      const key=`management:${trade.id}:trail:${round(Number(hold.newStop))}`;
+      if(await claimTelegramAlert(key)){
+        await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"TRAIL",stop:Number(hold.newStop)});
+        console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. Trail stop raised to ${round(Number(hold.newStop))}.`);
+      }
+    }else if(hold.reason==="1d_ema_reversal"){
+      const key=`management:${trade.id}:1d_reversal`;
+      if(await claimTelegramAlert(key)){
+        await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"1D_REVERSAL"});
+        console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. 1D trend reversed. Exit now.`);
+      }
+    }else if(hold.reason==="4h_ema_reversal_confirmed"){
+      const key=`management:${trade.id}:4h_reversal`;
+      if(await claimTelegramAlert(key)){
+        await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"4H_REVERSAL"});
+        console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. 4H trend reversed. Exit now.`);
+      }
+    }
+  }
 }
 
 function pairFromFuturesSymbol(symbol:string):string|undefined{
@@ -275,6 +307,8 @@ export async function GET(request:Request){
  if(EXECUTION_MODE==="AUTO"){
   active=await manageActivePositions(active,marketData,managementByPair,alerts);
   await setActiveSignals(active);
+ }else{
+  await observeManualManagement(active,marketData);
  }
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
