@@ -147,7 +147,10 @@ export async function GET(request:Request){
   snapshot.ema8_4h=snapshot.ema8;
   snapshot.ema21_4h=snapshot.ema21;
   snapshot.fourH513=ema513;
-  snapshot.dailyLive={state:snapshot.trend,candidateState:snapshot.trend,direction:snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
+  const dailyPrice=Number(snapshot.price||price),dailyE8=Number(snapshot.ema8_1d),dailyE21=Number(snapshot.ema21_1d),dailySpread=Math.abs(dailyE8-dailyE21)/Math.max(dailyPrice,1e-12)*100;
+  snapshot.dailyDirection=dailySpread<=0.5?"NEUTRAL":dailyE8>dailyE21?"BULL":"BEAR";
+  snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
+  snapshot.dailyLive={state:snapshot.dailyDirection,candidateState:snapshot.dailyDirection,direction:snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
@@ -165,9 +168,9 @@ export async function GET(request:Request){
   const claimed=await claimTelegramAlert(alertKey);
   if(!claimed){console.log(`[PAIR] ${pair} — ${signal.type} blocked: lifecycle alert already claimed (${alertKey})`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"telegram_deduped_blocked"});continue;}
   const jarvisReview=await reviewFiredSignal(signal,snapshot);
-  if(jarvisReview?.verdict==="BAD"){
+  if(jarvisReview?.verdict==="VETO"){
     await releaseTelegramAlert(alertKey);
-    console.log(`[JARVIS] ${pair} — ${signal.type} ${signal.direction} vetoed: ${jarvisReview.summary}`);
+    console.log(`[JARVIS] ${pair} — ${signal.type} ${signal.direction} vetoed: ${jarvisReview.reason}`);
     alerts.push({pair,direction:signal.direction,type:signal.type,status:"jarvis_veto",reason:jarvisReview.summary});
     continue;
   }
