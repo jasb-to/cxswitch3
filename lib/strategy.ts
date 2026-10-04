@@ -53,8 +53,79 @@ export interface GateEvaluation {
   trigger: { entry1: boolean; entry2: boolean; signalType: "ENTRY_1" | "ENTRY_2" | null };
   exhaustion: string | null;
   rr: number | null;
+  stopCalc: StopCalc | null;
   missing: string[];
   allPassed: boolean;
+}
+
+export interface StopCalc {
+  structuralAnchor: number;
+  atrMultiplier: number;
+  riskPct: number;
+  liquidationBufferPct: number;
+  liquidationPrice: number;
+  marginUsagePct: number;
+}
+
+const MAX_LEVERAGE = 20;
+const MAINTENANCE_MARGIN_RATE = 0.01;
+const MIN_STOP_ATR = 1.0;
+const MAX_STOP_ATR = 2.5;
+const MAX_STOP_RISK_PCT = 4.0;
+
+export function calculateStop(
+  direction:"LONG"|"SHORT",
+  entry:number,
+  trendlinePrice:number,
+  atrValue:number,
+  candles:Candle[]
+): { stop:number; calc:StopCalc; valid:boolean; invalidReason?:string } {
+  if(!Number.isFinite(entry)||entry<=0||!Number.isFinite(trendlinePrice)||!Number.isFinite(atrValue)||atrValue<=0)
+    return {stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_inputs"};
+
+  const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
+  const recentStart=Math.max(0,c.length-12);
+  const recentSwing=swings(c,direction==="SHORT").filter(x=>x.index>=recentStart).at(-1);
+  const structuralBase=direction==="LONG"
+    ? Math.min(recentSwing?.price??(trendlinePrice-atrValue),trendlinePrice-atrValue)
+    : Math.max(recentSwing?.price??(trendlinePrice+atrValue),trendlinePrice+atrValue);
+
+  const atrFloor=direction==="LONG"?entry-MIN_STOP_ATR*atrValue:entry+MIN_STOP_ATR*atrValue;
+  const atrCeiling=direction==="LONG"?entry-MAX_STOP_ATR*atrValue:entry+MAX_STOP_ATR*atrValue;
+  const pctCap=direction==="LONG"?entry*(1-MAX_STOP_RISK_PCT/100):entry*(1+MAX_STOP_RISK_PCT/100);
+
+  let stop=direction==="LONG"
+    ? Math.max(structuralBase,atrFloor)
+    : Math.min(structuralBase,atrFloor);
+  stop=direction==="LONG"
+    ? Math.min(stop,atrCeiling)
+    : Math.max(stop,atrCeiling);
+  stop=direction==="LONG"
+    ? Math.max(stop,pctCap)
+    : Math.min(stop,pctCap);
+
+  const riskPct=Math.abs(entry-stop)/entry*100;
+  const atrMultiplier=Math.abs(entry-stop)/atrValue;
+  const liquidationPrice=direction==="LONG"
+    ? entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE)
+    : entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
+  const liquidationBufferPct=direction==="LONG"
+    ? (stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100
+    : (liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
+  const marginUsagePct=riskPct*MAX_LEVERAGE;
+
+  let invalidReason:string|undefined;
+  if(riskPct>MAX_STOP_RISK_PCT+1e-9) invalidReason="stop_too_wide";
+  else if(atrMultiplier>MAX_STOP_ATR+1e-9) invalidReason="stop_over_2_5_atr";
+  else if(direction==="LONG" ? stop<=liquidationPrice*1.005 : stop>=liquidationPrice*0.995) invalidReason="liquidation_buffer";
+  else if(atrMultiplier<MIN_STOP_ATR-1e-9) invalidReason="stop_under_1_atr";
+
+  return {
+    stop,
+    calc:{structuralAnchor:r(structuralBase),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:r(liquidationPrice),marginUsagePct:r(marginUsagePct,1)},
+    valid:!invalidReason,
+    invalidReason
+  };
 }
 
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number):GateEvaluation{
@@ -100,15 +171,22 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(exhaustion) missing.push("exhaustion");
 
   let rr:number|null=null;
+  let stopCalc:StopCalc|null=null;
   if(zoneValue){
     const a=atr(c);
     if(a>0){
       const entryBase=distancePct<=0.3?p:trendlinePrice;
-      const stop=direction==="LONG"?trendlinePrice-.5*a:trendlinePrice+.5*a;
-      const risk=direction==="LONG"?entryBase-stop:stop-entryBase;
-      const tp1=direction==="LONG"?entryBase*1.05:entryBase*.95;
-      rr=(direction==="LONG"?tp1-entryBase:entryBase-tp1)/Math.max(risk,EPS);
-      if(rr<MIN_RR) missing.push("rr");
+      const stopResult=direction?calculateStop(direction,entryBase,trendlinePrice,a,c):null;
+      stopCalc=stopResult?.calc??null;
+      if(!stopResult||!stopResult.valid){
+        missing.push(stopResult?.invalidReason==="liquidation_buffer"?"liquidation_buffer":"stop_width");
+      }else{
+        const stop=stopResult.stop;
+        const risk=direction==="LONG"?entryBase-stop:stop-entryBase;
+        const tp1=direction==="LONG"?entryBase*1.05:entryBase*.95;
+        rr=(direction==="LONG"?tp1-entryBase:entryBase-tp1)/Math.max(risk,EPS);
+        if(rr<MIN_RR) missing.push("rr");
+      }
     }else{
       rr=0;
       missing.push("rr");
@@ -123,6 +201,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     trigger:{entry1,entry2,signalType},
     exhaustion,
     rr,
+    stopCalc,
     missing:deduped,
     allPassed:deduped.length===0
   };
@@ -192,8 +271,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const signalType=evaluation.trigger.signalType!;
   const entryType=trendlineDistancePct<=0.3?"MARKET":"LIMIT";
   const entryBase=entryType==="MARKET"?p:trendlinePrice;
-  debug.push(`[ENTRY] ${entryType} | anchor ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
-  const stop=evaluation.direction==="LONG"?trendlinePrice-.5*a:trendlinePrice+.5*a;
+    debug.push(`[ENTRY] ${entryType} | anchor ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
+  const calculatedStop=calculateStop(evaluation.direction,entryBase,trendlinePrice,a,c);
+  const stop=calculatedStop.stop;
   const tp1=evaluation.direction==="LONG"?entryBase*1.05:entryBase*.95;
   const tp2=evaluation.direction==="LONG"?entryBase*1.10:entryBase*.90;
 
@@ -202,9 +282,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(evaluation.rr??0),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
     reason:`${evaluation.direction} ${signalType} + ${trendlineType} location + 4H Stoch`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,entryAnchor:"4H trendline",structuralAnchor:r(trendlinePrice),ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
+    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,entryAnchor:"4H trendline",structuralAnchor:r(trendlinePrice),stopCalc:calculatedStop.calc,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
-  debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
+  debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
+debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
   debug.push("[JARVIS] GOOD | shared gate evaluation passed");
   debug.push("[ALERT] SURFACE");
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
