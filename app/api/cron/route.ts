@@ -265,7 +265,7 @@ export async function GET(request:Request){
   const price=c1.at(-1)!.close;
   const existing=active.find(x=>x.pair===pair);
   const result=generateSignal(pair,c1,c4,c15,price);
-  const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
+  const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.currentPrice=price;snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
   // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
   snapshot.fourH513=ema513;
@@ -274,6 +274,8 @@ export async function GET(request:Request){
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
   snapshot.dailyLive={state:snapshot.dailyDirection,candidateState:snapshot.dailyDirection,direction:snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
+  const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
+  if(pair==="BTC"&&gateDebug)console.log(`[GATES] BTC — ${gateDebug.slice(8)}`);
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
   const signal=result.signal;
