@@ -1,6 +1,6 @@
 export interface Candle { timestamp:number; open:number; high:number; low:number; close:number; volume:number }
 export interface Signal {
-  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"; entryType:"MARKET"|"LIMIT";
+  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"REVERSAL_SHORT"|"REVERSAL_LONG"; entryType:"MARKET"|"LIMIT"; signalClass:"TREND"|"REVERSAL"; sizeMultiplier:1|0.5;
   entry:number; stop:number; tp1:number; tp2:number; rr:number;
   adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number;
   reason:string; timestamp:number; version:number; context?:any;
@@ -128,6 +128,42 @@ export function calculateStop(
   };
 }
 
+function reversalTrendline(c:Candle[],dailyDirection:Direction){
+  const pivots=swings(c,dailyDirection==="LONG").slice(-5);
+  const f=line(pivots);
+  if(!f)return null;
+  const valid=dailyDirection==="LONG"?f.slope<0:f.slope>0;
+  if(!valid)return null;
+  return {slope:f.slope,intercept:f.intercept,pivots,price:f.slope*(c.length-1)+f.intercept};
+}
+function reversalCandidate(c:Candle[],dailyDirection:Direction,p:number){
+  const st=stoch(c.map(x=>x.close));
+  const lineState=reversalTrendline(c,dailyDirection);
+  if(!lineState)return {signal:null,reason:"reversal_trendline"};
+  const distancePct=Math.abs(p-lineState.price)/Math.max(p,EPS)*100;
+  const short=dailyDirection==="LONG";
+  const trigger=short
+    ? st.k>80 && st.k<st.d
+    : st.k<20 && st.k>st.d;
+  const exhaustion=short
+    ? exhaust("SHORT",st.k,rsi(c.map(x=>x.close)),p,ema(c.map(x=>x.close),21).at(-1)??0,"4H")
+    : exhaust("LONG",st.k,rsi(c.map(x=>x.close)),p,ema(c.map(x=>x.close),21).at(-1)??0,"4H");
+  if(distancePct>1.2)return {signal:null,reason:"reversal_zone"};
+  if(!trigger)return {signal:null,reason:"reversal_trigger"};
+  if(exhaustion)return {signal:null,reason:"exhaustion"};
+  return {
+    signal:{
+      direction:short?"SHORT":"LONG" as Direction,
+      type:short?"REVERSAL_SHORT":"REVERSAL_LONG" as const,
+      trendlinePrice:lineState.price,
+      distancePct,
+      slope:lineState.slope,
+      pivots:lineState.pivots
+    },
+    reason:""
+  };
+}
+
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number):GateEvaluation{
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
@@ -148,7 +184,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const zoneValue=validTrendline
     ? {valid:true,type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:trendlinePrice,distancePct}
     : null;
-  if(!zoneValue||distancePct>1.2) missing.push("zone");
+  if(!zoneValue){
+    if(trendlineState&&direction) missing.push("trendline_invalid");
+    else missing.push("zone");
+  }else if(distancePct>1.2) missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
   const entry1=direction==="LONG"?st4.k<20:direction==="SHORT"?st4.k>80:false;
@@ -263,6 +302,32 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
   if(!evaluation.allPassed){
+    const reversal=reversalCandidate(c,evaluation.direction,p);
+    if(reversal.signal){
+      const rev=reversal.signal;
+      const entryType=rev.distancePct<=0.3?"MARKET":"LIMIT";
+      const entryBase=entryType==="MARKET"?p:rev.trendlinePrice;
+      const stop=rev.direction==="SHORT"?rev.trendlinePrice+a:rev.trendlinePrice-a;
+      const tp1=rev.direction==="SHORT"?entryBase*.97:entryBase*1.03;
+      const tp2=rev.direction==="SHORT"?entryBase*.94:entryBase*1.06;
+      const risk=rev.direction==="SHORT"?stop-entryBase:entryBase-stop;
+      const reward=rev.direction==="SHORT"?entryBase-tp1:tp1-entryBase;
+      const rr=risk>0?reward/risk:0;
+      const s:Signal={
+        id:`${pair}_${rev.type}_${now}`,pair,direction:rev.direction,type:rev.type,entryType,signalClass:"REVERSAL",sizeMultiplier:0.5,
+        entry:r(entryBase),stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
+        expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),
+        reason:`counter-trend reversal + descending/ascending 4H trendline + 4H Stoch`,
+        timestamp:now,version:CURRENT_SIGNAL_VERSION,
+        context:{zone:rev.direction==="SHORT"?"REVERSAL_RESISTANCE":"REVERSAL_SUPPORT",zonePrice:r(rev.trendlinePrice),zoneDistancePct:rev.distancePct,entryType,entryAnchor:"4H reversal trendline",signalClass:"REVERSAL",sizeMultiplier:0.5,reversalSlope:rev.slope,stochK_4h:st4.k,stochD_4h:st4.d}
+      };
+      debug.push(`[REVERSAL] ${s.type} | line ${r(rev.trendlinePrice)} | distance ${rev.distancePct.toFixed(2)}% | entry ${entryType} @ ${s.entry} | 50% size`);
+      debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
+      debug.push("[JARVIS] WARN | counter-trend reversal — reduce size, tighter management");
+      debug.push("[ALERT] SURFACE");
+      return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+    }
+    debug.push(`[REVERSAL] none — missing ${reversal.reason}`);
     debug.push(`[SIGNAL] none — missing ${evaluation.missing.join(", ")}`);
     debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
@@ -278,11 +343,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tp2=evaluation.direction==="LONG"?entryBase*1.10:entryBase*.90;
 
   const s:Signal={
-    id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:r(entryBase),entryType,
-    stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(evaluation.rr??0),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
+    id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:r(entryBase),entryType,signalClass:"TREND",sizeMultiplier:1,
+    stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(evaluation.rr??0),expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
     reason:`${evaluation.direction} ${signalType} + ${trendlineType} location + 4H Stoch`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,entryAnchor:"4H trendline",structuralAnchor:r(trendlinePrice),stopCalc:calculatedStop.calc,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
+    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,entryAnchor:"4H trendline",signalClass:"TREND",sizeMultiplier:1,structuralAnchor:r(trendlinePrice),stopCalc:calculatedStop.calc,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
   debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
