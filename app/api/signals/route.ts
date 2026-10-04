@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getActiveSignals, getSignalHistory, getLatestAlerts, getMarketData, getLastCronRun } from "@/lib/state";
 import { CXSWITCH_VERSION, ENTRY_ARCHITECTURE, DAILY_BIAS, EXECUTION_MODE } from "@/lib/version";
 import { getJarvisSnapshot } from "@/lib/jarvis";
+import { shouldHold } from "@/lib/strategy";
 
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
@@ -51,12 +52,25 @@ function managementAdvice(h:any,m:any){
   return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"No confirmed 4H reversal, structural invalidation, or TP milestone. Normal momentum cooling does not create an intermediate state."};
 }
 
+function latestAlertMomentum(pair:string,history:any[],market:any){
+  const now=Date.now();
+  const h=history.filter((x:any)=>x?.pair===pair&&x?.status==="ACTIVE"&&Number.isFinite(Number(x.timestamp))).sort((a:any,b:any)=>b.timestamp-a.timestamp)[0];
+  if(!h||now-Number(h.timestamp)>24*60*60*1000)return null;
+  const price=Number(market?.price);
+  const candles=Array.isArray(market?.momentumCandles4h)?market.momentumCandles4h:[];
+  if(!Number.isFinite(price)||!candles.length)return null;
+  const hold=shouldHold(h,candles,price,now);
+  const pnlPct=Math.round(((price-h.entry)/h.entry*(h.direction==="LONG"?1:-1))*10000)/100;
+  return {signalId:String(h.id),direction:h.direction,entry:Number(h.entry),currentPrice:price,pnlPct,managementState:hold.managementState,reason:hold.reason,newStop:hold.newStop??null,recommendation:hold.recommendation};
+}
+
 export async function GET(){
   const activeSignals=await getActiveSignals(),signalHistory=await getSignalHistory(),persistedLatest=await getLatestAlerts(),marketData=await getMarketData(),lastCronRun=await getLastCronRun(),jarvisSnapshot=await getJarvisSnapshot(),now=Date.now();
   const activeByPair=Object.fromEntries(activeSignals.map((s:any)=>[s.pair,s]));
   const v28LatestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;const active=activeByPair[pair];const price=m?.price??h.entry;const v=alertValidity(h,price,now,!!active);const management=active?managementAdvice(active,m):null;const validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`}:v;return[pair,{...h,target:h.tp2,tp1:h.tp1,tp2:h.tp2,managementAdvice:management,momentumState:momentumState(active,m,management),momentumStatus:momentumStatus(active,m,management),currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];}));
   const latestAlerts=v28LatestAlerts;
-  const liveMarketData=(Array.isArray(marketData)?marketData:[]).map((m:any)=>{const a:any=activeByPair[m.pair];if(!a||a.status!=="ACTIVE")return m;return{...m,price:a.currentPrice??m.price,alertState:a.validity?.state||"VALID",alertType:a.type,alertDirection:a.direction,alertEntry:a.entry,alertTimestamp:a.timestamp};});
+  const momentumByPair:Object=Object.fromEntries((Array.isArray(marketData)?marketData:[]).map((m:any)=>[m.pair,latestAlertMomentum(m.pair,signalHistory,m)]));
+  const liveMarketData=(Array.isArray(marketData)?marketData:[]).map((m:any)=>{const a:any=activeByPair[m.pair];const momentumState=momentumByPair[m.pair]??null;const clean={...m,momentumState};delete clean.momentumCandles4h;if(!a||a.status!=="ACTIVE")return clean;return{...clean,price:a.currentPrice??m.price,alertState:a.validity?.state||"VALID",alertType:a.type,alertDirection:a.direction,alertEntry:a.entry,alertTimestamp:a.timestamp};});
   const enrichedActive=activeSignals.map((s:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===s.pair):undefined;const price=m?.price??s.entry;const management=managementAdvice(s,m);const jarvis=jarvisSnapshot?.pairs?.[s.pair];return{...s,scale:s.type,tp1:s.tp1,tp2:s.tp2,expectedMove:s.entry&&s.tp2?Math.round(Math.abs(s.tp2-s.entry)/s.entry*1000)/10:0,currentPrice:price,unrealizedPnlPct:Math.round(((price-s.entry)/s.entry*(s.direction==="LONG"?1:-1))*10000)/100,ageMinutes:Math.round((now-s.timestamp)/60000),validity:alertValidity(s,price,now,true),managementAdvice:management,managementState:management?.managementState??"STAY",managementRecommendation:management?.recommendation??"🟢 STAY IN TRADE",jarvisVerdict:jarvis?.verdict??"GOOD",jarvisReason:jarvis?.reason??"No active Jarvis warning",momentumState:momentumState(s,m,management),momentumStatus:momentumStatus(s,m,management),meta:{status:s.status,ageMinutes:Math.round((now-s.timestamp)/60000),actionable:s.status==="ACTIVE",state:"POSITION_ACTIVE"}};});
   const enrichedHistory=signalHistory.map((h:any)=>({...h,scale:h.type,tp1:h.tp1,tp2:h.tp2,meta:{ageMinutes:Math.round((now-h.timestamp)/60000),status:h.status}}));
   const historyLogs=signalHistory.slice().sort((a,b)=>b.timestamp-a.timestamp).slice(0,8).map((h:any)=>`[ALERT] ${h.pair} — ${h.direction} ${h.type} @ ${h.entry} | SL ${h.stop} | TP1 ${h.tp1??"—"} | TP2 ${h.tp2} | ${h.status}`);
