@@ -81,9 +81,18 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const st4=stoch(c.map(x=>x.close));
   const entry1=direction==="LONG"?st4.k<20:direction==="SHORT"?st4.k>80:false;
-  const entry2=direction==="LONG"?st4.k>st4.d&&st4.k>=20:direction==="SHORT"?st4.k<st4.d&&st4.k<=80:false;
+  const entry2=direction==="LONG"
+    ? st4.k>st4.d&&st4.k>=20&&st4.k<=55
+    : direction==="SHORT"
+      ? st4.k<st4.d&&st4.k<=80&&st4.k>=45
+      : false;
+  const entry2Late=direction==="LONG"
+    ? st4.k>st4.d&&st4.k>55
+    : direction==="SHORT"
+      ? st4.k<st4.d&&st4.k<45
+      : false;
   const signalType=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
-  if(!signalType && direction) missing.push("stoch_cross");
+  if(!signalType && direction) missing.push(entry2Late?"entry2_late":"stoch_cross");
 
   const rv=rsi(c.map(x=>x.close));
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
@@ -116,6 +125,21 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     rr,
     missing:deduped,
     allPassed:deduped.length===0
+  };
+}
+
+export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
+  const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
+  const pivots=swings(c,direction==="SHORT").slice(-5);
+  const state=getTrendline(pair,c,direction);
+  const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
+  return {
+    pair,
+    direction,
+    pivots:pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    slope:state?.slope??null,
+    intercept:state?.intercept??null,
+    priceAtCurrent
   };
 }
 
@@ -152,6 +176,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     ? `[ZONE] ${trendlineType} @ ${r(trendlinePrice)} | distance ${trendlineDistancePct.toFixed(2)}% | ${zoneDistanceAtr.toFixed(2)} ATR`
     : "[ZONE] none | validated 4H trendline unavailable");
   debug.push(`[TRIGGER] 4H Stoch K ${st4.k.toFixed(1)} / D ${st4.d.toFixed(1)} | ${trendlineType} distance ${Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2):"—"}% | ENTRY_1=${evaluation.trigger.entry1} ENTRY_2=${evaluation.trigger.entry2}`);
+  const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
+  if(swingDebug){
+    debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
+    debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
+  }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
   if(!evaluation.allPassed){
