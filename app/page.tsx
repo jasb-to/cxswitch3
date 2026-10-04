@@ -56,11 +56,11 @@ export default function Dashboard(){
     <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
       <div className="text-[8px] uppercase tracking-widest text-white/25">MARKET CONTEXT</div>
       <div className="mt-2 grid grid-cols-2 gap-3">
-        <KV l="1D Direction" v={dailyDirection??"—"} tone={m?.dailyDirection==="BULL"?"green":m?.dailyDirection==="BEAR"?"red":undefined}/>
-        <KV l="4H Direction" v={m?.fourHDirection??"—"} tone={m?.fourHDirection==="BULL"?"green":m?.fourHDirection==="BEAR"?"red":undefined}/>
+        <KV l="1D Direction (8/21)" v={dailyDirection??"—"} tone={m?.dailyDirection==="BULL"?"green":m?.dailyDirection==="BEAR"?"red":undefined}/>
+        <KV l="4H Direction (8/21)" v={m?.fourHDirection??"—"} tone={m?.fourHDirection==="BULL"?"green":m?.fourHDirection==="BEAR"?"red":undefined}/>
       </div>
       <div className="mt-2 grid grid-cols-2 gap-3">
-        <KV l="4H State" v={m?.fourH513?.label??"—"}/>
+        <KV l="4H State (5/13)" v={m?.fourH513?.label??"—"}/>
       </div>
     </div>
     {a?<div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3"><div className="text-[8px] uppercase tracking-widest text-white/25">TRADE</div><div className={`mt-1 text-[10px] font-black ${a.direction==="LONG"?"text-green-400":"text-red-400"}`}>{isActive?"ACTIVE POSITION":"LATEST ALERT"} · {a.direction} · {a.type}{isActive&&pnlPct!==null?` · P/L ${pct(pnlPct)}`:""}</div><div className="mt-2 grid grid-cols-3 gap-2"><KV l="Entry" v={money(a.entry)}/><KV l="TP1" v={money(a.tp1)} tone="green"/><KV l="TP2" v={money(a.tp2??a.target)} tone="green"/></div></div>:<div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3 text-[9px] text-white/30">No strategy alert currently recorded.</div>}
