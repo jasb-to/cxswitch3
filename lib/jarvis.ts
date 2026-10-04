@@ -1,6 +1,6 @@
 // lib/jarvis.ts — deterministic bounded veto layer for the simple directional strategy
 import { Redis } from "./supabase-kv";
-import type { Signal } from "./strategy";
+import type { Candle, Signal } from "./strategy";
 
 const redis = new Redis();
 const JARVIS_KEY = "cxswitch:jarvis_state";
@@ -133,4 +133,48 @@ export async function runJarvis(marketData:any[], active:any[]): Promise<JarvisS
   };
   await redis.set(JARVIS_KEY,snapshot);
   return snapshot;
+}
+
+function roundState(n:number,d=1){const m=10**d;return Math.round(n*m)/m}
+function emaState(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}
+function atrState(c:Candle[],p=14){if(c.length<2)return 0;const v:number[]=[];for(let i=Math.max(1,c.length-p);i<c.length;i++){const x=c[i],q=c[i-1];v.push(Math.max(x.high-x.low,Math.abs(x.high-q.close),Math.abs(x.low-q.close)))}return v.reduce((a,b)=>a+b,0)/v.length}
+function dailyState(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [...c].sort((a,b)=>a.timestamp-b.timestamp)){const k=new Date(x.timestamp).toISOString().slice(0,10),b=m.get(k)??[];b.push(x);m.set(k,b)}return[...m.values()].map(b=>({timestamp:b[0].timestamp,open:b[0].open,high:Math.max(...b.map(x=>x.high)),low:Math.min(...b.map(x=>x.low)),close:b.at(-1)!.close,volume:b.reduce((s,x)=>s+x.volume,0)}))}
+function swingsState(c:Candle[],high:boolean){const o:{index:number;price:number}[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p})}return o}
+function zoneState(c:Candle[],dir:"LONG"|"SHORT",p:number,a:number,e21:number){if(!a)return null;const z:{type:string;price:number;distance:number}[]=[];const sw=swingsState(c,dir==="SHORT"),n=sw.length;if(n>=2){const pts=sw.slice(-5),sx=pts.reduce((s,x)=>s+x.index,0),sy=pts.reduce((s,x)=>s+x.price,0),sxy=pts.reduce((s,x)=>s+x.index*x.price,0),sx2=pts.reduce((s,x)=>s+x.index*x.index,0),den=pts.length*sx2-sx*sx;if(den){const slope=(pts.length*sxy-sx*sy)/den,intercept=(sy-slope*sx)/pts.length,lp=slope*(c.length-1)+intercept;if((dir==="LONG"&&slope>0)||(dir==="SHORT"&&slope<0))if(Math.abs(p-lp)<=a)z.push({type:"trendline",price:lp,distance:Math.abs(p-lp)})}}if(Math.abs(p-e21)<=a)z.push({type:"EMA21",price:e21,distance:Math.abs(p-e21)});const s=[...sw].reverse().find(x=>Math.abs(p-x.price)<=a);if(s)z.push({type:dir==="LONG"?"swing low":"swing high",price:s.price,distance:Math.abs(p-s.price)});z.sort((x,y)=>x.distance-y.distance);return z[0]??null}
+function stochState(a:number[]){const rs:number[]=[];if(a.length<=14)return{k:50,d:50,pk:50,pd:50};let g=0,l=0;for(let i=1;i<=14;i++){const x=a[i]-a[i-1];if(x>=0)g+=x;else l-=x}let ag=g/14,al=l/14;rs.push(al===0?100:100-100/(1+ag/al));for(let i=15;i<a.length;i++){const x=a[i]-a[i-1];ag=(ag*13+Math.max(x,0))/14;al=(al*13+Math.max(-x,0))/14;rs.push(al===0?100:100-100/(1+ag/al))}const raw:number[]=[];for(let i=13;i<rs.length;i++){const w=rs.slice(i-13,i+1),lo=Math.min(...w),hi=Math.max(...w);raw.push(hi===lo?50:(rs[i]-lo)/(hi-lo)*100)}const k:number[]=[],d:number[]=[];for(let i=2;i<raw.length;i++)k.push(raw.slice(i-2,i+1).reduce((x,y)=>x+y,0)/3);for(let i=2;i<k.length;i++)d.push(k.slice(i-2,i+1).reduce((x,y)=>x+y,0)/3);return{k:k.at(-1)??50,d:d.at(-1)??50,pk:k.at(-2)??50,pd:d.at(-2)??50}}
+function exhaustionState(dir:"LONG"|"SHORT",k:number,rsi:number,p:number,e21:number){if(dir==="LONG"&&k>=95)return"K "+roundState(k)+" > 95";if(dir==="SHORT"&&k<=5)return"K "+roundState(k)+" < 5";if(dir==="LONG"&&rsi>=78)return"RSI "+roundState(rsi)+" > 78";if(dir==="SHORT"&&rsi<=22)return"RSI "+roundState(rsi)+" < 22";if(dir==="LONG"&&p>e21*1.03)return"price >3% above EMA21";if(dir==="SHORT"&&p<e21*.97)return"price >3% below EMA21";return null}
+
+export function narratePairState(pair:string,market:any,candles4h:Candle[],signal:Signal|undefined):string{
+  const oneD=directionFromDaily(market?.dailyDirection);
+  const fourHLabel=String(market?.fourH513?.label||"—");
+  if(oneD==="NEUTRAL")return"[JARVIS STATE] "+pair+" | 1D=NEUTRAL | Verdict: QUIET";
+  const dir=oneD==="BULL"?"LONG":"SHORT",c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=Number(market?.price||c.at(-1)?.close||0);
+  const q=c.map(x=>x.close),e8=emaState(q,8).at(-1)??0,e21=emaState(q,21).at(-1)??0,a=atrState(c),st=stochState(q),d=market?.stochK!=null?Number(market.stochK):st.k,dd=market?.stochD!=null?Number(market.stochD):st.d;
+  const zone=zoneState(c,dir,p,a,e21),distAtr=zone&&a?zone.distance/a:Infinity,zoneStateName=distAtr<=1?"in zone":distAtr<=2?"approaching zone":"far from zone";
+  const dCandles=dailyState(c),de8=emaState(dCandles.map(x=>x.close),8).at(-1)??0,de21=emaState(dCandles.map(x=>x.close),21).at(-1)??0,dailySpread=Math.abs(de8-de21)/Math.max(p,1e-12)*100;
+  const directionPass=oneD!=="NEUTRAL",zonePass=!!zone&&distAtr<=2;
+  const fired=!!signal;
+  const trigger=dir==="LONG"?st.pk<=st.pd&&st.k>st.d&&st.k<40:st.pk>=st.pd&&st.k<st.d&&st.k>60;
+  const wrongSide=dir==="LONG"?st.k>=40&&st.k>st.d:st.k<=60&&st.k<st.d;
+  const ex=exhaustionState(dir,st.k,Number(market?.rsi??50),p,e21);
+  let rrEligible=false;
+  if(signal)rrEligible=signal.rr>=1.5;
+  else if(zone){const lows=swingsState(c,false),highs=swingsState(c,true),sl=lows.at(-1)?.price??Math.min(...c.slice(-10).map(x=>x.low)),sh=highs.at(-1)?.price??Math.max(...c.slice(-10).map(x=>x.high)),stop=dir==="LONG"?sl-.75*a:sh+.75*a,tp1=dir==="LONG"?p*1.05:p*.95,risk=dir==="LONG"?p-stop:stop-p;rrEligible=risk>0&&((dir==="LONG"?tp1-p:p-tp1)/risk)>=1.5}
+  const missing:string[]=[];
+  if(!directionPass)missing.push("direction");
+  if(!zonePass)missing.push("zone");
+  if(!trigger)missing.push(wrongSide?"trigger_side":"trigger");
+  if(ex)missing.push("exhaustion ("+ex+")");
+  if(!rrEligible)missing.push("rr");
+  let verdict:"QUIET"|"WATCHING"|"NEAR"|"BLOCKED"|"FIRED"="QUIET";
+  if(fired)verdict="FIRED";else if(ex||(!rrEligible&&zonePass&&trigger))verdict="BLOCKED";else if(directionPass&&zonePass&&trigger&&!ex&&rrEligible)verdict="NEAR";else if(directionPass&&zoneStateName!=="far from zone")verdict="WATCHING";
+  let watching="—";const first=missing[0];
+  if(first==="direction")watching="1D spread > 0.5% (currently "+dailySpread.toFixed(1)+"%)";
+  else if(first==="zone")watching=zone?"pullback to "+roundState(zone.price)+" ("+zone.type+")":"price to a valid 4H zone within 2 ATR";
+  else if(first==="trigger")watching=dir==="LONG"?"4H Stoch K to cross above D and stay < 40":"4H Stoch K to cross below D and stay > 60";
+  else if(first==="trigger_side")watching=dir==="LONG"?"4H Stoch K below 40 (currently "+roundState(st.k)+")":"4H Stoch K above 60 (currently "+roundState(st.k)+")";
+  else if(first?.startsWith("exhaustion"))watching="exhaustion clear (currently K "+roundState(st.k)+")";
+  else if(first==="rr")watching="4H setup stop to improve TP1 RR above 1.5";
+  const zoneText=zone?" ("+(((p-zone.price)/Math.max(p,1e-12)*100).toFixed(1))+"% "+(p>=zone.price?"above":"below")+" "+zone.type+")":"";
+  return"[JARVIS STATE] "+pair+" | 1D="+oneD+" | 4H="+fourHLabel+" | Stoch "+d.toFixed(1)+"/"+dd.toFixed(1)+" | Zone: "+zoneStateName+zoneText+" | Missing: "+(missing.length?missing.join(", "):"—")+" | Watching: "+watching+" | Verdict: "+verdict;
 }

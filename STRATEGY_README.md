@@ -36,6 +36,10 @@ Jarvis cannot create or flip a direction.
 
 Order is: stop hit -> TP2 -> TP1 scale-out/breakeven -> 4H EMA reversal -> 1D EMA reversal -> opposite Stoch extreme -> thesis intact. Exit on 4H EMA(8/21) reversal unless the trade is +2% in profit and the 1D is still aligned, in which case the stop is tightened and the trade is held.
 
+## Jarvis State Narration
+
+Each cron cycle emits one greppable `[JARVIS STATE]` line per pair with 1D/4H direction, StochRSI, zone distance, missing gates, the next actionable condition, and a QUIET/WATCHING/NEAR/BLOCKED/FIRED verdict.
+
 ## Compatibility
 
 Monitor/Redis compatibility functions remain no-op stubs where required by the application. Legacy Cycle Runner and V28 breakout state have been removed. No Fib, weekly gate, daily pre-break, tactical override, counter-trend, MACD gate, ADX gate, confidence score, trendline-rejection classification, or multi-stage direction state machine is used.

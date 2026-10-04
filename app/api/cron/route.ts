@@ -7,7 +7,7 @@ import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
-import { runJarvis, reviewFiredSignal } from "@/lib/jarvis";
+import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 import { getMarketHealth } from "@/lib/market-health";
 
 export const dynamic="force-dynamic";
@@ -210,9 +210,9 @@ export async function GET(request:Request){
  }catch(error){console.error("[MARKET HEALTH] refresh failed",error);}
 
 
- for(const pair of PAIRS){try{
+ for(const pair of PAIRS){let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateSignal:Signal|undefined=undefined;try{
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);
-  const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);
+  const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);stateCandles4h=c4||[];
   const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
@@ -220,7 +220,7 @@ export async function GET(request:Request){
   const price=c1.at(-1)!.close;
   const existing=active.find(x=>x.pair===pair);
   const result=generateSignal(pair,c1,c4,c15,price);
-  const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);
+  const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);stateMarket=snapshot;
   // Persist the canonical 4H diagnostics alongside the market snapshot so the dashboard
   // copy card reads the same live values the cron just calculated.
   snapshot.ema8_4h=snapshot.ema8;
@@ -264,7 +264,7 @@ export async function GET(request:Request){
    await addActiveSignal(signal);
    active=await getActiveSignals();
   }
- }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
+ }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}finally{console.log(narratePairState(pair,stateMarket,stateCandles4h,stateSignal));}}
  await setMarketData(marketData);
  // Jarvis refresh completes before management.
  try{
