@@ -6,7 +6,7 @@ import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup } from "@/lib/state";
-import { sendAlert, sendManagementAlert } from "@/lib/telegram";
+import { sendAlert, sendManagementAlert, sendJarvisOpportunity } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 import { getMarketHealth } from "@/lib/market-health";
 
@@ -328,6 +328,20 @@ export async function GET(request:Request){
  try{
    const jarvis=await runJarvis(marketData,await getActiveSignals());
    console.log(`[JARVIS] Portfolio ${jarvis.portfolioState} | ${jarvis.whatChanged}`);
+   for(const [pair,state] of Object.entries(jarvis.pairs)){
+     const opportunity=(state as any).opportunity;
+     if(!opportunity)continue;
+     const key=`jarvis:opportunity:${pair}:${opportunity.direction}:${opportunity.strength}`;
+     if(await claimTelegramAlert(key)){
+       try{
+         await sendJarvisOpportunity({pair,direction:opportunity.direction,strength:opportunity.strength,reason:opportunity.reason});
+         console.log(`[JARVIS] ${pair} — ${opportunity.direction} ${opportunity.strength} opportunity alert sent`);
+       }catch(error){
+         await releaseTelegramAlert(key);
+         console.error(`[JARVIS] ${pair} — opportunity alert failed`,error);
+       }
+     }
+   }
  }catch(error){
    console.error("[JARVIS] State refresh failed; existing strategy continues unchanged",error);
  }
