@@ -159,34 +159,72 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
 
   const p=Number(market?.currentPrice??market?.price??c.at(-1)?.close??0);
   const evaluation=evaluateGates(pair,c,p);
-  const dir=evaluation.direction;
   const dailyDir=directionFromDaily(market?.dailyDirection ?? market?.trend);
   const dailyStrength=String(market?.dailyStrength || "NEUTRAL");
-  if(!dir){
-    return "[JARVIS STATE] "+pair+" — Quiet. 1D regime has no permitted 4H tactical direction. Waiting for the daily/4H regime to establish itself. Missing: direction.";
+  const tacticalDir=evaluation.direction ?? directionFrom4H(market);
+
+  const dailyText=dailyDir==="BULL"?"BULL":dailyDir==="BEAR"?"BEAR":"NEUTRAL";
+  const tacticalText=tacticalDir==="BULL"?"BULL":tacticalDir==="BEAR"?"BEAR":"NEUTRAL";
+
+  if(!evaluation.direction){
+    const blockReason=dailyDir==="NEUTRAL"
+      ? "1D direction is NEUTRAL."
+      : "4H tactical "+tacticalText+" is not permitted by the current 1D "+dailyText+" "+dailyStrength+" regime.";
+    return "[JARVIS STATE] "+pair+" — Quiet. 1D "+dailyText+" · "+dailyStrength+" | 4H tactical "+tacticalText+". "+blockReason+" Missing: direction.";
   }
 
+  const dir=evaluation.direction;
   const trendlinePrice=evaluation.zone?.price??0;
   const distancePct=evaluation.zone?.distancePct??Infinity;
   const trendText=dir==="LONG"?"ascending support":"descending resistance";
+
+  // Use the exact gate evaluation for the Stoch narration. This removes the
+  // duplicated Stoch implementation that could say ENTRY_2 was live while
+  // evaluateGates still reported stoch_cross missing.
+  const st=evaluation.trigger;
+  const k=evaluation.trigger.signalType==="ENTRY_1"
+    ? (dir==="LONG"?20:80)
+    : undefined;
   const q=c.map(x=>x.close);
-  const st=stochState(q);
-  const k=st.k,d=st.d;
-  const entry1=dir==="LONG"?k<20:dir==="SHORT"?k>80:false;
-  const entry2Window=dir==="LONG"?k>=20&&k<=55:dir==="SHORT"?k>=45&&k<=80:false;
-  const entry2Ready=dir==="LONG"?k>d&&entry2Window:dir==="SHORT"?k<d&&entry2Window:false;
+  const rawStoch=stochState(q);
+  const kNow=rawStoch.k;
+  const dNow=rawStoch.d;
   let stochText:string;
-  if(entry1) stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_1 pullback zone.`;
-  else if(entry2Ready) stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_2 active (V28 timing window).`;
-  else if(dir==="LONG" && k>d && k>55) stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — K/D bullish but too extended for ENTRY_2.`;
-  else if(dir==="SHORT" && k<d && k<45) stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — K/D bearish but too extended for ENTRY_2.`;
-  else stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_2 not active.`;
+  if(st.entry1){
+    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — ENTRY_1 active.`;
+  }else if(st.entry2){
+    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — ENTRY_2 active.`;
+  }else if(dir==="LONG" && kNow>dNow && kNow>55){
+    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — K/D bullish but outside the ENTRY_2 window.`;
+  }else if(dir==="SHORT" && kNow<dNow && kNow<45){
+    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — K/D bearish but outside the ENTRY_2 window.`;
+  }else{
+    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — ENTRY_2 not active.`;
+  }
 
   const missingText=evaluation.missing.length?evaluation.missing.join(", "):"—";
   const suffix=` Missing: ${missingText}.`;
+  const contextText=`1D ${dailyText} · ${dailyStrength} | 4H tactical ${dir}.`;
 
-  if(signal){const stopCtx=signal.context?.stopCalc;const riskText=stopCtx?" Stop "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk).":"";const reversal=signal.signalClass==="REVERSAL";if(reversal){const reversalLine=signal.context?.zone==="REVERSAL_RESISTANCE"?"descending resistance":"ascending support";const cross=signal.direction==="SHORT"?"crossed down":"crossed up";return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). 4H "+reversalLine+" at "+Number(signal.context?.zonePrice??0).toFixed(2)+". Stoch "+cross+" from "+signal.stochK.toFixed(1)+". TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+". Counter-trend, 50% size."+riskText+suffix;}return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). 1D "+(dir==="LONG"?"bullish":"bearish")+", price at "+trendText+". "+stochText+riskText+suffix;}
-  if(!evaluation.zone){const why=evaluation.missing.includes("trendline_invalid")?"4H trendline invalid for the 1D direction — slope sign is wrong.":"Waiting for a validated 4H "+trendText+".";return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+". "+why+" "+stochText+suffix;}
-  if(distancePct>1.2)return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line. "+stochText+suffix;
-  return "[JARVIS STATE] "+pair+" — Watching. 1D "+(dir==="LONG"?"bullish":"bearish")+", 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText+suffix;
+  if(signal){
+    const stopCtx=signal.context?.stopCalc;
+    const riskText=stopCtx?" Stop "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk).":"";
+    const reversal=signal.signalClass==="REVERSAL";
+    if(reversal){
+      const reversalLine=signal.context?.zone==="REVERSAL_RESISTANCE"?"descending resistance":"ascending support";
+      const cross=signal.direction==="SHORT"?"crossed down":"crossed up";
+      return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). "+contextText+" 4H "+reversalLine+" at "+Number(signal.context?.zonePrice??0).toFixed(2)+". Stoch "+cross+" from "+signal.stochK.toFixed(1)+". TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+". Counter-trend, 50% size."+riskText+suffix;
+    }
+    return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). "+contextText+" Price at "+trendText+". "+stochText+riskText+suffix;
+  }
+
+  if(!evaluation.zone){
+    return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" Waiting for a validated 4H "+trendText+". "+stochText+suffix;
+  }
+
+  if(distancePct>1.2){
+    return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line. "+stochText+suffix;
+  }
+
+  return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText+suffix;
 }
