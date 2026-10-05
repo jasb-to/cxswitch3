@@ -182,9 +182,6 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   // duplicated Stoch implementation that could say ENTRY_2 was live while
   // evaluateGates still reported stoch_cross missing.
   const st=evaluation.trigger;
-  const k=evaluation.trigger.signalType==="ENTRY_1"
-    ? (dir==="LONG"?20:80)
-    : undefined;
   const q=c.map(x=>x.close);
   const rawStoch=stochState(q);
   const kNow=rawStoch.k;
