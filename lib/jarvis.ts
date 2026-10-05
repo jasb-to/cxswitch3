@@ -50,11 +50,12 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
     return { verdict:"WARN", reason:"counter-trend reversal — reduce size, tighter management" };
   }
   const oneD = directionFromDaily(snapshot?.dailyDirection);
-  if(oneD === "BULL" && signal.direction === "SHORT") {
-    return { verdict:"VETO", reason:"SHORT into BULL 1D" };
+  const dailyStrength = String(snapshot?.dailyStrength || "NEUTRAL");
+  if(oneD === "BULL" && signal.direction === "SHORT" && dailyStrength === "HIGH") {
+    return { verdict:"VETO", reason:"SHORT against HIGH-strength BULL 1D" };
   }
-  if(oneD === "BEAR" && signal.direction === "LONG") {
-    return { verdict:"VETO", reason:"LONG into BEAR 1D" };
+  if(oneD === "BEAR" && signal.direction === "LONG" && dailyStrength === "HIGH") {
+    return { verdict:"VETO", reason:"LONG against HIGH-strength BEAR 1D" };
   }
 
   const fourH = directionFrom4H(snapshot);
@@ -159,8 +160,10 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const p=Number(market?.currentPrice??market?.price??c.at(-1)?.close??0);
   const evaluation=evaluateGates(pair,c,p);
   const dir=evaluation.direction;
+  const dailyDir=directionFromDaily(market?.dailyDirection ?? market?.trend);
+  const dailyStrength=String(market?.dailyStrength || "NEUTRAL");
   if(!dir){
-    return "[JARVIS STATE] "+pair+" — Quiet. 1D EMA8/21 spread is under 0.5%. Waiting for the daily trend to establish itself. Missing: direction.";
+    return "[JARVIS STATE] "+pair+" — Quiet. 1D regime has no permitted 4H tactical direction. Waiting for the daily/4H regime to establish itself. Missing: direction.";
   }
 
   const trendlinePrice=evaluation.zone?.price??0;
@@ -169,20 +172,15 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const q=c.map(x=>x.close);
   const st=stochState(q);
   const k=st.k,d=st.d;
+  const entry1=dir==="LONG"?k<20:dir==="SHORT"?k>80:false;
+  const entry2Window=dir==="LONG"?k>=20&&k<=55:dir==="SHORT"?k>=45&&k<=80:false;
+  const entry2Ready=dir==="LONG"?k>d&&entry2Window:dir==="SHORT"?k<d&&entry2Window:false;
   let stochText:string;
-  if(dir==="LONG"){
-    if(k<20)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_1 pullback zone.`;
-    else if(k>d && k>55)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — cross is too late. Waiting for a pullback.`;
-    else if(k>=80)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — above 80, no long until pullback.`;
-    else if(k>d)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_2 cross is live.`;
-    else stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — needs K to cross above D for ENTRY_2.`;
-  }else{
-    if(k>80)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_1 pullback zone.`;
-    else if(k<d && k<45)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — cross is too late. Waiting for a pullback.`;
-    else if(k<=20)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — below 20, no short until pullback.`;
-    else if(k<d)stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_2 cross is live.`;
-    else stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — needs K to cross below D for ENTRY_2.`;
-  }
+  if(entry1) stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_1 pullback zone.`;
+  else if(entry2Ready) stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_2 active (V28 timing window).`;
+  else if(dir==="LONG" && k>d && k>55) stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — K/D bullish but too extended for ENTRY_2.`;
+  else if(dir==="SHORT" && k<d && k<45) stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — K/D bearish but too extended for ENTRY_2.`;
+  else stochText=`4H Stoch K ${k.toFixed(1)} / D ${d.toFixed(1)} — ENTRY_2 not active.`;
 
   const missingText=evaluation.missing.length?evaluation.missing.join(", "):"—";
   const suffix=` Missing: ${missingText}.`;
