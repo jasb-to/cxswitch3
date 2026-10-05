@@ -91,7 +91,7 @@ export async function getActiveSignals(): Promise<ActiveTrade[]> {
 export async function setActiveSignals(signals: ActiveTrade[]): Promise<void> { await redis.set(ACTIVE_SIGNALS_KEY, signals); }
 export async function addActiveSignal(signal: Signal): Promise<void> {
   const active = await getActiveSignals();
-  const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? signal.target,tp1:signal.tp1,tp2:signal.tp2,tp3:signal.tp3,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",context:signal.context,version:1};
+  const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? 0,tp1:signal.tp1,tp2:signal.tp2,tp3:signal.tp3,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",context:signal.context,version:signal.version};
   const idx = active.findIndex(a => a.pair === signal.pair && a.direction === signal.direction);
   if (idx >= 0) active[idx] = {...active[idx],...trade}; else active.push(trade);
   await setActiveSignals(active);
