@@ -387,8 +387,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tp2=evaluation.direction==="LONG"?entryBase*1.10:entryBase*.90;
 
   const s:Signal={
-    id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:r(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
-    stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(evaluation.rr??0),expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
+    id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:priceRound(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
+    stop:priceRound(stop),tp1:priceRound(tp1),tp2:priceRound(tp2),rr:r(evaluation.rr??0),expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
     reason:`${evaluation.direction} ${signalType} + ${trendlineType} location + 4H Stoch`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
     context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
