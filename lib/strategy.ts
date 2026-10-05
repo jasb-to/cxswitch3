@@ -44,8 +44,6 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
 }
 function zone(c:Candle[],dir:Direction,p:number,a:number,e21:number,pair=""){if(!a)return null;const z:{type:string;price:number;distance:number}[]=[];const tr=pair?getTrendline(pair,c,dir):null;if(tr&&((dir==="LONG"&&tr.slope>0)||(dir==="SHORT"&&tr.slope<0))){const lp=tr.slope*(c.length-1)+tr.intercept;z.push({type:dir==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:lp,distance:Math.abs(p-lp)})}z.push({type:"EMA21",price:e21,distance:Math.abs(p-e21)});const sw=swings(c,dir==="SHORT"),lastSwing=sw.at(-1);if(lastSwing)z.push({type:dir==="LONG"?"SWING_LOW":"SWING_HIGH",price:lastSwing.price,distance:Math.abs(p-lastSwing.price)});z.sort((x,y)=>x.distance-y.distance);const q=z[0];return q?{...q,distancePct:q.distance/Math.max(p,EPS)*100}:null}
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
-function jarvis(s:Signal,d:ReturnType<typeof dailyTrend>,e8:number,e21:number){if(s.direction!==d.direction)return["VETO","signal direction disagrees with 1D trend"] as const;const four=e8>e21?"LONG":e8<e21?"SHORT":null;if(four&&four!==s.direction)return["WARN","signal agrees with 1D but disagrees with 4H trend"] as const;if(s.direction==="LONG"&&s.stochK>90)return["WARN","4H Stoch is already in the trade-direction exhaustion zone"] as const;if(s.direction==="SHORT"&&s.stochK<10)return["WARN","4H Stoch is already in the trade-direction exhaustion zone"] as const;return["GOOD","all deterministic Jarvis checks passed"] as const}
-
 export interface GateEvaluation {
   direction: "LONG" | "SHORT" | null;
   zone: { valid: boolean; type: string; price: number; distancePct: number } | null;
@@ -69,9 +67,6 @@ export interface StopCalc {
 
 const MAX_LEVERAGE = 20;
 const MAINTENANCE_MARGIN_RATE = 0.01;
-const MIN_STOP_ATR = 1.0;
-const MAX_STOP_ATR = 2.5;
-const MAX_STOP_RISK_PCT = 4.0;
 
 export function calculateStop(
   direction:"LONG"|"SHORT", entry:number, trendlinePrice:number, atrValue:number, candles:Candle[]
@@ -397,4 +392,4 @@ export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.ti
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now=Date.now()){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason})}return{active,exited}}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return"TP_HIT";return"ACTIVE"}
-export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),d=dailyTrend(c),st=stoch(q),st15=stoch(q15),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:d.e8,ema21_1d:d.e21,fourHDirection}}
+export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),d=dailyTrend(c),st=stoch(q),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:d.e8,ema21_1d:d.e21,fourHDirection}}
