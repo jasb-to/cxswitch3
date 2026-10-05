@@ -134,20 +134,41 @@ export async function reconcileSymbolCard(pair:string):Promise<{pair:string;rese
   const resets=await getCardResets();
   const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY) || {};
   const hiddenAlertId=latest[pair]?.id;
+
+  // A manual reset is a hard return to scanning mode. It must clear every
+  // live/display pointer for this symbol, even when the position was already
+  // removed by exit management before the user pressed RESET / RE-SYNC.
   resets[pair]=now;
   await redis.set(CARD_RESETS_KEY,resets);
+
   const active=await getActiveSignals();
   const resetTrades=active.filter(x=>x.pair===pair);
   if(resetTrades.length){
     await setActiveSignals(active.filter(x=>x.pair!==pair));
-    const history=await getSignalHistory();
-    for(const trade of resetTrades){const h=history.find(x=>x.id===trade.id);if(h&&h.status==="ACTIVE"){h.status="EXPIRED";h.exitReason="manual_symbol_reset";h.exitTimestamp=now;}}
-    await setSignalHistory(history);
-    const latestAfter=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};
-    delete latestAfter[pair];
-    await redis.set(LATEST_ALERTS_KEY,latestAfter);
   }
-  console.log(`[CARD] ${pair} — RESET / RE-SYNC at ${new Date(now).toISOString()} | active removed=${resetTrades.length} | history preserved | latest alert hidden=${hiddenAlertId||"none"}`);
+
+  // Expire any still-ACTIVE history for this pair as part of the reset. This
+  // also prevents latestAlertMomentum() from resurrecting an old exit state.
+  const history=await getSignalHistory();
+  let historyChanged=false;
+  for(const h of history){
+    if(h.pair===pair&&h.status==="ACTIVE"){
+      h.status="EXPIRED";
+      h.exitReason="manual_symbol_reset";
+      h.exitTimestamp=now;
+      historyChanged=true;
+    }
+  }
+  if(historyChanged) await setSignalHistory(history);
+
+  // Always remove the persisted latest-alert pointer. getLatestAlerts() will
+  // respect the reset timestamp and therefore will not derive this old alert
+  // back from history.
+  const latestAfter=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};
+  delete latestAfter[pair];
+  await redis.set(LATEST_ALERTS_KEY,latestAfter);
+
+  console.log(`[CARD] ${pair} — RESET / RE-SYNC at ${new Date(now).toISOString()} | active removed=${resetTrades.length} | history expired=${historyChanged?"yes":"no"} | latest alert hidden=${hiddenAlertId||"none"}`);
   return {pair,resetAt:now,hiddenAlertId,resetActiveIds:resetTrades.map(x=>x.id),activePosition:false};
 }
 
