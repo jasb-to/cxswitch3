@@ -16,8 +16,8 @@ Implemented in `lib/strategy.ts`. The existing UI/design/layout is preserved.
 
 1. **1D direction only:** aggregate 4H candles to 1D; EMA(8) > EMA(21) with >0.5% spread = LONG only; EMA(8) < EMA(21) with >0.5% spread = SHORT only; otherwise NEUTRAL.
 2. **4H location:** nearest permitted zone within 1 ATR: ascending swing-low trendline / EMA21 / prior swing low for LONG; descending swing-high trendline / EMA21 / prior swing high for SHORT.
-3. **15M StochRSI timing:** LONG prev K <= prev D, current K > current D and K <20; SHORT prev K >= prev D, current K < current D and K >80.
-4. **Execution:** current price entry; last 20 closed 15M swing low/high with a 0.5× 15M ATR buffer stop; TP1 +/-5%; TP2 +/-10%; reject TP1 RR <1.5; management scales 50% at TP1 and moves stop to breakeven.
+3. **4H StochRSI timing:** ENTRY_1 fires in the directional extreme (LONG K <20 / SHORT K >80). ENTRY_2 is a fresh 4H K/D cross with K in the recovery band (LONG 20–55 / SHORT 45–80).
+4. **Execution:** current price entry; trend entries use the farther of the latest 4H structural swing and a 1.5× 4H ATR stop; reversal entries use the farther of the last 5 closed 15M extreme and 1× 4H ATR. TP1/TP2 are +/-5%/+/-10% for trend entries and +/-3%/+/-6% for reversals.
 
 ## Exhaustion veto
 
