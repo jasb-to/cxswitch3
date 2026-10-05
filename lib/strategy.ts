@@ -128,9 +128,8 @@ function reversalCandidate(c:Candle[],dailyDirection:Direction,p:number){
   const exhaustion=short
     ? exhaust("SHORT",st.k,rsi(c.map(x=>x.close)),p,ema(c.map(x=>x.close),21).at(-1)??0,"4H")
     : exhaust("LONG",st.k,rsi(c.map(x=>x.close)),p,ema(c.map(x=>x.close),21).at(-1)??0,"4H");
-  if(distancePct>1.2)return {signal:null,reason:"reversal_zone"};
+  if(distancePct>2.0)return {signal:null,reason:"reversal_zone"};
   if(!trigger)return {signal:null,reason:"reversal_trigger"};
-  if(exhaustion)return {signal:null,reason:"exhaustion"};
   return {
     signal:{
       direction:short?"SHORT":"LONG" as Direction,
