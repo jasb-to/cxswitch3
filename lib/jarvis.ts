@@ -14,12 +14,19 @@ export interface JarvisReview {
   reason: string;
 }
 
+export interface JarvisOpportunity {
+  direction: "LONG" | "SHORT";
+  strength: "DEVELOPING" | "CONFIRMED";
+  reason: string;
+}
+
 export interface JarvisPairState {
   pair: string;
   direction: "LONG" | "SHORT" | "NEUTRAL";
   verdict: JarvisVerdict;
   reason: string;
   currentAnalysis: string;
+  opportunity?: JarvisOpportunity;
   updatedAt: number;
   position?: { direction: "LONG" | "SHORT"; entry: number; stop: number; tp1?: number; tp2?: number };
 }
@@ -82,7 +89,39 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
   return { verdict:"GOOD", reason:"Aligned with 1D and 4H context" };
 }
 
+function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
+  const tactical=evaluation?.direction==="LONG"||evaluation?.direction==="SHORT"?evaluation.direction:null;
+  if(!tactical)return undefined;
+  const k1=Number(m?.stochK1d),d1=Number(m?.stochD1d),pk1=Number(m?.stochK1dPrev),pd1=Number(m?.stochD1dPrev);
+  const k4=Number(m?.stochK4h),d4=Number(m?.stochD4h),pk4=Number(m?.stochK4hPrev),pd4=Number(m?.stochD4hPrev);
+  if(![k1,d1,k4,d4].every(Number.isFinite))return undefined;
+
+  const dailyTurn=tactical==="LONG"
+    ? (Number.isFinite(pk1)&&Number.isFinite(pd1)&&pk1<=pd1&&k1>d1) || k1>d1
+    : (Number.isFinite(pk1)&&Number.isFinite(pd1)&&pk1>=pd1&&k1<d1) || k1<d1;
+  const fourHTurn=tactical==="LONG"
+    ? (Number.isFinite(pk4)&&Number.isFinite(pd4)&&pk4<=pd4&&k4>d4) || k4>d4
+    : (Number.isFinite(pk4)&&Number.isFinite(pd4)&&pk4>=pd4&&k4<d4) || k4<d4;
+
+  // This is recognition only. It deliberately does not gate ENTRY_1/ENTRY_2.
+  // Either timeframe can be early; the combination becomes a stronger opportunity
+  // when both are pointing the same way.
+  if(!dailyTurn && !fourHTurn)return undefined;
+  const both=dailyTurn&&fourHTurn;
+  const dirText=tactical==="LONG"?"bullish":"bearish";
+  return {
+    direction:tactical,
+    strength:both?"CONFIRMED":"DEVELOPING",
+    reason:both
+      ? `1D and 4H Stoch are turning ${dirText}; 4H tactical direction agrees.`
+      : `${dailyTurn?"1D":"4H"} Stoch is turning ${dirText}; 4H tactical direction is ${tactical}.`
+  };
+}
+
 function pairState(m:any, active:any): JarvisPairState {
+  const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
+  const evaluation=candles.length?evaluateGates(String(m?.pair||"?"),candles,Number(m?.price||m?.currentPrice||0)):null;
+  const opportunity=detectOpportunity(m,evaluation);
   const direction=(active?.direction || m?.dailyLive?.direction || m?.direction || "NEUTRAL") as "LONG"|"SHORT"|"NEUTRAL";
   const review = active
     ? reviewFiredSignal({
@@ -122,6 +161,7 @@ function pairState(m:any, active:any): JarvisPairState {
     verdict:review.verdict,
     reason:review.reason,
     currentAnalysis,
+    opportunity,
     updatedAt:Date.now(),
     position:active?{direction:active.direction,entry:Number(active.entry),stop:Number(active.stop),tp1:active.tp1,tp2:active.tp2}:undefined,
   };
@@ -207,6 +247,8 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const missingText=evaluation.missing.length?evaluation.missing.join(", "):"—";
   const suffix=evaluation.missing.length?` Missing: ${missingText}.`:"";
   const contextText=`1D ${dailyText} · ${dailyStrength} | 4H tactical ${dir}.`;
+  const opportunity=detectOpportunity(market,evaluation);
+  const opportunityText=opportunity?` JARVIS OPPORTUNITY ${opportunity.direction} · ${opportunity.strength} — ${opportunity.reason}`:"";
 
   if(signal){
     const stopCtx=signal.context?.stopCalc;
@@ -217,16 +259,16 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
       const cross=signal.direction==="SHORT"?"crossed down":"crossed up";
       return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). "+contextText+" 4H "+reversalLine+" at "+Number(signal.context?.zonePrice??0).toFixed(2)+". Stoch "+cross+" from "+signal.stochK.toFixed(1)+". TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+". Counter-trend, 50% size."+riskText+suffix;
     }
-    return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). "+contextText+" Price at "+trendText+". "+stochText+riskText+suffix;
+    return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). "+contextText+" Price at "+trendText+". "+stochText+opportunityText+riskText+suffix;
   }
 
   if(!evaluation.zone){
-    return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" Waiting for a validated 4H "+trendText+". "+stochText+suffix;
+    return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" Waiting for a validated 4H "+trendText+". "+stochText+opportunityText+suffix;
   }
 
   if(distancePct>1.2){
     return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line. "+stochText+suffix;
   }
 
-  return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText+suffix;
+  return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText+opportunityText+suffix;
 }
