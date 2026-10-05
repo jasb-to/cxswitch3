@@ -27,6 +27,8 @@ export async function sendAlert(signal:any){
     ? Math.round((Math.abs(tp2-entry)/Math.abs(entry))*1000)/10
     : signal.expectedMove??"-";
 
+  const signalClass=signal.signalClass??signal.context?.signalClass;
+  const sizeMultiplier=signal.sizeMultiplier??signal.context?.sizeMultiplier;
   const jarvis=signal.jarvis;
   const jarvisLine=jarvis?.verdict
     ? `JARVIS: ${jarvis.verdict} · ${jarvis.reason||""}`
@@ -39,7 +41,7 @@ export async function sendAlert(signal:any){
     `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,`Risk: ${Number.isFinite(entry)&&Number.isFinite(Number(signal.stopLoss??signal.stop)) ? Math.abs(entry-Number(signal.stopLoss??signal.stop)).toFixed(2)+" pts ("+(signal.context?.stopCalc?.riskPct?.toFixed(2)??"-")+"%)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.liquidationPrice??signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${(signal.context?.stopToLiquidationBufferPct??signal.context?.stopCalc?.liquidationBufferPct)!=null ? Number(signal.context?.stopToLiquidationBufferPct??signal.context?.stopCalc?.liquidationBufferPct).toFixed(2)+"%" : "-"}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
-    `RR (TP1): ${signal.rr??"-"}`,`Size: ${signal.sizeMultiplier===0.5 ? "50%"+(signal.signalClass==="REVERSAL" ? " (counter-trend)" : " (reduced for liquidation buffer)") : "100%"}`,
+    `RR (TP1): ${signal.rr??"-"}`,`Size: ${sizeMultiplier===0.5 ? "50%"+(signalClass==="REVERSAL" ? " (counter-trend)" : " (reduced for liquidation buffer)") : "100%"}`,
     jarvisLine,
     `Expected Move: ${expectedMove}%`,
     signal.reason||""
