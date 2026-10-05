@@ -128,6 +128,25 @@ export function calculateStop(
   };
 }
 
+function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValue:number,structuralAnchor:number):StopCalc{
+  const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
+  const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
+  const liquidationPrice=direction==="LONG"
+    ? entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE)
+    : entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
+  const liquidationBufferPct=direction==="LONG"
+    ? (stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100
+    : (liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
+  return {
+    structuralAnchor:r(structuralAnchor),
+    atrMultiplier:r(atrMultiplier,2),
+    riskPct:r(riskPct,2),
+    liquidationBufferPct:r(liquidationBufferPct,2),
+    liquidationPrice:r(liquidationPrice),
+    marginUsagePct:r(riskPct*MAX_LEVERAGE,1)
+  };
+}
+
 function reversalTrendline(c:Candle[],dailyDirection:Direction){
   const pivots=swings(c,dailyDirection==="LONG").slice(-5);
   const f=line(pivots);
@@ -319,7 +338,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
         expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),
         reason:`counter-trend reversal + descending/ascending 4H trendline + 4H Stoch`,
         timestamp:now,version:CURRENT_SIGNAL_VERSION,
-        context:{zone:rev.direction==="SHORT"?"REVERSAL_RESISTANCE":"REVERSAL_SUPPORT",zonePrice:r(rev.trendlinePrice),zoneDistancePct:rev.distancePct,entryType,entryAnchor:"4H reversal trendline",signalClass:"REVERSAL",sizeMultiplier:0.5,reversalSlope:rev.slope,stochK_4h:st4.k,stochD_4h:st4.d}
+        context:{zone:rev.direction==="SHORT"?"REVERSAL_RESISTANCE":"REVERSAL_SUPPORT",zonePrice:r(rev.trendlinePrice),zoneDistancePct:rev.distancePct,entryType,entryAnchor:"4H reversal trendline",signalClass:"REVERSAL",sizeMultiplier:0.5,reversalSlope:rev.slope,stochK_4h:st4.k,stochD_4h:st4.d,stopCalc:fixedStopCalc(rev.direction,entryBase,stop,a,rev.trendlinePrice)}
       };
       debug.push(`[REVERSAL] ${s.type} | line ${r(rev.trendlinePrice)} | distance ${rev.distancePct.toFixed(2)}% | entry ${entryType} @ ${s.entry} | 50% size`);
       debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
