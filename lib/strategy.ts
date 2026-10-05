@@ -6,7 +6,7 @@ export interface Signal {
   reason:string; timestamp:number; version:number; context?:any;
 }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
-export const CURRENT_SIGNAL_VERSION=33;
+export const CURRENT_SIGNAL_VERSION=34;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.5, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
@@ -161,33 +161,25 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   );
   const trendlinePrice=trendlineState?trendlineState.slope*(c.length-1)+trendlineState.intercept:0;
   const distancePct=validTrendline?Math.abs(p-trendlinePrice)/Math.max(p,EPS)*100:Infinity;
-  const zoneValue=validTrendline
-    ? {valid:true,type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:trendlinePrice,distancePct}
-    : null;
-  if(!zoneValue){
-    if(trendlineState&&direction) missing.push("trendline_invalid");
-    else missing.push("zone");
-  }else if(distancePct>1.2) missing.push("zone");
+  const zoneValue=zone(c,direction,p,a,e21,pair);
+  if(!zoneValue) missing.push("zone");
+  else if(zoneValue.distancePct>2.0) missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
   const entry1=direction==="LONG"?st4.k<20:direction==="SHORT"?st4.k>80:false;
   const entry2=direction==="LONG"
-    ? st4.pk<=st4.pd&&st4.k>st4.d&&st4.k>=20&&st4.k<=55
+    ? st4.pk<=st4.pd&&st4.k>st4.d
     : direction==="SHORT"
-      ? st4.pk>=st4.pd&&st4.k<st4.d&&st4.k<=80&&st4.k>=45
+      ? st4.pk>=st4.pd&&st4.k<st4.d
       : false;
-  const entry2Late=direction==="LONG"
-    ? st4.k>st4.d&&st4.k>55
-    : direction==="SHORT"
-      ? st4.k<st4.d&&st4.k<45
-      : false;
+  const entry2Late=false;
   const signalType=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!signalType && direction) missing.push(entry2Late?"entry2_late":"stoch_cross");
 
   const rv=rsi(c.map(x=>x.close));
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
-  if(exhaustion) missing.push("exhaustion");
+  // Exhaustion is diagnostic only; it does not veto an entry.
 
   let rr:number|null=null;
   let stopCalc:StopCalc|null=null;
