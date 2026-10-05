@@ -6,7 +6,7 @@ export interface Signal {
   reason:string; timestamp:number; version:number; context?:any;
 }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
-export const CURRENT_SIGNAL_VERSION=34;
+export const CURRENT_SIGNAL_VERSION=35;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.5, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
@@ -111,6 +111,19 @@ function reversalTrendline(c:Candle[],dailyDirection:Direction){
   if(!valid)return null;
   return {slope:f.slope,intercept:f.intercept,pivots,price:f.slope*(c.length-1)+f.intercept};
 }
+function reversalMomentum(c:Candle[],direction:Direction){
+  const q=c.map(x=>x.close);
+  const e5=ema(q,5),e13=ema(q,13);
+  if(e5.length<2||e13.length<2)return {score:0,ema5Slope:0,ema13Slope:0,spreadPct:0};
+  const e5Now=e5.at(-1)!,e5Prev=e5.at(-2)!,e13Now=e13.at(-1)!,e13Prev=e13.at(-2)!;
+  const ema5Slope=e5Now-e5Prev,ema13Slope=e13Now-e13Prev;
+  const spreadPct=(e5Now-e13Now)/Math.max(e13Now,EPS)*100;
+  const points=direction==="SHORT"
+    ? (ema5Slope<=0?1:0)+(ema13Slope<=0?1:0)
+    : (ema5Slope>=0?1:0)+(ema13Slope>=0?1:0);
+  return {score:points,ema5Slope,ema13Slope,spreadPct};
+}
+
 function reversalCandidate(c:Candle[],dailyDirection:Direction,p:number){
   const st=stoch(c.map(x=>x.close));
   const lineState=reversalTrendline(c,dailyDirection);
@@ -120,9 +133,9 @@ function reversalCandidate(c:Candle[],dailyDirection:Direction,p:number){
   const trigger=short
     ? st.pk>=st.pd && st.k<st.d && st.k>80
     : st.pk<=st.pd && st.k>st.d && st.k<20;
-  const exhaustion=short
-    ? exhaust("SHORT",st.k,rsi(c.map(x=>x.close)),p,ema(c.map(x=>x.close),21).at(-1)??0,"4H")
-    : exhaust("LONG",st.k,rsi(c.map(x=>x.close)),p,ema(c.map(x=>x.close),21).at(-1)??0,"4H");
+  // Quality only — deliberately NOT a gate. The score tells us whether
+  // 5/13 momentum is already turning with the Stoch reversal.
+  const momentum=reversalMomentum(c,short?"SHORT":"LONG");
   if(distancePct>2.0)return {signal:null,reason:"reversal_zone"};
   if(!trigger)return {signal:null,reason:"reversal_trigger"};
   return {
@@ -132,12 +145,12 @@ function reversalCandidate(c:Candle[],dailyDirection:Direction,p:number){
       trendlinePrice:lineState.price,
       distancePct,
       slope:lineState.slope,
-      pivots:lineState.pivots
+      pivots:lineState.pivots,
+      momentum
     },
     reason:""
   };
 }
-
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number):GateEvaluation{
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
@@ -297,15 +310,17 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       const reward=rev.direction==="SHORT"?entryBase-tp1:tp1-entryBase;
       const rr=risk>0?reward/risk:0;
       const stopCalc=fixedStopCalc(rev.direction,entryBase,stop,a,recent15mExtreme);
+      const reversalMomentumScore=rev.momentum?.score??0;
+      const reversalMomentumLabel=reversalMomentumScore>=2?"STRONG":"EARLY";
       const s:Signal={
         id:`${pair}_${rev.type}_${now}`,pair,direction:rev.direction,type:rev.type,signalClass:"REVERSAL",sizeMultiplier:0.5,
         entry:r(entryBase),stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
         expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),
-        reason:`counter-trend reversal + descending/ascending 4H trendline + 4H Stoch`,
+        reason:`counter-trend reversal + descending/ascending 4H trendline + 4H Stoch + 5/13 momentum ${reversalMomentumLabel}`,
         timestamp:now,version:CURRENT_SIGNAL_VERSION,
-        context:{zone:rev.direction==="SHORT"?"REVERSAL_RESISTANCE":"REVERSAL_SUPPORT",zonePrice:r(rev.trendlinePrice),zoneDistancePct:rev.distancePct,signalClass:"REVERSAL",sizeMultiplier:0.5,reversalSlope:rev.slope,stochK_4h:st4.k,stochD_4h:st4.d,stopReference15m:r(recent15mExtreme),liquidationPrice:stopCalc.liquidationPrice,stopToLiquidationBufferPct:stopCalc.liquidationBufferPct,stopCalc}
+        context:{zone:rev.direction==="SHORT"?"REVERSAL_RESISTANCE":"REVERSAL_SUPPORT",zonePrice:r(rev.trendlinePrice),zoneDistancePct:rev.distancePct,signalClass:"REVERSAL",sizeMultiplier:0.5,reversalSlope:rev.slope,stochK_4h:st4.k,stochD_4h:st4.d,reversalMomentumScore,reversalMomentumLabel,reversalEma5Slope:rev.momentum?.ema5Slope??0,reversalEma13Slope:rev.momentum?.ema13Slope??0,reversalEmaSpreadPct:rev.momentum?.spreadPct??0,stopReference15m:r(recent15mExtreme),liquidationPrice:stopCalc.liquidationPrice,stopToLiquidationBufferPct:stopCalc.liquidationBufferPct,stopCalc}
       };
-      debug.push(`[REVERSAL] ${s.type} | ${rev.direction==="SHORT"?"descending resistance":"ascending support"} @ ${r(rev.trendlinePrice)} | distance ${rev.distancePct.toFixed(2)}% | entry MARKET @ ${s.entry} | SL ${s.stop} | 50% size`);
+      debug.push(`[REVERSAL] ${s.type} | ${rev.direction==="SHORT"?"descending resistance":"ascending support"} @ ${r(rev.trendlinePrice)} | distance ${rev.distancePct.toFixed(2)}% | 5/13 momentum ${reversalMomentumLabel} (${reversalMomentumScore}/2) | entry MARKET @ ${s.entry} | SL ${s.stop} | 50% size`);
       debug.push(`[SIGNAL] ${s.direction} ${s.type} MARKET | entry ${s.entry} | line ${r(rev.trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
       debug.push("[JARVIS] WARN | counter-trend reversal — reduce size, tighter management");
       debug.push("[ALERT] SURFACE");
