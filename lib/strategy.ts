@@ -179,7 +179,9 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const rv=rsi(c.map(x=>x.close));
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
-  // Exhaustion is diagnostic only; it does not veto an entry.
+  if(exhaustion){
+    missing.push("exhaustion");
+  }
 
   let rr:number|null=null;
   let stopCalc:StopCalc|null=null;
