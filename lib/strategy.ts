@@ -6,7 +6,7 @@ export interface Signal {
   reason:string; timestamp:number; version:number; context?:any;
 }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
-export const CURRENT_SIGNAL_VERSION=32;
+export const CURRENT_SIGNAL_VERSION=33;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.5, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
@@ -123,8 +123,8 @@ function reversalCandidate(c:Candle[],dailyDirection:Direction,p:number){
   const distancePct=Math.abs(p-lineState.price)/Math.max(p,EPS)*100;
   const short=dailyDirection==="LONG";
   const trigger=short
-    ? st.k>80 && st.k<st.d
-    : st.k<20 && st.k>st.d;
+    ? st.pk>=st.pd && st.k<st.d && st.k>80
+    : st.pk<=st.pd && st.k>st.d && st.k<20;
   const exhaustion=short
     ? exhaust("SHORT",st.k,rsi(c.map(x=>x.close)),p,ema(c.map(x=>x.close),21).at(-1)??0,"4H")
     : exhaust("LONG",st.k,rsi(c.map(x=>x.close)),p,ema(c.map(x=>x.close),21).at(-1)??0,"4H");
@@ -172,9 +172,9 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const st4=stoch(c.map(x=>x.close));
   const entry1=direction==="LONG"?st4.k<20:direction==="SHORT"?st4.k>80:false;
   const entry2=direction==="LONG"
-    ? st4.k>st4.d&&st4.k>=20&&st4.k<=55
+    ? st4.pk<=st4.pd&&st4.k>st4.d&&st4.k>=20&&st4.k<=55
     : direction==="SHORT"
-      ? st4.k<st4.d&&st4.k<=80&&st4.k>=45
+      ? st4.pk>=st4.pd&&st4.k<st4.d&&st4.k<=80&&st4.k>=45
       : false;
   const entry2Late=direction==="LONG"
     ? st4.k>st4.d&&st4.k>55
