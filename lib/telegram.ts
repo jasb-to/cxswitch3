@@ -48,7 +48,7 @@ export async function sendAlert(signal:any){
   ].join("\n");
 
   if(Number.isFinite(tp1)&&Number.isFinite(tp2)&&tp1===tp2){
-    throw new Error("Telegram alert refused: TP1 and TP2 are identical");
+    throw new Error(`Telegram alert refused: TP1 and TP2 are identical (${formatPrice(tp1)}).`);
   }
 
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
