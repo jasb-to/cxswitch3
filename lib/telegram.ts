@@ -84,6 +84,31 @@ export async function sendJarvisUpdate(update:{
 }
 
 
+export async function sendJarvisOpportunity(update:{
+  pair:string;
+  direction:"LONG"|"SHORT";
+  strength:"DEVELOPING"|"CONFIRMED";
+  reason:string;
+}){
+  const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
+  if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
+  const emoji=update.direction==="LONG"?"🟢":"🔴";
+  const lines=[
+    emoji+" JARVIS — "+update.direction+" OPPORTUNITY",
+    "",
+    update.pair+" · "+update.strength,
+    update.reason,
+    "",
+    "This is an opportunity alert, NOT a trade entry.",
+    "ENTRY_1 / ENTRY_2 still require the existing strategy conditions."
+  ].join("\n");
+  const response=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
+  if(!response.ok){
+    const body=await response.text().catch(()=>"");
+    throw new Error("Telegram JARVIS opportunity failed ("+response.status+"): "+body.slice(0,300));
+  }
+}
+
 export async function sendManagementAlert(update:{
   pair:string;
   direction:"LONG"|"SHORT";
