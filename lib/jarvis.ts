@@ -40,6 +40,9 @@ function directionFromDaily(value:any): "BULL" | "BEAR" | "NEUTRAL" {
 function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
   if(snapshot?.fourHDirection === "BULL" || snapshot?.fourHDirection === "LONG" || snapshot?.fourHDirection === "BULLISH") return "BULL";
   if(snapshot?.fourHDirection === "BEAR" || snapshot?.fourHDirection === "SHORT" || snapshot?.fourHDirection === "BEARISH") return "BEAR";
+  const tacticalLabel=String(snapshot?.fourH513?.label || snapshot?.fourH513?.stage || "");
+  if(tacticalLabel.includes("BEARISH")) return "BEAR";
+  if(tacticalLabel.includes("BULLISH")) return "BULL";
   const e8=Number(snapshot?.ema8_4h), e21=Number(snapshot?.ema21_4h);
   if(Number.isFinite(e8)&&Number.isFinite(e21)) return e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL";
   return "NEUTRAL";
@@ -200,7 +203,7 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   }
 
   const missingText=evaluation.missing.length?evaluation.missing.join(", "):"—";
-  const suffix=` Missing: ${missingText}.`;
+  const suffix=evaluation.missing.length?` Missing: ${missingText}.`:"";
   const contextText=`1D ${dailyText} · ${dailyStrength} | 4H tactical ${dir}.`;
 
   if(signal){
