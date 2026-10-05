@@ -6,9 +6,11 @@ export interface Signal {
   reason:string; timestamp:number; version:number; context?:any;
 }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
-export const CURRENT_SIGNAL_VERSION=35;
+import { get4HEmaDiagnostic } from "./ema-diagnostic";
+
+export const CURRENT_SIGNAL_VERSION=36;
 type Direction="LONG"|"SHORT";
-const MIN_RR=1.5, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
+const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}
 function rsiSeries(a:number[],p=14){if(a.length<=p)return[];let g=0,l=0;for(let i=1;i<=p;i++){const x=a[i]-a[i-1];if(x>=0)g+=x;else l-=x}let ag=g/p,al=l/p,o=[al===0?100:100-100/(1+ag/al)];for(let i=p+1;i<a.length;i++){const x=a[i]-a[i-1];ag=(ag*(p-1)+Math.max(x,0))/p;al=(al*(p-1)+Math.max(-x,0))/p;o.push(al===0?100:100-100/(1+ag/al))}return o}
@@ -17,7 +19,39 @@ function stoch(a:number[]){const rv=rsiSeries(a),raw:number[]=[],k:number[]=[],d
 function atr(c:Candle[],p=14){if(c.length<2)return 0;const v:number[]=[];for(let i=Math.max(1,c.length-p);i<c.length;i++){const x=c[i],q=c[i-1];v.push(Math.max(x.high-x.low,Math.abs(x.high-q.close),Math.abs(x.low-q.close)))}return v.reduce((a,b)=>a+b,0)/v.length}
 function adx(c:Candle[],p=14){if(c.length<p+2)return 0;const tr:number[]=[],pl:number[]=[],mi:number[]=[];for(let i=1;i<c.length;i++){const x=c[i],q=c[i-1];tr.push(Math.max(x.high-x.low,Math.abs(x.high-q.close),Math.abs(x.low-q.close)));const u=x.high-q.high,d=q.low-x.low;pl.push(u>d?Math.max(u,0):0);mi.push(d>u?Math.max(d,0):0)}const sm=(a:number[])=>{if(a.length<p)return[];const o=[a.slice(0,p).reduce((x,y)=>x+y,0)/p];for(let i=p;i<a.length;i++)o.push((o.at(-1)!*(p-1)+a[i])/p);return o};const t=sm(tr),pp=sm(pl),mm=sm(mi),dx:number[]=[];for(let i=0;i<t.length;i++){const a=pp[i]/Math.max(t[i],EPS)*100,b=mm[i]/Math.max(t[i],EPS)*100;dx.push(a+b?Math.abs(a-b)/(a+b)*100:0)}if(dx.length<p)return 0;let x=dx.slice(0,p).reduce((a,b)=>a+b,0)/p;for(let i=p;i<dx.length;i++)x=(x*(p-1)+dx[i])/p;return r(x,1)}
 function daily(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [...c].sort((a,b)=>a.timestamp-b.timestamp)){const z=new Date(x.timestamp),k=z.toISOString().slice(0,10),b=m.get(k)??[];b.push(x);m.set(k,b)}return[...m.values()].map(b=>({timestamp:b[0].timestamp,open:b[0].open,high:Math.max(...b.map(x=>x.high)),low:Math.min(...b.map(x=>x.low)),close:b.at(-1)!.close,volume:b.reduce((s,x)=>s+x.volume,0)}))}
-function dailyTrend(c:Candle[]){const d=daily(c);if(d.length<25)return{direction:null as Direction|null,e8:0,e21:0,spread:0};const a=d.map(x=>x.close),e8=ema(a,8).at(-1)!,e21=ema(a,21).at(-1)!,p=a.at(-1)!,spread=Math.abs(e8-e21)/Math.max(p,EPS)*100;return{direction:spread<=DAILY_NEUTRAL_SPREAD_PCT?null:e8>e21?"LONG":"SHORT",e8,e21,spread}}
+interface DailyRegime {
+  direction: Direction|null;
+  strength: "LOW"|"MEDIUM"|"HIGH"|"NEUTRAL";
+  e8:number; e21:number; spread:number; spreadContracting:boolean; e8Slope:number; e21Slope:number;
+}
+function dailyTrend(c:Candle[]):DailyRegime{
+  const d=daily(c);
+  if(d.length<25)return{direction:null,strength:"NEUTRAL",e8:0,e21:0,spread:0,spreadContracting:false,e8Slope:0,e21Slope:0};
+  const a=d.map(x=>x.close),e8s=ema(a,8),e21s=ema(a,21),e8=e8s.at(-1)!,e21=e21s.at(-1)!,e8Prev=e8s.at(-2)!,e21Prev=e21s.at(-2)!,p=a.at(-1)!;
+  const signedSpread=e8-e21,spread=Math.abs(signedSpread)/Math.max(p,EPS)*100;
+  const prevSigned=e8Prev-e21Prev,spreadContracting=Math.abs(signedSpread)<Math.abs(prevSigned);
+  const e8Slope=e8-e8Prev,e21Slope=e21-e21Prev;
+  const direction:Direction|null=spread<=DAILY_NEUTRAL_SPREAD_PCT?null:e8>e21?"LONG":"SHORT";
+  if(!direction)return{direction:null,strength:"NEUTRAL",e8,e21,spread,spreadContracting,e8Slope,e21Slope};
+  const weakening=direction==="LONG"?(e8Slope<0&&spreadContracting):(e8Slope>0&&spreadContracting);
+  const strong=spread>=1.5&&!spreadContracting&&(direction==="LONG"?e8Slope>=0:e8Slope<=0);
+  const strength=strong?"HIGH":weakening||spread<0.75?"LOW":"MEDIUM";
+  return{direction,strength,e8,e21,spread,spreadContracting,e8Slope,e21Slope};
+}
+function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean;label:string}{
+  const x=get4HEmaDiagnostic(c);
+  if(x.turning)return{direction:x.spread>0?"SHORT":x.spread<0?"LONG":null,turning:true,label:x.label};
+  if(x.stage.includes("BEARISH"))return{direction:"SHORT",turning:false,label:x.label};
+  if(x.stage.includes("BULLISH"))return{direction:"LONG",turning:false,label:x.label};
+  return{direction:null,turning:false,label:x.label};
+}
+function dailyAllowsTactical(d:DailyRegime,t:Direction|null,tacticalTurning:boolean){
+  if(!d.direction||!t)return false;
+  if(d.direction===t)return true;
+  if(d.strength==="HIGH")return false;
+  if(d.strength==="LOW")return true;
+  return tacticalTurning;
+}
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
 function line(p:Swing[]){if(p.length<2)return null;const n=p.length,sx=p.reduce((s,x)=>s+x.index,0),sy=p.reduce((s,x)=>s+x.price,0),sxy=p.reduce((s,x)=>s+x.index*x.price,0),sx2=p.reduce((s,x)=>s+x.index*x.index,0),den=n*sx2-sx*sx;if(!den)return null;const slope=(n*sxy-sx*sy)/den;return{slope,intercept:(sy-slope*sx)/n}}
@@ -159,7 +193,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   if(!d.direction) missing.push("direction");
 
-  const direction=d.direction;
+  const tactical=tacticalDirection(c);
+  const direction=dailyAllowsTactical(d,tactical.direction,tactical.turning)?tactical.direction:null;
   const a=atr(c);
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
   const trendlineState=direction?getTrendline(pair,c,direction):null;
@@ -266,7 +301,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const d=dailyTrend(c),cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
   const evaluation=evaluateGates(pair,c,p);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
-  debug.push(`[1D] ${d.direction??"NEUTRAL"} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} | spread ${d.spread.toFixed(2)}%`);
+  debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} | spread ${d.spread.toFixed(2)}%`);
+  const tactical=tacticalDirection(c);
+  debug.push(`[4H TACTICAL] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D ${d.direction??"NEUTRAL"} ${d.strength} | ${tactical.direction&&dailyAllowsTactical(d,tactical.direction,tactical.turning)?"PERMITTED":"BLOCKED"}`);
 
   if(!evaluation.direction){
     debug.push("[1D] NEUTRAL | spread < 0.5%");
@@ -407,4 +444,4 @@ export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.ti
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now=Date.now()){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason})}return{active,exited}}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return"TP_HIT";return"ACTIVE"}
-export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),d=dailyTrend(c),st=stoch(q),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:d.e8,ema21_1d:d.e21,fourHDirection}}
+export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),d=dailyTrend(c),st=stoch(q),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";const tactical=tacticalDirection(c);return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:d.e8,ema21_1d:d.e21,dailyDirection:d.direction==="LONG"?"BULL":d.direction==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:d.strength,fourHDirection:e8>e21?"BULL":"BEAR",fourHTacticalDirection:tactical.direction==="LONG"?"BULL":tactical.direction==="SHORT"?"BEAR":"NEUTRAL",fourHTacticalLabel:tactical.label}
