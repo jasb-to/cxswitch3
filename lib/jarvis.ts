@@ -92,29 +92,34 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
 function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
   const tactical=directionFrom4H(m);
   if(!tactical)return undefined;
+
   const k1=Number(m?.stochK1d),d1=Number(m?.stochD1d),pk1=Number(m?.stochK1dPrev),pd1=Number(m?.stochD1dPrev);
   const k4=Number(m?.stochK4h),d4=Number(m?.stochD4h),pk4=Number(m?.stochK4hPrev),pd4=Number(m?.stochD4hPrev);
   if(![k1,d1,k4,d4].every(Number.isFinite))return undefined;
 
-  const dailyTurn=tactical==="LONG"
-    ? (Number.isFinite(pk1)&&Number.isFinite(pd1)&&pk1<=pd1&&k1>d1) || k1>d1
-    : (Number.isFinite(pk1)&&Number.isFinite(pd1)&&pk1>=pd1&&k1<d1) || k1<d1;
+  // Opportunity recognition is deliberately separate from the trade gates.
+  // The 4H tactical direction is the anchor: a Stoch move against it is
+  // context/noise, not an opportunity. This prevents false alerts such as
+  // "BULL opportunity" while 4H tactical direction is BULL but Stoch is bearish.
   const fourHTurn=tactical==="LONG"
     ? (Number.isFinite(pk4)&&Number.isFinite(pd4)&&pk4<=pd4&&k4>d4) || k4>d4
     : (Number.isFinite(pk4)&&Number.isFinite(pd4)&&pk4>=pd4&&k4<d4) || k4<d4;
 
-  // This is recognition only. It deliberately does not gate ENTRY_1/ENTRY_2.
-  // Either timeframe can be early; the combination becomes a stronger opportunity
-  // when both are pointing the same way.
-  if(!dailyTurn && !fourHTurn)return undefined;
-  const both=dailyTurn&&fourHTurn;
+  if(!fourHTurn)return undefined;
+
+  const dailyTurn=tactical==="LONG"
+    ? (Number.isFinite(pk1)&&Number.isFinite(pd1)&&pk1<=pd1&&k1>d1) || k1>d1
+    : (Number.isFinite(pk1)&&Number.isFinite(pd1)&&pk1>=pd1&&k1<d1) || k1<d1;
+
+  const both=dailyTurn;
   const dirText=tactical==="LONG"?"bullish":"bearish";
+
   return {
     direction:tactical,
     strength:both?"CONFIRMED":"DEVELOPING",
     reason:both
       ? `1D and 4H Stoch are turning ${dirText}; 4H tactical direction agrees.`
-      : `${dailyTurn?"1D":"4H"} Stoch is turning ${dirText}; 4H tactical direction is ${tactical}.`
+      : `4H Stoch agrees with 4H tactical direction; 1D context is not yet confirmed.`
   };
 }
 
