@@ -12,6 +12,7 @@ export const CURRENT_SIGNAL_VERSION=37;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
+const priceRound=(n:number)=>{if(!Number.isFinite(n))return n;const d=Math.abs(n)>=1000?0:Math.abs(n)>=1?2:Math.abs(n)>=0.1?3:5;return r(n,d)};
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}
 function rsiSeries(a:number[],p=14){if(a.length<=p)return[];let g=0,l=0;for(let i=1;i<=p;i++){const x=a[i]-a[i-1];if(x>=0)g+=x;else l-=x}let ag=g/p,al=l/p,o=[al===0?100:100-100/(1+ag/al)];for(let i=p+1;i<a.length;i++){const x=a[i]-a[i-1];ag=(ag*(p-1)+Math.max(x,0))/p;al=(al*(p-1)+Math.max(-x,0))/p;o.push(al===0?100:100-100/(1+ag/al))}return o}
 function rsi(a:number[]){const x=rsiSeries(a);return x.at(-1)??50}
@@ -359,7 +360,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       const reversalMomentumLabel=reversalMomentumScore>=2?"STRONG":"EARLY";
       const s:Signal={
         id:`${pair}_${rev.type}_${now}`,pair,direction:rev.direction,type:rev.type,signalClass:"REVERSAL",sizeMultiplier:0.5,
-        entry:r(entryBase),stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
+        entry:priceRound(entryBase),stop:priceRound(stop),tp1:priceRound(tp1),tp2:priceRound(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
         expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),
         reason:`counter-trend reversal + descending/ascending 4H trendline + 4H Stoch + 5/13 momentum ${reversalMomentumLabel}`,
         timestamp:now,version:CURRENT_SIGNAL_VERSION,
