@@ -35,11 +35,11 @@ export async function sendAlert(signal:any){
   const lines=[
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type}`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,"",
-    `${signal.signalClass==="REVERSAL"?"🔄 ":""}Entry: ${formatPrice(entry)}${signal.entryType ? ` · ${signal.entryType}` : ""}${signal.signalClass==="REVERSAL" ? " · 50% size" : ""}`,
-    `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,`Risk: ${signal.context?.stopCalc?.riskPct!=null ? signal.context.stopCalc.riskPct.toFixed(2)+"% ("+(signal.context.stopCalc.marginUsagePct?.toFixed(0)??"-")+"% of margin at 20x)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${signal.context?.stopCalc?.liquidationBufferPct!=null ? signal.context.stopCalc.liquidationBufferPct.toFixed(2)+"%" : "-"}`,signal.context?.stopCalc?.liquidationBufferPct!=null&&signal.context.stopCalc.liquidationBufferPct<1?"⚠️ TIGHT — reduce size":"",
+    `Entry: ${formatPrice(entry)} · MARKET`,
+    `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,`Risk: ${Number.isFinite(entry)&&Number.isFinite(Number(signal.stopLoss??signal.stop)) ? Math.abs(entry-Number(signal.stopLoss??signal.stop)).toFixed(2)+" pts ("+(signal.context?.stopCalc?.riskPct?.toFixed(2)??"-")+"%)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.liquidationPrice??signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${(signal.context?.stopToLiquidationBufferPct??signal.context?.stopCalc?.liquidationBufferPct)!=null ? Number(signal.context?.stopToLiquidationBufferPct??signal.context?.stopCalc?.liquidationBufferPct).toFixed(2)+"%" : "-"}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
-    `RR (TP1): ${signal.rr??"-"}`,
+    `RR (TP1): ${signal.rr??"-"}`,`Size: ${signal.sizeMultiplier===0.5 ? "50%"+(signal.signalClass==="REVERSAL" ? " (counter-trend)" : " (reduced for liquidation buffer)") : "100%"}`,
     jarvisLine,
     `Expected Move: ${expectedMove}%`,
     signal.reason||""
