@@ -256,7 +256,7 @@ export async function GET(request:Request){
  }catch(error){console.error("[MARKET HEALTH] refresh failed",error);}
 
 
- for(const pair of PAIRS){let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;try{
+ for(const batch of [PAIRS.slice(0,4),PAIRS.slice(4)]){ await Promise.all(batch.map(async (pair)=>{let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;try{
   const [c1,c4,c15]=await Promise.all([
     getCandles(krakenPairFormat(pair+"/USD"),60),
     getCandles(krakenPairFormat(pair+"/USD"),240),
@@ -314,7 +314,7 @@ export async function GET(request:Request){
    await addActiveSignal(signal);
    active=await getActiveSignals();
   }
- }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}finally{const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);if(stateMarket)stateMarket.jarvisState=jarvisState;console.log(jarvisState);}}
+ }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e));}finally{const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);if(stateMarket)stateMarket.jarvisState=jarvisState;console.log(jarvisState);}})}); }
  await setMarketData(marketData);
  // Jarvis refresh completes before management.
  try{
