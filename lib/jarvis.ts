@@ -38,11 +38,13 @@ function directionFromDaily(value:any): "BULL" | "BEAR" | "NEUTRAL" {
 }
 
 function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
-  if(snapshot?.fourHDirection === "BULL" || snapshot?.fourHDirection === "LONG" || snapshot?.fourHDirection === "BULLISH") return "BULL";
-  if(snapshot?.fourHDirection === "BEAR" || snapshot?.fourHDirection === "SHORT" || snapshot?.fourHDirection === "BEARISH") return "BEAR";
+  // 4H 5/13 is Jarvis's tactical direction. Prefer it over the coarse 8/21
+  // direction so narration matches the actual tactical state shown in the UI/logs.
   const tacticalLabel=String(snapshot?.fourH513?.label || snapshot?.fourH513?.stage || "");
   if(tacticalLabel.includes("BEARISH")) return "BEAR";
   if(tacticalLabel.includes("BULLISH")) return "BULL";
+  if(snapshot?.fourHDirection === "BULL" || snapshot?.fourHDirection === "LONG" || snapshot?.fourHDirection === "BULLISH") return "BULL";
+  if(snapshot?.fourHDirection === "BEAR" || snapshot?.fourHDirection === "SHORT" || snapshot?.fourHDirection === "BEARISH") return "BEAR";
   const e8=Number(snapshot?.ema8_4h), e21=Number(snapshot?.ema21_4h);
   if(Number.isFinite(e8)&&Number.isFinite(e21)) return e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL";
   return "NEUTRAL";
