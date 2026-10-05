@@ -168,12 +168,20 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const st4=stoch(c.map(x=>x.close));
   const entry1=direction==="LONG"?st4.k<20:direction==="SHORT"?st4.k>80:false;
-  const entry2=direction==="LONG"
+  // V28-style timing: ENTRY_1 is the early extreme-Stoch position; ENTRY_2
+  // requires a fresh 4H K/D cross inside the usable momentum window.
+  const rawEntry2=direction==="LONG"
     ? st4.pk<=st4.pd&&st4.k>st4.d
     : direction==="SHORT"
       ? st4.pk>=st4.pd&&st4.k<st4.d
       : false;
-  const entry2Late=false;
+  const entry2Window=direction==="LONG"
+    ? st4.k>=20&&st4.k<=55
+    : direction==="SHORT"
+      ? st4.k>=45&&st4.k<=80
+      : false;
+  const entry2=rawEntry2&&entry2Window;
+  const entry2Late=rawEntry2&&!entry2Window;
   const signalType=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!signalType && direction) missing.push(entry2Late?"entry2_late":"stoch_cross");
 
@@ -389,12 +397,4 @@ export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.ti
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now=Date.now()){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason})}return{active,exited}}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return"TP_HIT";return"ACTIVE"}
-export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),c15=[...candles15m].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),q15=c15.map(x=>x.close),d=dailyTrend(c),st=stoch(q),st15=stoch(q15),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:d.e8,ema21_1d:d.e21,fourHDirection}}
-export async function getMonitorState(_pair:string){return undefined}
-export async function clearMonitorState(_pair:string){return}
-export async function setMonitorState(_pair:string,_state:any){return}
-export function setRedisClient(_client:any){return}
-export function rebuildStateFromTrades(_trades:Record<string,any>){return}
-export function isSignalStillValidBool(s:Signal,p:number){return isSignalStillValid(s,p).valid}
-export async function generateSignalCompat(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],_activeTrades:any[]=[],currentPrice?:number,_lastBreakout?:any,_dailyLive?:any,_candlesWeekly:Candle[]=[],_marketHealth?:any,nowOverride?:number){return generateSignal(pair,candles1h,candles4h,candles15m,currentPrice,nowOverride)}
-export function shouldHoldCompat(s:Signal,c4:Candle[],_c1:Candle[],p:number){return shouldHold(s,c4,p)}
+export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),d=dailyTrend(c),st=stoch(q),st15=stoch(q15),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:d.e8,ema21_1d:d.e21,fourHDirection}}
