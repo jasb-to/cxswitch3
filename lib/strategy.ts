@@ -306,7 +306,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[4H TACTICAL] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D ${d.direction??"NEUTRAL"} ${d.strength} | ${tactical.direction&&dailyAllowsTactical(d,tactical.direction,tactical.turning)?"PERMITTED":"BLOCKED"}`);
 
   if(!evaluation.direction){
-    debug.push("[1D] NEUTRAL | spread < 0.5%");
+    debug.push(d.direction
+      ? `[DIRECTION] 4H tactical ${tactical.direction??"NEUTRAL"} blocked by 1D ${d.direction} ${d.strength}`
+      : "[1D] NEUTRAL | spread < 0.5%");
     debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
@@ -328,7 +330,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
   if(!evaluation.allPassed){
-    const reversal=reversalCandidate(c,evaluation.direction,p);
+    const reversal=tactical.direction===d.direction
+      ? reversalCandidate(c,d.direction!,p)
+      : {signal:null,reason:"tactical_countertrend"};
     if(reversal.signal){
       const rev=reversal.signal;
       const entryBase=p;
