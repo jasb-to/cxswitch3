@@ -8,7 +8,7 @@ export interface Signal {
 export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
-export const CURRENT_SIGNAL_VERSION=36;
+export const CURRENT_SIGNAL_VERSION=37;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
@@ -211,12 +211,16 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const st4=stoch(c.map(x=>x.close));
   const entry1=direction==="LONG"?st4.k<20:direction==="SHORT"?st4.k>80:false;
-  // V28-style timing: ENTRY_1 is the early extreme-Stoch position; ENTRY_2
-  // requires a fresh 4H K/D cross inside the usable momentum window.
+  // V28 timing: ENTRY_1 is the early extreme-Stoch position; ENTRY_2
+  // is valid while the 4H K/D relationship has turned in the trade
+  // direction and K remains inside the usable momentum window. Do NOT
+  // require the crossover to occur on the immediately previous candle:
+  // that was a regression from V28 and was causing valid opportunities
+  // to disappear between cron runs.
   const rawEntry2=direction==="LONG"
-    ? st4.pk<=st4.pd&&st4.k>st4.d
+    ? st4.k>st4.d
     : direction==="SHORT"
-      ? st4.pk>=st4.pd&&st4.k<st4.d
+      ? st4.k<st4.d
       : false;
   const entry2Window=direction==="LONG"
     ? st4.k>=20&&st4.k<=55
