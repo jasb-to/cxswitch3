@@ -64,10 +64,10 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
   const oneD = directionFromDaily(snapshot?.dailyDirection);
   const dailyStrength = String(snapshot?.dailyStrength || "NEUTRAL");
   if(oneD === "BULL" && signal.direction === "SHORT" && dailyStrength === "HIGH") {
-    return { verdict:"VETO", reason:"SHORT against HIGH-strength BULL 1D" };
+    return { verdict:"WARN", reason:"SHORT against HIGH-strength BULL 1D context" };
   }
   if(oneD === "BEAR" && signal.direction === "LONG" && dailyStrength === "HIGH") {
-    return { verdict:"VETO", reason:"LONG against HIGH-strength BEAR 1D" };
+    return { verdict:"WARN", reason:"LONG against HIGH-strength BEAR 1D context" };
   }
 
   const fourH = directionFrom4H(snapshot);
@@ -176,11 +176,11 @@ export async function runJarvis(marketData:any[], active:any[]): Promise<JarvisS
   const pairs:Record<string,JarvisPairState>={};
   for(const m of marketData) pairs[m.pair]=pairState(m,activeByPair.get(m.pair));
   const all=Object.values(pairs);
-  const hasVeto=all.some(x=>x.verdict==="VETO");
+  const hasVeto=false;
   const hasWarn=all.some(x=>x.verdict==="WARN");
   const snapshot:JarvisSnapshot={
     portfolioState:hasVeto?"VETO":hasWarn?"WARN":"GOOD",
-    whatChanged:hasVeto?"One or more signals are vetoed by 1D direction.":hasWarn?"One or more signals have a deterministic warning.":"All monitored signals are aligned with the bounded Jarvis rules.",
+    whatChanged:hasWarn?"One or more signals have a deterministic warning.":"All monitored signals are aligned with the bounded Jarvis rules.",
     pairs,
     updatedAt:Date.now(),
   };
