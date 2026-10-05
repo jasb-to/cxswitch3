@@ -1,12 +1,12 @@
 export interface Candle { timestamp:number; open:number; high:number; low:number; close:number; volume:number }
 export interface Signal {
-  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"REVERSAL_SHORT"|"REVERSAL_LONG"; entryType:"MARKET"|"LIMIT"; signalClass:"TREND"|"REVERSAL"; sizeMultiplier:1|0.5;
+  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"REVERSAL_SHORT"|"REVERSAL_LONG"; signalClass:"TREND"|"REVERSAL"; sizeMultiplier:1|0.5;
   entry:number; stop:number; tp1:number; tp2:number; rr:number;
   adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number;
   reason:string; timestamp:number; version:number; context?:any;
 }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
-export const CURRENT_SIGNAL_VERSION=31;
+export const CURRENT_SIGNAL_VERSION=32;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.5, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
@@ -74,60 +74,21 @@ const MAX_STOP_ATR = 2.5;
 const MAX_STOP_RISK_PCT = 4.0;
 
 export function calculateStop(
-  direction:"LONG"|"SHORT",
-  entry:number,
-  trendlinePrice:number,
-  atrValue:number,
-  candles:Candle[]
+  direction:"LONG"|"SHORT", entry:number, trendlinePrice:number, atrValue:number, candles:Candle[]
 ): { stop:number; calc:StopCalc; valid:boolean; invalidReason?:string } {
-  if(!Number.isFinite(entry)||entry<=0||!Number.isFinite(trendlinePrice)||!Number.isFinite(atrValue)||atrValue<=0)
+  if(!Number.isFinite(entry)||entry<=0||!Number.isFinite(atrValue)||atrValue<=0)
     return {stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_inputs"};
-
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const recentStart=Math.max(0,c.length-12);
-  const recentSwing=swings(c,direction==="SHORT").filter(x=>x.index>=recentStart).at(-1);
-  const structuralBase=direction==="LONG"
-    ? Math.min(recentSwing?.price??(trendlinePrice-atrValue),trendlinePrice-atrValue)
-    : Math.max(recentSwing?.price??(trendlinePrice+atrValue),trendlinePrice+atrValue);
-
-  const atrFloor=direction==="LONG"?entry-MIN_STOP_ATR*atrValue:entry+MIN_STOP_ATR*atrValue;
-  const atrCeiling=direction==="LONG"?entry-MAX_STOP_ATR*atrValue:entry+MAX_STOP_ATR*atrValue;
-  const pctCap=direction==="LONG"?entry*(1-MAX_STOP_RISK_PCT/100):entry*(1+MAX_STOP_RISK_PCT/100);
-
-  let stop=direction==="LONG"
-    ? Math.max(structuralBase,atrFloor)
-    : Math.min(structuralBase,atrFloor);
-  stop=direction==="LONG"
-    ? Math.min(stop,atrCeiling)
-    : Math.max(stop,atrCeiling);
-  stop=direction==="LONG"
-    ? Math.max(stop,pctCap)
-    : Math.min(stop,pctCap);
-
-  const riskPct=Math.abs(entry-stop)/entry*100;
-  const atrMultiplier=Math.abs(entry-stop)/atrValue;
-  const liquidationPrice=direction==="LONG"
-    ? entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE)
-    : entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
-  const liquidationBufferPct=direction==="LONG"
-    ? (stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100
-    : (liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
-  const marginUsagePct=riskPct*MAX_LEVERAGE;
-
-  let invalidReason:string|undefined;
-  if(riskPct>MAX_STOP_RISK_PCT+1e-9) invalidReason="stop_too_wide";
-  else if(atrMultiplier>MAX_STOP_ATR+1e-9) invalidReason="stop_over_2_5_atr";
-  else if(direction==="LONG" ? stop<=liquidationPrice*1.005 : stop>=liquidationPrice*0.995) invalidReason="liquidation_buffer";
-  else if(atrMultiplier<MIN_STOP_ATR-1e-9) invalidReason="stop_under_1_atr";
-
-  return {
-    stop,
-    calc:{structuralAnchor:r(structuralBase),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:r(liquidationPrice),marginUsagePct:r(marginUsagePct,1)},
-    valid:!invalidReason,
-    invalidReason
-  };
+  const recentSwing=swings(c,direction==="SHORT").at(-1);
+  const atrStop=direction==="LONG"?entry-1.5*atrValue:entry+1.5*atrValue;
+  const structuralAnchor=recentSwing?.price ?? (direction==="LONG"?trendlinePrice-1.5*atrValue:trendlinePrice+1.5*atrValue);
+  const stop=direction==="LONG"?Math.min(structuralAnchor,atrStop):Math.max(structuralAnchor,atrStop);
+  const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
+  const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
+  const liquidationPrice=direction==="LONG"?entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE):entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
+  const liquidationBufferPct=direction==="LONG"?(stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100:(liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
+  return {stop,calc:{structuralAnchor:r(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:r(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid:true};
 }
-
 function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValue:number,structuralAnchor:number):StopCalc{
   const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
   const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
@@ -233,7 +194,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(zoneValue){
     const a=atr(c);
     if(a>0){
-      const entryBase=distancePct<=0.3?p:trendlinePrice;
+      const entryBase=p;
       const stopResult=direction?calculateStop(direction,entryBase,trendlinePrice,a,c):null;
       stopCalc=stopResult?.calc??null;
       if(!stopResult||!stopResult.valid){
@@ -281,7 +242,7 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
 }
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number){
-  void candles1h; void candles15m;
+  void candles1h;
   const debug:string[]=[];
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
@@ -324,24 +285,32 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     const reversal=reversalCandidate(c,evaluation.direction,p);
     if(reversal.signal){
       const rev=reversal.signal;
-      const entryType=rev.distancePct<=0.3?"MARKET":"LIMIT";
-      const entryBase=entryType==="MARKET"?p:rev.trendlinePrice;
-      const stop=rev.direction==="SHORT"?rev.trendlinePrice+a:rev.trendlinePrice-a;
+      const entryBase=p;
+      const sorted15m=[...candles15m].sort((x,y)=>x.timestamp-y.timestamp);
+      const nowMs=now>1e12?now:now*1000;
+      const current15mOpen=Math.floor(nowMs/900000)*900000;
+      const closed15m=sorted15m.filter(x=>(x.timestamp>1e12?x.timestamp:x.timestamp*1000)<current15mOpen).slice(-5);
+      const recent15mExtreme=rev.direction==="SHORT"
+        ? Math.max(...closed15m.map(x=>x.high),entryBase)
+        : Math.min(...closed15m.map(x=>x.low),entryBase);
+      const atrStop=rev.direction==="SHORT"?entryBase+a:entryBase-a;
+      const stop=rev.direction==="SHORT"?Math.max(recent15mExtreme,atrStop):Math.min(recent15mExtreme,atrStop);
       const tp1=rev.direction==="SHORT"?entryBase*.97:entryBase*1.03;
       const tp2=rev.direction==="SHORT"?entryBase*.94:entryBase*1.06;
       const risk=rev.direction==="SHORT"?stop-entryBase:entryBase-stop;
       const reward=rev.direction==="SHORT"?entryBase-tp1:tp1-entryBase;
       const rr=risk>0?reward/risk:0;
+      const stopCalc=fixedStopCalc(rev.direction,entryBase,stop,a,recent15mExtreme);
       const s:Signal={
-        id:`${pair}_${rev.type}_${now}`,pair,direction:rev.direction,type:rev.type,entryType,signalClass:"REVERSAL",sizeMultiplier:0.5,
+        id:`${pair}_${rev.type}_${now}`,pair,direction:rev.direction,type:rev.type,signalClass:"REVERSAL",sizeMultiplier:0.5,
         entry:r(entryBase),stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
         expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),
         reason:`counter-trend reversal + descending/ascending 4H trendline + 4H Stoch`,
         timestamp:now,version:CURRENT_SIGNAL_VERSION,
-        context:{zone:rev.direction==="SHORT"?"REVERSAL_RESISTANCE":"REVERSAL_SUPPORT",zonePrice:r(rev.trendlinePrice),zoneDistancePct:rev.distancePct,entryType,entryAnchor:"4H reversal trendline",signalClass:"REVERSAL",sizeMultiplier:0.5,reversalSlope:rev.slope,stochK_4h:st4.k,stochD_4h:st4.d,stopCalc:fixedStopCalc(rev.direction,entryBase,stop,a,rev.trendlinePrice)}
+        context:{zone:rev.direction==="SHORT"?"REVERSAL_RESISTANCE":"REVERSAL_SUPPORT",zonePrice:r(rev.trendlinePrice),zoneDistancePct:rev.distancePct,signalClass:"REVERSAL",sizeMultiplier:0.5,reversalSlope:rev.slope,stochK_4h:st4.k,stochD_4h:st4.d,stopReference15m:r(recent15mExtreme),liquidationPrice:stopCalc.liquidationPrice,stopToLiquidationBufferPct:stopCalc.liquidationBufferPct,stopCalc}
       };
-      debug.push(`[REVERSAL] ${s.type} | line ${r(rev.trendlinePrice)} | distance ${rev.distancePct.toFixed(2)}% | entry ${entryType} @ ${s.entry} | 50% size`);
-      debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
+      debug.push(`[REVERSAL] ${s.type} | ${rev.direction==="SHORT"?"descending resistance":"ascending support"} @ ${r(rev.trendlinePrice)} | distance ${rev.distancePct.toFixed(2)}% | entry MARKET @ ${s.entry} | SL ${s.stop} | 50% size`);
+      debug.push(`[SIGNAL] ${s.direction} ${s.type} MARKET | entry ${s.entry} | line ${r(rev.trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
       debug.push("[JARVIS] WARN | counter-trend reversal — reduce size, tighter management");
       debug.push("[ALERT] SURFACE");
       return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
@@ -353,23 +322,22 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   }
 
   const signalType=evaluation.trigger.signalType!;
-  const entryType=trendlineDistancePct<=0.3?"MARKET":"LIMIT";
-  const entryBase=entryType==="MARKET"?p:trendlinePrice;
-  debug.push(`[ENTRY] ${entryType} | anchor ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
+  const entryBase=p;
+  debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
   const stop=calculatedStop.stop;
   const tp1=evaluation.direction==="LONG"?entryBase*1.05:entryBase*.95;
   const tp2=evaluation.direction==="LONG"?entryBase*1.10:entryBase*.90;
 
   const s:Signal={
-    id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:r(entryBase),entryType,signalClass:"TREND",sizeMultiplier:1,
+    id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:r(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
     stop:r(stop),tp1:r(tp1),tp2:r(tp2),rr:r(evaluation.rr??0),expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
     reason:`${evaluation.direction} ${signalType} + ${trendlineType} location + 4H Stoch`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryType,entryAnchor:"4H trendline",signalClass:"TREND",sizeMultiplier:1,structuralAnchor:r(trendlinePrice),stopCalc:calculatedStop.calc,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
+    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
-  debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.entryType} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
+  debug.push(`[SIGNAL] ${s.direction} ${s.type} MARKET | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
   debug.push("[JARVIS] GOOD | shared gate evaluation passed");
   debug.push("[ALERT] SURFACE");
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
