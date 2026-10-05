@@ -314,7 +314,7 @@ export async function GET(request:Request){
    await addActiveSignal(signal);
    active=await getActiveSignals();
   }
- } catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e));} finally {const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);if(stateMarket)stateMarket.jarvisState=jarvisState;console.log(jarvisState);}}); }
+ } catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});} finally {const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);if(stateMarket)stateMarket.jarvisState=jarvisState;console.log(jarvisState);}}); }
  await setMarketData(marketData);
  // Jarvis refresh completes before management.
  try{
