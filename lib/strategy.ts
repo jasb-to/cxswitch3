@@ -153,6 +153,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(!d.direction) missing.push("direction");
 
   const direction=d.direction;
+  const a=atr(c);
+  const e21=ema(c.map(x=>x.close),21).at(-1)??0;
   const trendlineState=direction?getTrendline(pair,c,direction):null;
   const trendlineSlope=trendlineState?.slope??0;
   const validTrendline=!!trendlineState&&!!direction&&(
@@ -177,14 +179,12 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(!signalType && direction) missing.push(entry2Late?"entry2_late":"stoch_cross");
 
   const rv=rsi(c.map(x=>x.close));
-  const e21=ema(c.map(x=>x.close),21).at(-1)??0;
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
   // Exhaustion is diagnostic only; it does not veto an entry.
 
   let rr:number|null=null;
   let stopCalc:StopCalc|null=null;
   if(zoneValue){
-    const a=atr(c);
     if(a>0){
       const entryBase=p;
       const stopResult=direction?calculateStop(direction,entryBase,trendlinePrice,a,c):null;
