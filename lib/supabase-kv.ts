@@ -51,6 +51,26 @@ export class Redis {
     return "OK";
   }
 
+  async cleanupExpired(): Promise<number> {
+    const { data, error } = await this.db.rpc("cxswitch_kv_cleanup_expired");
+    if (error) throw new Error(`Supabase KV cleanup failed: ${error.message}`);
+    return Number(data ?? 0);
+  }
+
+  async prunePrefix(prefix: string, keep: number): Promise<number> {
+    const { data, error } = await this.db
+      .from("cxswitch_kv")
+      .select("key,updated_at")
+      .like("key", `${prefix}%`)
+      .order("updated_at", { ascending: false });
+    if (error) throw new Error(`Supabase KV prune failed for ${prefix}: ${error.message}`);
+    const stale = (data ?? []).slice(Math.max(0, keep)).map((row: { key: string }) => row.key);
+    if (!stale.length) return 0;
+    const { error: deleteError } = await this.db.from("cxswitch_kv").delete().in("key", stale);
+    if (deleteError) throw new Error(`Supabase KV prune delete failed for ${prefix}: ${deleteError.message}`);
+    return stale.length;
+  }
+
   async del(key: string): Promise<number> {
     const { data, error } = await this.db.from("cxswitch_kv").delete().eq("key", key).select("key");
     if (error) throw new Error(`Supabase KV delete failed for ${key}: ${error.message}`);
