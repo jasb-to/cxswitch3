@@ -90,7 +90,7 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
 }
 
 function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
-  const tactical=evaluation?.direction==="LONG"||evaluation?.direction==="SHORT"?evaluation.direction:null;
+  const tactical=directionFrom4H(m);
   if(!tactical)return undefined;
   const k1=Number(m?.stochK1d),d1=Number(m?.stochD1d),pk1=Number(m?.stochK1dPrev),pd1=Number(m?.stochD1dPrev);
   const k4=Number(m?.stochK4h),d4=Number(m?.stochD4h),pk4=Number(m?.stochK4hPrev),pd4=Number(m?.stochD4hPrev);
