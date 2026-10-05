@@ -46,6 +46,13 @@ function stagedTargets(s: any) {
 
 export async function runMigrationIfNeeded(): Promise<void> { return; }
 
+export async function runPersistenceCleanup(): Promise<{expired:number;telegramPruned:number}> {
+  const expired=await redis.cleanupExpired();
+  const telegramPruned=await redis.prunePrefix(TELEGRAM_ALERT_KEY_PREFIX,100);
+  console.log(`[STATE CLEANUP] Supabase KV expired=${expired} telegram_alerts_pruned=${telegramPruned} retention=100`);
+  return {expired,telegramPruned};
+}
+
 export async function getActiveSignals(): Promise<ActiveTrade[]> {
   await runMigrationIfNeeded();
   let active = (await redis.get<ActiveTrade[]>(ACTIVE_SIGNALS_KEY)) || [];
