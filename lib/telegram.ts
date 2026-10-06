@@ -94,25 +94,24 @@ export async function sendJarvisOpportunity(update:{
 }){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
-  const conflict=update.positionConflict===true;
+  const conflict=update.positionConflict===true && (update.activePosition==="LONG" || update.activePosition==="SHORT") && update.activePosition!==update.direction;
   const emoji=conflict?"⚠️":update.direction==="LONG"?"🟢":"🔴";
-  const title=conflict?"JARVIS — "+update.direction+" REVERSAL WARNING":"JARVIS — "+update.direction+" OPPORTUNITY";
+  const title=conflict
+    ? "JARVIS — "+update.direction+" REVERSAL WATCH"
+    : "JARVIS — "+update.direction+" OPPORTUNITY · "+update.strength;
   const positionLine=conflict
-    ? ["⚠️ OPPOSITE POSITION ACTIVE — "+update.activePosition,"Review the existing "+update.activePosition+" position."]
+    ? "You’re currently "+update.activePosition+". This is moving against you — review the position."
     : update.activePosition
-      ? ["You are already "+update.activePosition+" — monitoring continuation."]
-      : [];
+      ? "You’re already "+update.activePosition+". Jarvis is watching for continuation."
+      : "No position. This is a watch signal, not an entry.";
   const lines=[
     emoji+" "+title,
     "",
-    update.pair+" · "+update.strength,
+    update.pair,
     update.reason,
-    ...positionLine,
+    positionLine,
     "",
-    conflict
-      ? "This is NOT a new trade entry. It is a warning that the opportunity is against your current position."
-      : "This is an opportunity alert, NOT a trade entry.",
-    "ENTRY_1 / ENTRY_2 still require the existing strategy conditions."
+    "Jarvis is flagging the opportunity. The V28 engine still decides ENTRY_1 / ENTRY_2."
   ].join("\n");
   const response=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
   if(!response.ok){
