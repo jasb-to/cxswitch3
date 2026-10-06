@@ -225,7 +225,7 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   if(!evaluation.direction){
     const blockReason=dailyDir==="NEUTRAL"
       ? "1D direction is NEUTRAL."
-      : "4H tactical "+tacticalText+" is not permitted by the current 1D "+dailyText+" "+dailyStrength+" regime.";
+      : "4H "+(tacticalText==="BULL"?"BULLISH":tacticalText==="BEAR"?"BEARISH":"NEUTRAL")+" is not permitted by the current 1D "+dailyText+" "+dailyStrength+" regime.";
     return "[JARVIS STATE] "+pair+" — Quiet. 1D "+dailyText+" · "+dailyStrength+" | 4H tactical "+tacticalText+". "+blockReason+" Missing: direction.";
   }
 
@@ -257,9 +257,9 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
 
   const missingText=evaluation.missing.length?evaluation.missing.join(", "):"—";
   const suffix=evaluation.missing.length?` Missing: ${missingText}.`:"";
-  const contextText=`1D ${dailyText} · ${dailyStrength} | 4H tactical ${dir}.`;
+  const contextText=`1D ${dailyText} · ${dailyStrength} | 4H ${dir==="LONG"?"BULLISH":"BEARISH"} turn.`;
   const opportunity=detectOpportunity(market,evaluation);
-  const opportunityText=opportunity?` JARVIS OPPORTUNITY ${opportunity.direction} · ${opportunity.strength} — ${opportunity.reason}`:"";
+  const opportunityText=opportunity?` JARVIS 4H TURN ${opportunity.direction==="LONG"?"BULLISH":"BEARISH"} · ${opportunity.strength} — ${opportunity.reason}`:"";
 
   if(signal){
     const stopCtx=signal.context?.stopCalc;
