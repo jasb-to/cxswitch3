@@ -89,17 +89,29 @@ export async function sendJarvisOpportunity(update:{
   direction:"LONG"|"SHORT";
   strength:"DEVELOPING"|"CONFIRMED";
   reason:string;
+  activePosition?: "LONG"|"SHORT";
+  positionConflict?: boolean;
 }){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
-  const emoji=update.direction==="LONG"?"🟢":"🔴";
+  const conflict=update.positionConflict===true;
+  const emoji=conflict?"⚠️":update.direction==="LONG"?"🟢":"🔴";
+  const title=conflict?"JARVIS — "+update.direction+" REVERSAL WARNING":"JARVIS — "+update.direction+" OPPORTUNITY";
+  const positionLine=conflict
+    ? ["⚠️ OPPOSITE POSITION ACTIVE — "+update.activePosition,"Review the existing "+update.activePosition+" position."]
+    : update.activePosition
+      ? ["You are already "+update.activePosition+" — monitoring continuation."]
+      : [];
   const lines=[
-    emoji+" JARVIS — "+update.direction+" OPPORTUNITY",
+    emoji+" "+title,
     "",
     update.pair+" · "+update.strength,
     update.reason,
+    ...positionLine,
     "",
-    "This is an opportunity alert, NOT a trade entry.",
+    conflict
+      ? "This is NOT a new trade entry. It is a warning that the opportunity is against your current position."
+      : "This is an opportunity alert, NOT a trade entry.",
     "ENTRY_1 / ENTRY_2 still require the existing strategy conditions."
   ].join("\n");
   const response=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
