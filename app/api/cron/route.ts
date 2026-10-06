@@ -8,7 +8,6 @@ import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup } from "@/lib/state";
 import { sendAlert, sendManagementAlert, sendJarvisOpportunity } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
-import { getMarketHealth } from "@/lib/market-health";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
@@ -245,15 +244,6 @@ export async function GET(request:Request){
  }
  console.log(`[STATE] Active signals on entry: ${active.map(a=>`${a.pair}_${a.direction}_${a.type}`).join(", ")||"none"}`);
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],managementByPair:Record<string,any>={};
-
-
- // The 1D experiment is now live context for entry timing. It still does not
- // execute trades by itself; the strategy supplies the execution-grade entry/SL/TP model.
- let marketHealth:any=null;
- try{
-   marketHealth=await getMarketHealth();
-   console.log(`[MARKET HEALTH] BTC.D ${marketHealth.btcDominance??"—"} (rel ${marketHealth.btcDominanceRelative24h??"—"}%) | USDT.D ${marketHealth.usdtDominance??"—"} (rel ${marketHealth.usdtDominanceRelative24h??"—"}%) | TOTAL ${marketHealth.totalMarketCapChange24h??"—"}% | ALT ${marketHealth.altContext}`);
- }catch(error){console.error("[MARKET HEALTH] refresh failed",error);}
 
 
  for(const batch of [PAIRS.slice(0,4),PAIRS.slice(4)]){ await Promise.all(batch.map(async (pair)=>{let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;try{
