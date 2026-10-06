@@ -18,6 +18,8 @@ export interface JarvisOpportunity {
   direction: "LONG" | "SHORT";
   strength: "DEVELOPING" | "CONFIRMED";
   reason: string;
+  activePosition?: "LONG" | "SHORT";
+  positionConflict?: boolean;
 }
 
 export interface JarvisPairState {
@@ -126,7 +128,11 @@ function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
 function pairState(m:any, active:any): JarvisPairState {
   const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
   const evaluation=candles.length?evaluateGates(String(m?.pair||"?"),candles,Number(m?.price||m?.currentPrice||0)):null;
-  const opportunity=detectOpportunity(m,evaluation);
+  let opportunity=detectOpportunity(m,evaluation);
+  if(opportunity && active?.direction){
+    const activeDirection=active.direction as "LONG"|"SHORT";
+    opportunity={...opportunity,activePosition:activeDirection,positionConflict:activeDirection!==opportunity.direction};
+  }
   const direction=(active?.direction || m?.dailyLive?.direction || m?.direction || "NEUTRAL") as "LONG"|"SHORT"|"NEUTRAL";
   const review = active
     ? reviewFiredSignal({
