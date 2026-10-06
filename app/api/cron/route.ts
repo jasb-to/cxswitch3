@@ -331,10 +331,10 @@ export async function GET(request:Request){
    for(const [pair,state] of Object.entries(jarvis.pairs)){
      const opportunity=(state as any).opportunity;
      if(!opportunity)continue;
-     const key=`jarvis:opportunity:${pair}:${opportunity.direction}:${opportunity.strength}`;
+     const key=`jarvis:opportunity:${pair}:${opportunity.direction}:${opportunity.strength}:position:${opportunity.activePosition||"NONE"}:conflict:${opportunity.positionConflict?"YES":"NO"}`;
      if(await claimTelegramAlert(key)){
        try{
-         await sendJarvisOpportunity({pair,direction:opportunity.direction,strength:opportunity.strength,reason:opportunity.reason});
+         await sendJarvisOpportunity({pair,direction:opportunity.direction,strength:opportunity.strength,reason:opportunity.reason,activePosition:opportunity.activePosition,positionConflict:opportunity.positionConflict});
          console.log(`[JARVIS] ${pair} — ${opportunity.direction} ${opportunity.strength} opportunity alert sent`);
        }catch(error){
          await releaseTelegramAlert(key);
