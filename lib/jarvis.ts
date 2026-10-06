@@ -92,7 +92,7 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
 }
 
 function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
-  const tactical=directionFrom4H(m);
+  const tactical=evaluation?.direction==="LONG"?"LONG":evaluation?.direction==="SHORT"?"SHORT":directionFrom4H(m);
   if(!tactical)return undefined;
 
   const k1=Number(m?.stochK1d),d1=Number(m?.stochD1d),pk1=Number(m?.stochK1dPrev),pd1=Number(m?.stochD1dPrev);
@@ -232,7 +232,7 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const dir=evaluation.direction;
   const trendlinePrice=evaluation.zone?.price??0;
   const distancePct=evaluation.zone?.distancePct??Infinity;
-  const trendText=dir==="LONG"?"ascending support":"descending resistance";
+  const trendText=dir==="LONG"?"descending resistance":"ascending support";
 
   // Use the exact gate evaluation for the Stoch narration. This removes the
   // duplicated Stoch implementation that could say ENTRY_2 was live while
