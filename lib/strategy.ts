@@ -8,7 +8,7 @@ export interface Signal {
 export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
-export const CURRENT_SIGNAL_VERSION=37;
+export const CURRENT_SIGNAL_VERSION=38;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
@@ -64,20 +64,24 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   const existing=trendlineStore.get(pair);
   if(existing&&existing.direction===direction){
     const ageDays=(now-existing.lastUpdated)/(24*60*60*1000);
-    const recentSwings=swings(candles,direction==="SHORT").slice(-5);
+    const recentSwings=swings(candles,direction==="LONG").slice(-5);
     const currentLinePrice=existing.slope*(candles.length-1)+existing.intercept;
     const lastSwing=recentSwings.at(-1);
-    const deviation=lastSwing?Math.abs(lastSwing.price-currentLinePrice)/Math.max(currentLinePrice,EPS):0;
+    const deviation=lastSwing?Math.abs(lastSwing.price-currentLinePrice)/Math.max(Math.abs(currentLinePrice),EPS):0;
     if(ageDays<7&&deviation<0.02)return existing;
   }
-  const tr=swings(candles,direction==="SHORT").slice(-5);
+  const tr=swings(candles,direction==="LONG").slice(-5);
   const f=line(tr);
   if(!f)return null;
+  // V28 breakout line geometry: LONG breaks descending resistance;
+  // SHORT breaks ascending support.
+  if(direction==="LONG" && f.slope>=0)return null;
+  if(direction==="SHORT" && f.slope<=0)return null;
   const state:TrendlineState={slope:f.slope,intercept:f.intercept,pivots:tr,lastUpdated:now,direction,r2:0};
   trendlineStore.set(pair,state);
   return state;
 }
-function zone(c:Candle[],dir:Direction,p:number,a:number,e21:number,pair=""){if(!a)return null;const z:{type:string;price:number;distance:number}[]=[];const tr=pair?getTrendline(pair,c,dir):null;if(tr&&((dir==="LONG"&&tr.slope>0)||(dir==="SHORT"&&tr.slope<0))){const lp=tr.slope*(c.length-1)+tr.intercept;z.push({type:dir==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:lp,distance:Math.abs(p-lp)})}z.push({type:"EMA21",price:e21,distance:Math.abs(p-e21)});const sw=swings(c,dir==="SHORT"),lastSwing=sw.at(-1);if(lastSwing)z.push({type:dir==="LONG"?"SWING_LOW":"SWING_HIGH",price:lastSwing.price,distance:Math.abs(p-lastSwing.price)});z.sort((x,y)=>x.distance-y.distance);const q=z[0];return q?{...q,distancePct:q.distance/Math.max(p,EPS)*100}:null}
+function zone(c:Candle[],dir:Direction,p:number,a:number,e21:number,pair=""){if(!a)return null;const tr=pair?getTrendline(pair,c,dir):null;if(tr){const lp=tr.slope*(c.length-1)+tr.intercept;return{type:dir==="LONG"?"TRENDLINE_RESISTANCE":"TRENDLINE_SUPPORT",price:lp,distance:Math.abs(p-lp),distancePct:Math.abs(p-lp)/Math.max(p,EPS)*100};}return null}
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
   direction: "LONG" | "SHORT" | null;
@@ -190,81 +194,59 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
   const d=dailyTrend(c);
-  const missing:string[]=[];
-
-  if(!d.direction) missing.push("direction");
-
   const tactical=tacticalDirection(c);
   const direction=dailyAllowsTactical(d,tactical.direction,tactical.turning)?tactical.direction:null;
+  const missing:string[]=[];
+  if(!direction)missing.push("direction");
+
   const a=atr(c);
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
-  const trendlineState=direction?getTrendline(pair,c,direction):null;
-  const trendlineSlope=trendlineState?.slope??0;
-  const validTrendline=!!trendlineState&&!!direction&&(
-    (direction==="LONG"&&trendlineSlope>0) ||
-    (direction==="SHORT"&&trendlineSlope<0)
-  );
-  const trendlinePrice=trendlineState?trendlineState.slope*(c.length-1)+trendlineState.intercept:0;
-  const distancePct=validTrendline?Math.abs(p-trendlinePrice)/Math.max(p,EPS)*100:Infinity;
-  const zoneValue=zone(c,direction,p,a,e21,pair);
-  if(!zoneValue) missing.push("zone");
-  else if(zoneValue.distancePct>2.0) missing.push("zone");
+  const tl=direction?getTrendline(pair,c,direction):null;
+  const trendlineSlope=tl?.slope??0;
+  const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
+  const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_RESISTANCE":"TRENDLINE_SUPPORT",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
+  if(!zoneValue)missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
-  const entry1=direction==="LONG"?st4.k<20:direction==="SHORT"?st4.k>80:false;
-  // V28 timing: ENTRY_1 is the early extreme-Stoch position; ENTRY_2
-  // is valid while the 4H K/D relationship has turned in the trade
-  // direction and K remains inside the usable momentum window. Do NOT
-  // require the crossover to occur on the immediately previous candle:
-  // that was a regression from V28 and was causing valid opportunities
-  // to disappear between cron runs.
-  const rawEntry2=direction==="LONG"
-    ? st4.k>st4.d
-    : direction==="SHORT"
-      ? st4.k<st4.d
-      : false;
-  const entry2Window=direction==="LONG"
-    ? st4.k>=20&&st4.k<=55
-    : direction==="SHORT"
-      ? st4.k>=45&&st4.k<=80
-      : false;
-  const entry2=rawEntry2&&entry2Window;
-  const entry2Late=rawEntry2&&!entry2Window;
+  const near=!!zoneValue && Math.abs(p-linePrice)<=Math.max(0.75*a,p*0.0025);
+  const beyond=!!zoneValue && (direction==="LONG"?p>linePrice+0.25*a:p<linePrice-0.25*a);
+  const last=c.at(-1),prev=c.at(-2);
+  const lastLine=tl?tl.slope*(c.length-1)+tl.intercept:0;
+  const prevLine=tl?tl.slope*(c.length-2)+tl.intercept:0;
+  const closedBreak=!!tl&&!!last&&!!prev&&(direction==="LONG"?last.close>lastLine+0.25*a&&prev.close<=prevLine+0.25*a:last.close<lastLine-0.25*a&&prev.close>=prevLine-0.25*a);
+
+  // V28: ENTRY_1 is the early Stoch-extreme setup at the break line.
+  const entry1=!!direction&&near&&(direction==="LONG"?st4.k<25:st4.k>75);
+  // V28: ENTRY_2 is the confirmed closed 4H break with Stoch timing.
+  const rawEntry2=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
+  const entry2Window=!!direction&&(direction==="LONG"?st4.k>=20&&st4.k<=55:st4.k>=45&&st4.k<=80);
+  const entry2=closedBreak&&beyond&&rawEntry2&&entry2Window;
+  const entry2Late=closedBreak&&beyond&&rawEntry2&&!entry2Window;
   const signalType=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
-  if(!signalType && direction) missing.push(entry2Late?"entry2_late":"stoch_cross");
+  if(!signalType&&direction)missing.push(entry2Late?"entry2_late":"stoch_cross");
 
   const rv=rsi(c.map(x=>x.close));
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
-  if(exhaustion){
-    missing.push("exhaustion");
-  }
+  if(exhaustion)missing.push("exhaustion");
 
   let rr:number|null=null;
   let stopCalc:StopCalc|null=null;
-  if(zoneValue){
-    if(a>0){
-      const entryBase=p;
-      const stopResult=direction?calculateStop(direction,entryBase,trendlinePrice,a,c):null;
-      stopCalc=stopResult?.calc??null;
-      if(!stopResult||!stopResult.valid){
-        missing.push(stopResult?.invalidReason==="liquidation_buffer"?"liquidation_buffer":"stop_width");
-      }else{
-        const stop=stopResult.stop;
-        const risk=direction==="LONG"?entryBase-stop:stop-entryBase;
-        const tp1=direction==="LONG"?entryBase*1.05:entryBase*.95;
-        rr=(direction==="LONG"?tp1-entryBase:entryBase-tp1)/Math.max(risk,EPS);
-        if(rr<MIN_RR) missing.push("rr");
-      }
-    }else{
-      rr=0;
-      missing.push("rr");
+  if(direction&&tl&&a>0){
+    const stopResult=calculateStop(direction,p,linePrice,a,c);
+    stopCalc=stopResult.calc;
+    if(!stopResult.valid)missing.push(stopResult.invalidReason??"stop_width");
+    else{
+      const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
+      const target=direction==="LONG"?p+10*a:p-10*a;
+      rr=(direction==="LONG"?target-p:p-target)/Math.max(risk,EPS);
+      if(rr<MIN_RR)missing.push("rr");
     }
-  }
+  }else if(direction){missing.push("rr");}
 
   const deduped=[...new Set(missing.filter(Boolean))];
-  return {
+  return{
     direction,
-    zone:zoneValue,
+    zone:zoneValue?{valid:true,type:zoneValue.type,price:zoneValue.price,distancePct:zoneValue.distancePct}:null,
     trendlineSlope,
     trigger:{entry1,entry2,signalType},
     exhaustion,
@@ -274,7 +256,6 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     allPassed:deduped.length===0
   };
 }
-
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
   const pivots=swings(c,direction==="SHORT").slice(-5);
@@ -335,46 +316,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
   if(!evaluation.allPassed){
-    const reversal=tactical.direction===d.direction
-      ? reversalCandidate(c,d.direction!,p)
-      : {signal:null,reason:"tactical_countertrend"};
-    if(reversal.signal){
-      const rev=reversal.signal;
-      const entryBase=p;
-      const sorted15m=[...candles15m].sort((x,y)=>x.timestamp-y.timestamp);
-      const nowMs=now>1e12?now:now*1000;
-      const current15mOpen=Math.floor(nowMs/900000)*900000;
-      const closed15m=sorted15m.filter(x=>(x.timestamp>1e12?x.timestamp:x.timestamp*1000)<current15mOpen).slice(-5);
-      const recent15mExtreme=rev.direction==="SHORT"
-        ? Math.max(...closed15m.map(x=>x.high),entryBase)
-        : Math.min(...closed15m.map(x=>x.low),entryBase);
-      const atrStop=rev.direction==="SHORT"?entryBase+a:entryBase-a;
-      const stop=rev.direction==="SHORT"?Math.max(recent15mExtreme,atrStop):Math.min(recent15mExtreme,atrStop);
-      const tp1=rev.direction==="SHORT"?entryBase*.97:entryBase*1.03;
-      const tp2=rev.direction==="SHORT"?entryBase*.94:entryBase*1.06;
-      const risk=rev.direction==="SHORT"?stop-entryBase:entryBase-stop;
-      const reward=rev.direction==="SHORT"?entryBase-tp1:tp1-entryBase;
-      const rr=risk>0?reward/risk:0;
-      const stopCalc=fixedStopCalc(rev.direction,entryBase,stop,a,recent15mExtreme);
-      const reversalMomentumScore=rev.momentum?.score??0;
-      const reversalMomentumLabel=reversalMomentumScore>=2?"STRONG":"EARLY";
-      const s:Signal={
-        id:`${pair}_${rev.type}_${now}`,pair,direction:rev.direction,type:rev.type,signalClass:"REVERSAL",sizeMultiplier:0.5,
-        entry:priceRound(entryBase),stop:priceRound(stop),tp1:priceRound(tp1),tp2:priceRound(tp2),rr:r(rr),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
-        expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),
-        reason:`counter-trend reversal + descending/ascending 4H trendline + 4H Stoch + 5/13 momentum ${reversalMomentumLabel}`,
-        timestamp:now,version:CURRENT_SIGNAL_VERSION,
-        context:{zone:rev.direction==="SHORT"?"REVERSAL_RESISTANCE":"REVERSAL_SUPPORT",zonePrice:r(rev.trendlinePrice),zoneDistancePct:rev.distancePct,signalClass:"REVERSAL",sizeMultiplier:0.5,reversalSlope:rev.slope,stochK_4h:st4.k,stochD_4h:st4.d,reversalMomentumScore,reversalMomentumLabel,reversalEma5Slope:rev.momentum?.ema5Slope??0,reversalEma13Slope:rev.momentum?.ema13Slope??0,reversalEmaSpreadPct:rev.momentum?.spreadPct??0,stopReference15m:r(recent15mExtreme),liquidationPrice:stopCalc.liquidationPrice,stopToLiquidationBufferPct:stopCalc.liquidationBufferPct,stopCalc}
-      };
-      debug.push(`[REVERSAL] ${s.type} | ${rev.direction==="SHORT"?"descending resistance":"ascending support"} @ ${r(rev.trendlinePrice)} | distance ${rev.distancePct.toFixed(2)}% | 5/13 momentum ${reversalMomentumLabel} (${reversalMomentumScore}/2) | entry MARKET @ ${s.entry} | SL ${s.stop} | 50% size`);
-      debug.push(`[SIGNAL] ${s.direction} ${s.type} MARKET | entry ${s.entry} | line ${r(rev.trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr}`);
-      debug.push("[JARVIS] WARN | counter-trend reversal — reduce size, tighter management");
-      debug.push("[ALERT] SURFACE");
-      return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
-    }
-    debug.push(`[REVERSAL] none — missing ${reversal.reason}`);
+    debug.push(`[REVERSAL] none — V28 waits for the normal 4H breakout/early-entry conditions`);
     debug.push(`[SIGNAL] none — missing ${evaluation.missing.join(", ")}`);
-    debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
+    debug.push("[JARVIS] observation only — no trade");
+    debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
   }
 
@@ -389,13 +334,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const s:Signal={
     id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:priceRound(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
     stop:priceRound(stop),tp1:priceRound(tp1),tp2:priceRound(tp2),rr:r(evaluation.rr??0),expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
-    reason:`${evaluation.direction} ${signalType} + ${trendlineType} location + 4H Stoch`,
+    reason:`${evaluation.direction} ${signalType} | V28 4H trendline breakout lifecycle | 4H Stoch ${st4.k}/${st4.d}`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
     context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,ema8_1d:d.e8,ema21_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
   debug.push(`[SIGNAL] ${s.direction} ${s.type} MARKET | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
-  debug.push("[JARVIS] GOOD | shared gate evaluation passed");
+  debug.push("[JARVIS] trade conditions passed — execution remains separate from opportunity guidance");
   debug.push("[ALERT] SURFACE");
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
 }
