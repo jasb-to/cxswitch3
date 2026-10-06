@@ -120,8 +120,8 @@ function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
     direction:tactical,
     strength:both?"CONFIRMED":"DEVELOPING",
     reason:both
-      ? `1D and 4H Stoch are turning ${dirText}; 4H tactical direction agrees.`
-      : `4H Stoch agrees with 4H tactical direction; 1D context is not yet confirmed.`
+      ? `The 1D and 4H Stoch are turning ${dirText} together. Momentum is lining up.`
+      : `The 4H is leaning ${dirText} and its Stoch agrees. The 1D has not joined it yet — watch, don’t chase.`
   };
 }
 
@@ -129,7 +129,7 @@ function pairState(m:any, active:any): JarvisPairState {
   const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
   const evaluation=candles.length?evaluateGates(String(m?.pair||"?"),candles,Number(m?.price||m?.currentPrice||0)):null;
   let opportunity=detectOpportunity(m,evaluation);
-  if(opportunity && active?.direction){
+  if(opportunity && (active?.direction==="LONG" || active?.direction==="SHORT")){
     const activeDirection=active.direction as "LONG"|"SHORT";
     opportunity={...opportunity,activePosition:activeDirection,positionConflict:activeDirection!==opportunity.direction};
   }
@@ -191,7 +191,7 @@ export async function runJarvis(marketData:any[], active:any[]): Promise<JarvisS
   const hasWarn=all.some(x=>x.verdict==="WARN");
   const snapshot:JarvisSnapshot={
     portfolioState:hasVeto?"VETO":hasWarn?"WARN":"GOOD",
-    whatChanged:hasWarn?"One or more signals have a deterministic warning.":"All monitored signals are aligned with the bounded Jarvis rules.",
+    whatChanged:hasWarn?"Jarvis has something worth watching.":"Nothing important has changed.",
     pairs,
     updatedAt:Date.now(),
   };
