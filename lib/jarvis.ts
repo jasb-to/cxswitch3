@@ -218,17 +218,22 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const dailyText=dailyDir==="BULL"?"bullish":dailyDir==="BEAR"?"bearish":"neutral";
   const fourHText=fourH==="BULL"?"bullish":fourH==="BEAR"?"bearish":"neutral";
 
-  // One human-readable situation summary. The dashboard below already shows the raw indicators.
+  // One human-readable situation summary. The dashboard already shows the raw indicators.
+  // Jarvis explains the relationship between timeframes rather than repeating indicator labels.
   if(!evaluation.direction){
-    if(evaluation.dailyTransition)
-      return "[JARVIS STATE] "+pair+" — The 1D is still "+dailyText+" but the trend is weakening. The 4H is "+fourHText+" as well. This is a transition, not a confirmed reversal — no new trade yet.";
+    if(evaluation.dailyTransition){
+      if(fourH==="BEAR" && dailyDir==="BULL")
+        return "[JARVIS STATE] "+pair+" — The 1D is still bullish, but it is losing strength. The 4H has already turned bearish, so a reversal is developing, not confirmed. We are staying out until the 1D confirms.";
+      if(fourH==="BULL" && dailyDir==="BEAR")
+        return "[JARVIS STATE] "+pair+" — The 1D is still bearish, but it is losing strength. The 4H is turning bullish, so a reversal is developing, not confirmed. We are staying out until the 1D confirms.";
+      return "[JARVIS STATE] "+pair+" — The 1D is weakening and the 4H is changing with it. This is a transition, not a confirmed reversal. We are watching for the daily trend to confirm.";
+    }
     if(dailyDir==="NEUTRAL")
-      return "[JARVIS STATE] "+pair+" — There is no clear 1D direction yet. The 4H is "+fourHText+". We are waiting for the daily trend to establish a direction before looking for a V28 trade.";
-    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" but V28 is not ready for a new trade yet. The 4H is "+fourHText+". We are waiting for the setup to develop.";
+      return "[JARVIS STATE] "+pair+" — The 1D has not chosen a clear direction yet. The 4H is "+fourHText+". The 4H can move first, but V28 needs the daily direction before we trade.";
+    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and V28 is waiting for the 4H setup to develop. There is no trade to take yet.";
   }
 
   const dir=evaluation.direction;
-  const trendlinePrice=evaluation.zone?.price??0;
   const distancePct=evaluation.zone?.distancePct??Infinity;
   const trendText=dir==="LONG"?"descending resistance":"ascending support";
   const st=evaluation.trigger;
