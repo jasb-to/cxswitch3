@@ -1,4 +1,4 @@
-// lib/jarvis.ts — deterministic bounded veto layer for the simple directional strategy
+// lib/jarvis.ts — deterministic observation and review layer; never the V28 trade engine
 import { Redis } from "./supabase-kv";
 
 import { evaluateGates } from "./strategy";
@@ -47,8 +47,7 @@ function directionFromDaily(value:any): "BULL" | "BEAR" | "NEUTRAL" {
 }
 
 function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
-  // 4H 5/13 is Jarvis's tactical direction. Prefer it over the coarse 8/21
-  // direction so narration matches the actual tactical state shown in the UI/logs.
+  // 4H 5/13 is Jarvis's observational/tactical context. It never overrides the 1D V28 direction.
   const tacticalLabel=String(snapshot?.fourH513?.label || snapshot?.fourH513?.stage || "");
   if(tacticalLabel.includes("BEARISH")) return "BEAR";
   if(tacticalLabel.includes("BULLISH")) return "BULL";
@@ -92,7 +91,7 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
 }
 
 function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
-  const tactical=evaluation?.direction==="LONG"?"LONG":evaluation?.direction==="SHORT"?"SHORT":directionFrom4H(m);
+  const tactical=directionFrom4H(m);
   if(!tactical)return undefined;
 
   const k1=Number(m?.stochK1d),d1=Number(m?.stochD1d),pk1=Number(m?.stochK1dPrev),pd1=Number(m?.stochD1dPrev);
@@ -223,9 +222,13 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const tacticalText=tacticalDir==="BULL"?"BULL":tacticalDir==="BEAR"?"BEAR":"NEUTRAL";
 
   if(!evaluation.direction){
+    const transition=evaluation.dailyTransition;
+    if(transition){
+      return "[JARVIS STATE] "+pair+" — Watch. 1D "+dailyText+" · "+dailyStrength+" is transitioning. 4H tactical "+tacticalText+" is context only. Waiting for the 1D direction to confirm.";
+    }
     const blockReason=dailyDir==="NEUTRAL"
       ? "1D direction is NEUTRAL."
-      : "4H "+(tacticalText==="BULL"?"BULLISH":tacticalText==="BEAR"?"BEARISH":"NEUTRAL")+" is not permitted by the current 1D "+dailyText+" "+dailyStrength+" regime.";
+      : "V28 is waiting for the 1D direction to confirm before opening a new trade.";
     return "[JARVIS STATE] "+pair+" — Quiet. 1D "+dailyText+" · "+dailyStrength+" | 4H tactical "+tacticalText+". "+blockReason+" Missing: direction.";
   }
 
