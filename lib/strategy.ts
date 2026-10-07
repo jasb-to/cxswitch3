@@ -310,7 +310,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
 
   const q=x.map(z=>z.close),d=daily(x);
   if(d.length>=22){
-    const qd=d.map(z=>z.close),a8=ema(qd,8),a21=ema(qd,21);
+    const qd=d.map(z=>z.close),a5=ema(qd,5),a13=ema(qd,13);
     const dr=s.direction==="LONG"
       ? a5.at(-2)!>=a13.at(-2)!&&a5.at(-1)!<a13.at(-1)!
       : a5.at(-2)!<=a13.at(-2)!&&a5.at(-1)!>a13.at(-1)!;
