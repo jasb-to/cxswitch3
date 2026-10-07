@@ -282,6 +282,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   }
 
   const d=dailyTrend(c),cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
+  const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} | spread ${d.spread.toFixed(2)}%`);
