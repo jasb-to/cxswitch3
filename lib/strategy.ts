@@ -74,7 +74,6 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   trendlineStore.set(pair,state);
   return state;
 }
-function zone(c:Candle[],dir:Direction,p:number,a:number,e21:number,pair=""){if(!a)return null;const tr=pair?getTrendline(pair,c,dir):null;if(tr){const lp=tr.slope*(c.length-1)+tr.intercept;return{type:dir==="LONG"?"TRENDLINE_RESISTANCE":"TRENDLINE_SUPPORT",price:lp,distance:Math.abs(p-lp),distancePct:Math.abs(p-lp)/Math.max(p,EPS)*100};}return null}
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
   direction: "LONG" | "SHORT" | null;
