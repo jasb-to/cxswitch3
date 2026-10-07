@@ -10,7 +10,7 @@ import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
 export const CURRENT_SIGNAL_VERSION=38;
 type Direction="LONG"|"SHORT";
-const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, EPS=1e-12;
+const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
 const priceRound=(n:number)=>{if(!Number.isFinite(n))return n;const d=Math.abs(n)>=1000?0:Math.abs(n)>=1?2:Math.abs(n)>=0.1?3:5;return r(n,d)};
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}
