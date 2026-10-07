@@ -210,79 +210,46 @@ function exhaustionState(dir:"LONG"|"SHORT",k:number,rsi:number,p:number,e21:num
 export function narratePairState(pair:string,market:any,candles4h:Candle[],signal:Signal|undefined,candles15m:Candle[]=[]):string{
   void candles15m;
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
-  if(!c.length)return "[JARVIS STATE] "+pair+" — Status unavailable. Missing: —";
-
+  if(!c.length)return "[JARVIS STATE] "+pair+" — Status unavailable.";
   const p=Number(market?.currentPrice??market?.price??c.at(-1)?.close??0);
   const evaluation=evaluateGates(pair,c,p);
   const dailyDir=directionFromDaily(market?.dailyDirection ?? market?.trend);
-  const dailyStrength=String(market?.dailyStrength || "NEUTRAL");
-  const tacticalDir=evaluation.direction ?? directionFrom4H(market);
+  const fourH=directionFrom4H(market);
+  const dailyText=dailyDir==="BULL"?"bullish":dailyDir==="BEAR"?"bearish":"neutral";
+  const fourHText=fourH==="BULL"?"bullish":fourH==="BEAR"?"bearish":"neutral";
 
-  const dailyText=dailyDir==="BULL"?"BULL":dailyDir==="BEAR"?"BEAR":"NEUTRAL";
-  const tacticalText=tacticalDir==="BULL"?"BULL":tacticalDir==="BEAR"?"BEAR":"NEUTRAL";
-
+  // One human-readable situation summary. The dashboard below already shows the raw indicators.
   if(!evaluation.direction){
-    const transition=evaluation.dailyTransition;
-    if(transition){
-      return "[JARVIS STATE] "+pair+" — Watch. 1D "+dailyText+" · "+dailyStrength+" is transitioning. 4H tactical "+tacticalText+" is context only. Waiting for the 1D direction to confirm.";
-    }
-    const blockReason=dailyDir==="NEUTRAL"
-      ? "1D direction is NEUTRAL."
-      : "V28 is waiting for the 1D direction to confirm before opening a new trade.";
-    return "[JARVIS STATE] "+pair+" — Quiet. 1D "+dailyText+" · "+dailyStrength+" | 4H tactical "+tacticalText+". "+blockReason+" Missing: direction.";
+    if(evaluation.dailyTransition)
+      return "[JARVIS STATE] "+pair+" — The 1D is still "+dailyText+" but the trend is weakening. The 4H is "+fourHText+" as well. This is a transition, not a confirmed reversal — no new trade yet.";
+    if(dailyDir==="NEUTRAL")
+      return "[JARVIS STATE] "+pair+" — There is no clear 1D direction yet. The 4H is "+fourHText+". We are waiting for the daily trend to establish a direction before looking for a V28 trade.";
+    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" but V28 is not ready for a new trade yet. The 4H is "+fourHText+". We are waiting for the setup to develop.";
   }
 
   const dir=evaluation.direction;
   const trendlinePrice=evaluation.zone?.price??0;
   const distancePct=evaluation.zone?.distancePct??Infinity;
   const trendText=dir==="LONG"?"descending resistance":"ascending support";
-
-  // Use the exact gate evaluation for the Stoch narration. This removes the
-  // duplicated Stoch implementation that could say ENTRY_2 was live while
-  // evaluateGates still reported stoch_cross missing.
   const st=evaluation.trigger;
   const q=c.map(x=>x.close);
   const rawStoch=stochState(q);
   const kNow=rawStoch.k;
   const dNow=rawStoch.d;
-  let stochText:string;
-  if(st.entry1){
-    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — ENTRY_1 active.`;
-  }else if(st.entry2){
-    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — ENTRY_2 active.`;
-  }else if(dir==="LONG" && kNow>dNow && kNow>55){
-    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — K/D bullish but outside the ENTRY_2 window.`;
-  }else if(dir==="SHORT" && kNow<dNow && kNow<45){
-    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — K/D bearish but outside the ENTRY_2 window.`;
-  }else{
-    stochText=`4H Stoch K ${kNow.toFixed(1)} / D ${dNow.toFixed(1)} — ENTRY_2 not active.`;
-  }
-
-  const missingText=evaluation.missing.length?evaluation.missing.join(", "):"—";
-  const suffix=evaluation.missing.length?` Missing: ${missingText}.`:"";
-  const contextText=`1D ${dailyText} · ${dailyStrength} | 4H ${dir==="LONG"?"BULLISH":"BEARISH"} turn.`;
-  const opportunity=detectOpportunity(market,evaluation);
-  const opportunityText=opportunity?` JARVIS 4H TURN ${opportunity.direction==="LONG"?"BULLISH":"BEARISH"} · ${opportunity.strength} — ${opportunity.reason}`:"";
+  let stochSummary="Stoch is waiting for confirmation.";
+  if(st.entry1) stochSummary="Stoch timing is ready for ENTRY_1.";
+  else if(st.entry2) stochSummary="Stoch timing is supporting ENTRY_2.";
+  else if(dir==="LONG" && kNow>dNow) stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
+  else if(dir==="SHORT" && kNow<dNow) stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
 
   if(signal){
     const stopCtx=signal.context?.stopCalc;
     const riskText=stopCtx?" Stop "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk).":"";
-    const reversal=signal.signalClass==="REVERSAL";
-    if(reversal){
-      const reversalLine=signal.context?.zone==="REVERSAL_RESISTANCE"?"descending resistance":"ascending support";
-      const cross=signal.direction==="SHORT"?"crossed down":"crossed up";
-      return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). "+contextText+" 4H "+reversalLine+" at "+Number(signal.context?.zonePrice??0).toFixed(2)+". Stoch "+cross+" from "+signal.stochK.toFixed(1)+". TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+". Counter-trend, 50% size."+riskText+suffix;
-    }
-    return "[JARVIS STATE] "+pair+" — Fired "+signal.type+" at market ("+signal.entry.toFixed(2)+"). "+contextText+" Price at "+trendText+". "+stochText+opportunityText+riskText+suffix;
+    return "[JARVIS STATE] "+pair+" — V28 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+" and the 4H structure is aligned. "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
   }
-
-  if(!evaluation.zone){
-    return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" Waiting for a validated 4H "+trendText+". "+stochText+opportunityText+suffix;
-  }
-
-  if(distancePct>1.2){
-    return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% away from the line. "+stochText+suffix;
-  }
-
-  return "[JARVIS STATE] "+pair+" — Watching. "+contextText+" 4H "+trendText+" at "+trendlinePrice.toFixed(2)+". Price is "+distancePct.toFixed(1)+"% from the line. "+stochText+opportunityText+suffix;
+  if(!evaluation.zone)
+    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and we are looking for a "+(dir==="LONG"?"long":"short")+" setup. The 4H is "+fourHText+". We still need a validated "+trendText+" and the right Stoch timing.";
+  if(distancePct>1.2)
+    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the V28 direction is "+(dir==="LONG"?"LONG":"SHORT")+". The 4H is "+fourHText+", but price is "+distancePct.toFixed(1)+"% from the "+trendText+". We are watching for price to come into position; "+stochSummary.toLowerCase();
+  return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the V28 direction is "+(dir==="LONG"?"LONG":"SHORT")+". The 4H is "+fourHText+" and price is "+distancePct.toFixed(1)+"% from the "+trendText+". "+stochSummary;
 }
