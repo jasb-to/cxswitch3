@@ -10,7 +10,7 @@ import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
 export const CURRENT_SIGNAL_VERSION=38;
 type Direction="LONG"|"SHORT";
-const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
+const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
 const priceRound=(n:number)=>{if(!Number.isFinite(n))return n;const d=Math.abs(n)>=1000?0:Math.abs(n)>=1?2:Math.abs(n)>=0.1?3:5;return r(n,d)};
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}
@@ -86,6 +86,7 @@ export interface GateEvaluation {
   stopCalc: StopCalc | null;
   missing: string[];
   allPassed: boolean;
+  dailyTransition: boolean;
 }
 
 export interface StopCalc {
@@ -135,60 +136,10 @@ function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValu
   };
 }
 
-function reversalTrendline(c:Candle[],dailyDirection:Direction){
-  const pivots=swings(c,dailyDirection==="LONG").slice(-5);
-  const f=line(pivots);
-  if(!f)return null;
-  const valid=dailyDirection==="LONG"?f.slope<0:f.slope>0;
-  if(!valid)return null;
-  return {slope:f.slope,intercept:f.intercept,pivots,price:f.slope*(c.length-1)+f.intercept};
-}
-function reversalMomentum(c:Candle[],direction:Direction){
-  const q=c.map(x=>x.close);
-  const e5=ema(q,5),e13=ema(q,13);
-  if(e5.length<2||e13.length<2)return {score:0,ema5Slope:0,ema13Slope:0,spreadPct:0};
-  const e5Now=e5.at(-1)!,e5Prev=e5.at(-2)!,e13Now=e13.at(-1)!,e13Prev=e13.at(-2)!;
-  const ema5Slope=e5Now-e5Prev,ema13Slope=e13Now-e13Prev;
-  const spreadPct=(e5Now-e13Now)/Math.max(e13Now,EPS)*100;
-  const points=direction==="SHORT"
-    ? (ema5Slope<=0?1:0)+(ema13Slope<=0?1:0)
-    : (ema5Slope>=0?1:0)+(ema13Slope>=0?1:0);
-  return {score:points,ema5Slope,ema13Slope,spreadPct};
-}
-
-function reversalCandidate(c:Candle[],dailyDirection:Direction,p:number){
-  const st=stoch(c.map(x=>x.close));
-  const lineState=reversalTrendline(c,dailyDirection);
-  if(!lineState)return {signal:null,reason:"reversal_trendline"};
-  const distancePct=Math.abs(p-lineState.price)/Math.max(p,EPS)*100;
-  const short=dailyDirection==="LONG";
-  const trigger=short
-    ? st.pk>=st.pd && st.k<st.d && st.k>80
-    : st.pk<=st.pd && st.k>st.d && st.k<20;
-  // Quality only — deliberately NOT a gate. The score tells us whether
-  // 5/13 momentum is already turning with the Stoch reversal.
-  const momentum=reversalMomentum(c,short?"SHORT":"LONG");
-  if(distancePct>2.0)return {signal:null,reason:"reversal_zone"};
-  if(!trigger)return {signal:null,reason:"reversal_trigger"};
-  return {
-    signal:{
-      direction:short?"SHORT":"LONG" as Direction,
-      type:short?"REVERSAL_SHORT":"REVERSAL_LONG" as const,
-      trendlinePrice:lineState.price,
-      distancePct,
-      slope:lineState.slope,
-      pivots:lineState.pivots,
-      momentum
-    },
-    reason:""
-  };
-}
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number):GateEvaluation{
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
   const d=dailyTrend(c);
-  const tactical=tacticalDirection(c);
-
   // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
   // During a 1D transition we deliberately watch rather than flip direction early.
   const dailyTransition = d.direction && d.strength === "LOW" && d.spreadContracting;
@@ -250,7 +201,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     rr,
     stopCalc,
     missing:deduped,
-    allPassed:deduped.length===0
+    allPassed:deduped.length===0,
+    dailyTransition:!!dailyTransition
   };
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
@@ -285,6 +237,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
+  // Hard V28 direction lock: no signal may ever differ from the confirmed 1D direction.
+  if(evaluation.direction && evaluation.direction!==d.direction){
+    debug.push(`[LOCK] V28 direction mismatch blocked: gate=${evaluation.direction} 1D=${d.direction??"NEUTRAL"}`);
+    debug.push("[SIGNAL] none — V28 direction lock");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+  }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} | spread ${d.spread.toFixed(2)}%`);
   debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength}`);
 
