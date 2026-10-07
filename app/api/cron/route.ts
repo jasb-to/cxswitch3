@@ -218,7 +218,7 @@ export async function GET(request:Request){
  const historyAtStart=await getSignalHistory();
  const activeKeys=new Set(active.map((x:any)=>`${x.pair}|${x.direction}`));
  const recoverable=historyAtStart
-   .filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2"||h.type==="REVERSAL_SHORT"||h.type==="REVERSAL_LONG")&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
+   .filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2")&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
    .reduce((map:any,h:any)=>{
      const key=`${h.pair}|${h.direction}`;
      if(!map.has(key)||h.timestamp>map.get(key).timestamp)map.set(key,h);
