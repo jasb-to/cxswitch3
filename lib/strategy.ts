@@ -46,13 +46,6 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
   if(x.stage.includes("BULLISH"))return{direction:"LONG",turning:false,label:x.label};
   return{direction:null,turning:false,label:x.label};
 }
-function dailyAllowsTactical(d:DailyRegime,t:Direction|null,tacticalTurning:boolean){
-  if(!d.direction||!t)return false;
-  if(d.direction===t)return true;
-  if(d.strength==="HIGH")return false;
-  if(d.strength==="LOW")return true;
-  return tacticalTurning;
-}
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
 function line(p:Swing[]){if(p.length<2)return null;const n=p.length,sx=p.reduce((s,x)=>s+x.index,0),sy=p.reduce((s,x)=>s+x.price,0),sxy=p.reduce((s,x)=>s+x.index*x.price,0),sx2=p.reduce((s,x)=>s+x.index*x.index,0),den=n*sx2-sx*sx;if(!den)return null;const slope=(n*sxy-sx*sy)/den;return{slope,intercept:(sy-slope*sx)/n}}
@@ -195,7 +188,11 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const p=currentPrice??c.at(-1)?.close??0;
   const d=dailyTrend(c);
   const tactical=tacticalDirection(c);
-  const direction=dailyAllowsTactical(d,tactical.direction,tactical.turning)?tactical.direction:null;
+
+  // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
+  // During a 1D transition we deliberately watch rather than flip direction early.
+  const dailyTransition = d.direction && d.strength === "LOW" && d.spreadContracting;
+  const direction=dailyTransition ? null : d.direction;
   const missing:string[]=[];
   if(!direction)missing.push("direction");
 
@@ -288,12 +285,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const evaluation=evaluateGates(pair,c,p);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} | spread ${d.spread.toFixed(2)}%`);
-  const tactical=tacticalDirection(c);
-  debug.push(`[4H TACTICAL] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D ${d.direction??"NEUTRAL"} ${d.strength} | ${tactical.direction&&dailyAllowsTactical(d,tactical.direction,tactical.turning)?"PERMITTED":"BLOCKED"}`);
+  debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength}`);
 
   if(!evaluation.direction){
     debug.push(d.direction
-      ? `[DIRECTION] 4H tactical ${tactical.direction??"NEUTRAL"} blocked by 1D ${d.direction} ${d.strength}`
+      ? (d.strength==="LOW"&&d.spreadContracting
+        ? `[1D TRANSITION] ${d.direction==="LONG"?"BULLISH":"BEARISH"} weakening/turning | WATCH — no new direction until the 1D transition confirms`
+        : `[DIRECTION] V28 1D ${d.direction} | 4H is timing/context only`)
       : "[1D] NEUTRAL | spread < 0.5%");
     debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
