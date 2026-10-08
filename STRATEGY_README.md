@@ -1,49 +1,53 @@
-# CX Switch — Simple Directional Strategy
+# CXSwitch V28 — Strategy Reference
 
-Implemented in `lib/strategy.ts`. The existing UI/design/layout is preserved.
+The production strategy lives in `lib/strategy.ts`. This document describes the active architecture only; obsolete experiments and legacy exchange modules are intentionally removed.
 
-## System Status
+## Direction and timeframe hierarchy
 
-- **New strategy engine:** active.
-- **Jarvis:** rewritten and active as deterministic `GOOD / WARN / VETO`; no LLM or trendline-rejection classifier.
-- **Cron:** wired to the new `ENTRY` signal contract and runs strategy → Jarvis → alert → management.
-- **Alerts:** display Entry, SL, TP1, TP2 and RR(TP1) separately.
-- **Dashboard:** reflects direction, Entry/SL/TP1/TP2, current price, unrealized PnL %, management state and Jarvis verdict/reason.
-- **Kraken Futures:** position reconciliation and execution use the Kraken Futures REST API, not the Spot OpenPositions endpoint.
-- **Historical backtest:** no results are available yet; the six-month forward-return harness is added separately and must be run locally.
+- **1D EMA 5/13:** macro directional bias. EMA 5 above EMA 13 = LONG bias; EMA 5 below EMA 13 = SHORT bias, with the existing neutral/transition handling.
+- **4H EMA 8/21:** longer-move direction and trade management. This remains the primary 4H management/reversal reference.
+- **4H EMA 5/13:** faster visual diagnostic only. It helps show tactical direction changes but does not replace the 4H EMA 8/21 management hierarchy.
+- **Jarvis:** observes, explains and reviews the setup; it does not create or flip a trading direction.
 
-## Entry rules
+## Entries
 
-1. **1D direction only:** aggregate 4H candles to 1D; EMA(8) > EMA(21) with >0.5% spread = LONG only; EMA(8) < EMA(21) with >0.5% spread = SHORT only; otherwise NEUTRAL.
-2. **4H location:** nearest permitted zone within 1 ATR: ascending swing-low trendline / EMA21 / prior swing low for LONG; descending swing-high trendline / EMA21 / prior swing high for SHORT.
-3. **4H StochRSI timing:** ENTRY_1 fires in the directional extreme (LONG K <20 / SHORT K >80). ENTRY_2 is a fresh 4H K/D cross with K in the recovery band (LONG 20–55 / SHORT 45–80).
-4. **Execution:** current price entry; trend entries use the farther of the latest 4H structural swing and a 1.5× 4H ATR stop; reversal entries use the farther of the last 5 closed 15M extreme and 1× 4H ATR. TP1/TP2 are +/-5%/+/-10% for trend entries and +/-3%/+/-6% for reversals.
+### Entry 1 — early location setup
 
-## Exhaustion veto
+ENTRY_1 is deliberately simple:
 
-Six exhaustion rule types remain unchanged: LONG Stoch K >=95 / SHORT Stoch K <=5 are checked on both 4H and 15M; LONG RSI >=78 / SHORT RSI <=22 and the 3% price-vs-4H-EMA21 checks remain on 4H.
+- the 1D direction must be established;
+- price must be near the validated 4H structural trendline/zone;
+- the setup must be inside the configured location tolerance;
+- StochRSI must be in the directional extreme (LONG <20 / SHORT >80);
+- exhaustion protection remains active.
 
-## Jarvis
+ENTRY_1 is an early setup. A structural breakout is not required for ENTRY_1.
 
-- Direction against 1D = VETO.
-- Direction agrees with 1D but disagrees with 4H EMA trend = WARN.
-- K >90 LONG or K <10 SHORT = WARN.
-- Otherwise GOOD.
+### Entry 2 — persistent break → retest
 
-Jarvis cannot create or flip a direction.
+ENTRY_2 is stateful and follows:
 
-## Management
+**BREAK → REMEMBER BREAK → PULLBACK → RETEST RECORDED BREAKOUT LEVEL → REJECTION/CONFIRMATION → STOCH CONFIRMATION → ENTRY_2**
 
-Order is: stop hit -> TP2 -> TP1 scale-out/breakeven -> 4H EMA reversal -> 1D EMA reversal -> opposite Stoch extreme -> thesis intact. Exit on 4H EMA(8/21) reversal unless the trade is +2% in profit and the 1D is still aligned, in which case the stop is tightened and the trade is held.
+The breakout level is recorded from the closed structural-break candle and persisted by pair.
 
-## Jarvis State Narration
+- Breakout state remains valid for **48 hours**.
+- Retest tolerance is **1.5%** of the recorded breakout level.
+- LONG retest requires price to return to the level and close back above it with directional confirmation.
+- SHORT retest requires price to return to the level and close back below it with directional confirmation.
+- StochRSI confirmation remains LONG K 20–55 / SHORT K 45–80 with the existing K/D timing requirement.
+- The state is cleared after the ENTRY_2 lifecycle is consumed so the same retest cannot repeatedly fire.
 
-Each cron cycle emits one greppable `[JARVIS STATE]` line per pair as a calm, plain-English sentence. The verdict and gate logic are unchanged; only the wording is human-readable.
+## Risk and management
 
-Examples:
-- `[JARVIS STATE] ETH — Watching. 1D bullish, 4H has turned up. Price is at the zone, just above the 4H EMA21. Stoch is at 50 on the 15M and needs to pull back below 20 before a long can fire. Not yet.`
-- `[JARVIS STATE] BTC — Quiet. 1D bullish, 4H is bullish. Price is well away from the support zone. The 15M Stoch is waiting for a qualifying cross before considering an entry.`
+- R:R is **risk/target information, not an entry gate**.
+- Stops retain the structural/ATR calculation and liquidation-buffer checks.
+- TP1/TP2 and position management remain separate from entry qualification.
+- Existing 4H/1D reversal, chandelier and breakeven management logic remains active.
+- Telegram alert lifecycle and deduplication remain active.
 
-## Compatibility
+## Deliberately not used
 
-Monitor/Redis compatibility functions remain no-op stubs where required by the application. Legacy Cycle Runner and V28 breakout state have been removed. No Fib, weekly gate, daily pre-break, tactical override, counter-trend, MACD gate, ADX gate, confidence score, trendline-rejection classification, or multi-stage direction state machine is used.
+The active strategy does **not** use Fib gates, weekly gates, daily pre-break gates, tactical direction overrides, counter-trend gates, MACD/ADX gates, confidence-score gates, or an additional multi-stage direction state machine.
+
+Legacy experimental 1D trend-engine modules, alternate MEXC/CoinGecko market-data modules, and the unused structure-shift module have been removed to keep the production path auditable.
