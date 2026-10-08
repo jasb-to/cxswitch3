@@ -11,9 +11,9 @@ interface Market{pair:string;price:number;trend:string;location:string;trigger:s
 interface System{version?:number;lastCronRun:number;lastCronAgeMs:number|null;activePositions:number;latestAlerts?:number;historyEntries?:number;}
 interface JarvisPair{pair:string;direction:"LONG"|"SHORT"|"NEUTRAL";verdict:"GOOD"|"WARN"|"VETO";reason:string;currentAnalysis?:string;opportunity?:{direction:"LONG"|"SHORT";strength:"DEVELOPING"|"CONFIRMED";reason:string};position?:{direction:string;entry:number;stop:number;tp1?:number;tp2?:number};updatedAt:number;}
 interface Jarvis{portfolioState:"GOOD"|"WARN"|"VETO";whatChanged:string;pairs:Record<string,JarvisPair>;updatedAt:number;}
-const PAIRS=["BTC","ETH","SOL","HYPE","LINK","AVAX","DOGE","ZEC"];
+const PAIRS=["BTC","ETH","SOL","HYPE","LINK","VIRTUAL","DOGE","ZEC"];
 
-const KRAKEN:Record<string,string>={BTC:"XBTUSD",ETH:"ETHUSD",SOL:"SOLUSD",HYPE:"HYPEUSD",LINK:"LINKUSD",AVAX:"AVAXUSD",DOGE:"DOGEUSD",ZEC:"ZECUSD"};
+const KRAKEN:Record<string,string>={BTC:"XBTUSD",ETH:"ETHUSD",SOL:"SOLUSD",HYPE:"HYPEUSD",LINK:"LINKUSD",VIRTUAL:"VIRTUALUSD",DOGE:"DOGEUSD",ZEC:"ZECUSD"};
 const money=(n?:number)=>typeof n==="number"&&Number.isFinite(n)?new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:n>=1000?0:n>=1?2:6}).format(n):"—";
 const pct=(n?:number)=>typeof n==="number"&&Number.isFinite(n)?`${n>=0?"+":""}${n.toFixed(2)}%`:"—";
 const ago=(ts?:number)=>{if(!ts)return"—";const m=Math.max(0,Math.floor((Date.now()-ts)/60000));if(m<1)return"just now";if(m<60)return`${m}m`;const h=Math.floor(m/60);return h<24?`${h}h ${m%60}m`:`${Math.floor(h/24)}d`};
