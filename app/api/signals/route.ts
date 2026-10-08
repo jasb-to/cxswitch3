@@ -43,27 +43,38 @@ function managementAdvice(h:any,m:any){
   if(!h||h.status!=="ACTIVE")return null;
   const price=Number(m?.price);
   const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
+  const reachedTp1=h.direction==="LONG"?price>=Number(h.tp1):price<=Number(h.tp1);
+  const tp1Recorded=!!h.tp1HitAt;
   if(Number.isFinite(price)&&candles.length){
     const hold=shouldHold(h,candles,price);
-    if(hold.reason==="tp1_hit_scale_out")
-      return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"TP1 reached; scale out 50% and move stop to breakeven.",newStop:hold.newStop??h.entry};
-    if(hold.reason==="chandelier_trailing")
-      return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Chandelier trail active; remaining position is being allowed to run.",newStop:hold.newStop};
+    if(hold.reason==="stop_hit")
+      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"Stop loss hit. Exit now.",nextAction:"EXIT NOW"};
+    if(hold.reason==="tp2_hit")
+      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"TP2 reached. Close the remaining position.",nextAction:"CLOSE REMAINING POSITION"};
     if(hold.reason==="1d_ema_reversal")
-      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"1D trend reversed. Exit now."};
+      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"1D trend reversed. Exit now.",nextAction:"EXIT NOW"};
     if(hold.reason==="4h_ema_reversal_confirmed")
-      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"4H trend reversed after failing to reclaim the fast EMA. Exit now."};
+      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"4H trend reversed after failing to reclaim the fast EMA. Exit now.",nextAction:"EXIT NOW"};
     if(hold.reason==="chandelier_trailing_stop")
-      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"Chandelier trailing stop hit. Exit now."};
-    if(hold.reason==="stop_hit"||hold.reason==="tp2_hit")
-      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:hold.reason==="tp2_hit"?"TP2 reached. Close the trade.":"Stop loss hit. Exit now."};
-    return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Thesis intact. Normal 4H Stoch pullbacks do not close the trade."};
+      return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"Chandelier trailing stop hit. Exit now.",nextAction:"EXIT NOW"};
+    if(reachedTp1||tp1Recorded){
+      const trailing=hold.newStop!==undefined&&(
+        (h.direction==="LONG"&&hold.newStop>Number(h.entry))||
+        (h.direction==="SHORT"&&hold.newStop<Number(h.entry))
+      );
+      if(trailing)
+        return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"TP1 secured — 50% should be off. Keep the runner open and trail the stop.",newStop:hold.newStop,nextAction:`TRAIL SL TO ${hold.newStop}; RUNNER → TP2`};
+      return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"TP1 hit — take 50% off and protect the remaining position.",newStop:h.entry,nextAction:`MOVE SL TO ENTRY ${h.entry}; RUNNER → TP2 ${h.tp2}`};
+    }
+    if(hold.reason==="chandelier_stop")
+      return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Chandelier trail active; remaining position is being allowed to run.",newStop:hold.newStop,nextAction:`TRAIL SL TO ${hold.newStop}`};
+    return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Thesis intact. Normal 4H Stoch pullbacks do not close the trade.",nextAction:`HOLD · SL ${h.stop} · TP1 ${h.tp1} · TP2 ${h.tp2}`};
   }
-  const priceFallback=Number(m?.price);
-  const tp2=h.tp2;
-  if(Number.isFinite(priceFallback)&&tp2!==undefined&&(h.direction==="LONG"?priceFallback>=tp2:priceFallback<=tp2))
-    return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"TP2/final structural target reached. Close the trade."};
-  return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Thesis intact. No confirmed higher-timeframe reversal."};
+  if(Number.isFinite(price)&&h.tp2!==undefined&&(h.direction==="LONG"?price>=h.tp2:price<=h.tp2))
+    return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"TP2/final structural target reached. Close the trade.",nextAction:"CLOSE REMAINING POSITION"};
+  if(reachedTp1||tp1Recorded)
+    return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"TP1 hit — take 50% off and protect the remaining position.",newStop:h.entry,nextAction:`MOVE SL TO ENTRY ${h.entry}; RUNNER → TP2 ${h.tp2}`};
+  return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Thesis intact. No confirmed higher-timeframe reversal.",nextAction:`HOLD · SL ${h.stop} · TP1 ${h.tp1} · TP2 ${h.tp2}`};
 }
 function latestAlertMomentum(pair:string,history:any[],market:any){
   const now=Date.now();
