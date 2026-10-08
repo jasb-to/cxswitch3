@@ -134,7 +134,7 @@ function pairState(m:any, active:any): JarvisPairState {
     opportunity={...opportunity,activePosition:activeDirection,positionConflict:activeDirection!==opportunity.direction};
   }
   const direction=(active?.direction || m?.dailyLive?.direction || m?.direction || "NEUTRAL") as "LONG"|"SHORT"|"NEUTRAL";
-  const review = active
+  const review: JarvisReview = active
     ? reviewFiredSignal({
         id:String(active.id||"active"),
         pair:String(active.pair||m?.pair||"?"),
