@@ -197,3 +197,18 @@ export async function getLastCronRun():Promise<number>{const data=await redis.ge
 export async function setLastCronRun(ts:number):Promise<void>{await redis.set(CRON_KEY,{timestamp:ts});}
 export async function saveDashboardSnapshot(snapshot:any):Promise<void>{await redis.set(SNAPSHOT_KEY,{...snapshot,timestamp:Date.now()});}
 export async function loadDashboardSnapshot():Promise<any|null>{const data=await redis.get<any>(SNAPSHOT_KEY);if(!data)return null;const age=Date.now()-(data?.timestamp||0);if(age>20*60*1000)console.warn(`[SNAPSHOT] Stale — ${Math.round(age/60000)}min old`);return data;}
+
+export async function getLastBreakout(pair:string):Promise<import("./strategy").BreakoutRecord|undefined>{
+  const state=(await redis.get<Record<string,import("./strategy").BreakoutRecord>>("cxswitch:v28_breakout_state"))||{};
+  return state[pair];
+}
+export async function setLastBreakout(pair:string,record:import("./strategy").BreakoutRecord):Promise<void>{
+  const state=(await redis.get<Record<string,import("./strategy").BreakoutRecord>>("cxswitch:v28_breakout_state"))||{};
+  state[pair]=record;
+  await redis.set("cxswitch:v28_breakout_state",state);
+}
+export async function clearLastBreakout(pair:string):Promise<void>{
+  const state=(await redis.get<Record<string,import("./strategy").BreakoutRecord>>("cxswitch:v28_breakout_state"))||{};
+  delete state[pair];
+  await redis.set("cxswitch:v28_breakout_state",state);
+}
