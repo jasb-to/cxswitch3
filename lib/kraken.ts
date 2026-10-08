@@ -70,8 +70,7 @@ export function krakenPairFormat(pair: string): string {
     "HYPE/USD": "HYPEUSD",
     "DOGE/USD": "DOGEUSD",
     "LINK/USD": "LINKUSD",
-    "AVAX/USD": "AVAXUSD",
-    "ZEC/USD": "ZECUSD",
+        "ZEC/USD": "ZECUSD",
   };
   return map[pair] || pair.replace("/", "");
 }
@@ -243,6 +242,6 @@ export async function moveFuturesStopToBreakeven(pair:string,direction:"LONG"|"S
 
 function pairFromFuturesSymbolForOrder(symbol:string):string|undefined {
   const s=symbol.toUpperCase().replace(/^(PI|PF)_/,"").replace(/[^A-Z0-9]/g,"");
-  const map:Record<string,string>={XBTUSD:"BTC",ETHUSD:"ETH",SOLUSD:"SOL",HYPEUSD:"HYPE",DOGEUSD:"DOGE",LINKUSD:"LINK",AVAXUSD:"AVAX",ZECUSD:"ZEC"};
+  const map:Record<string,string>={XBTUSD:"BTC",ETHUSD:"ETH",SOLUSD:"SOL",HYPEUSD:"HYPE",DOGEUSD:"DOGE",LINKUSD:"LINK",VIRTUALUSD:"VIRTUAL",ZECUSD:"ZEC"};
   return map[s];
 }
