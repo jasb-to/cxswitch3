@@ -57,7 +57,7 @@ export default function Dashboard(){
     <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
       <div className="text-[8px] uppercase tracking-widest text-white/25">MARKET CONTEXT</div>
       <div className="mt-2 grid grid-cols-2 gap-3">
-        <KV l="1D Direction (8/21)" v={m?.dailyDirection?`${m.dailyDirection}${m.dailyStrength&&m.dailyStrength!=="NEUTRAL"?` · ${m.dailyStrength}`:""}`:"—"} tone={m?.dailyDirection==="BULL"?"green":m?.dailyDirection==="BEAR"?"red":undefined}/>
+        <KV l="1D Direction (5/13)" v={m?.dailyDirection?`${m.dailyDirection}${m.dailyStrength&&m.dailyStrength!=="NEUTRAL"?` · ${m.dailyStrength}`:""}`:"—"} tone={m?.dailyDirection==="BULL"?"green":m?.dailyDirection==="BEAR"?"red":undefined}/>
         <KV l="4H Direction (8/21)" v={m?.fourHDirection??"—"} tone={m?.fourHDirection==="BULL"?"green":m?.fourHDirection==="BEAR"?"red":undefined}/>
       </div>
       <div className="mt-2 grid grid-cols-2 gap-3">
