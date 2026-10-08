@@ -42,11 +42,11 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
   await updateHistoryMilestones(trade.id,price);
   if(typeof hold.shouldHold!=="boolean"){
     console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);
-    hold={shouldHold:true,reason:"hold_result_invalid"};
+    hold={shouldHold:true,reason:"hold_result_invalid",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
   }
   if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){
     console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);
-    hold={shouldHold:true,reason:"active_alert_stale"};
+    hold={shouldHold:true,reason:"active_alert_stale",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
   }
   if(hold.reason==="1d_ema_reversal"){
     const key=`management:${trade.id}:1d_reversal`;
@@ -262,8 +262,8 @@ export async function GET(request:Request){
   // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
   snapshot.fourH513=ema513;
-  const dailyPrice=Number(snapshot.price||price),dailyE8=Number(snapshot.ema8_1d),dailyE21=Number(snapshot.ema21_1d),dailySpread=Math.abs(dailyE8-dailyE21)/Math.max(dailyPrice,1e-12)*100;
-  snapshot.dailyDirection=dailySpread<=0.5?"NEUTRAL":dailyE8>dailyE21?"BULL":"BEAR";
+  const dailyPrice=Number(snapshot.price||price),dailyE5=Number(snapshot.ema5_1d),dailyE13=Number(snapshot.ema13_1d),dailySpread=Math.abs(dailyE5-dailyE13)/Math.max(dailyPrice,1e-12)*100;
+  snapshot.dailyDirection=dailySpread<=0.5?"NEUTRAL":dailyE5>dailyE13?"BULL":"BEAR";
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
   snapshot.dailyLive={state:snapshot.dailyDirection,candidateState:snapshot.dailyDirection,direction:snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
