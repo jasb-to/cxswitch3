@@ -170,9 +170,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // V28 Entry 2: a real break -> remember the break -> pull back -> retest the
   // recorded breakout level -> reject/confirm. The retest is deliberately tied
   // to the recorded breakout price, not whatever the trendline happens to be now.
+  const recordedBreakoutAge=last&&lastBreakout ? last.timestamp-lastBreakout.timestamp : Infinity;
   const breakoutRecord:BreakoutRecord|undefined=closedBreak&&last&&tl
     ? {direction:direction!,price:lastLine,timestamp:last.timestamp,candleIndex:c.length-1}
-    : lastBreakout;
+    : (lastBreakout && recordedBreakoutAge>=0 && recordedBreakoutAge<=48*60*60*1000 ? lastBreakout : undefined);
   const activeBreakout=!!breakoutRecord&&!!direction&&breakoutRecord.direction===direction
     &&(last!.timestamp-breakoutRecord!.timestamp)>=0
     &&(last!.timestamp-breakoutRecord!.timestamp)<=48*60*60*1000;
