@@ -75,6 +75,19 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   trendlineStore.set(pair,state);
   return state;
 }
+function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
+  const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
+  const pivots=swings(c,direction==="LONG").slice(-12).map(x=>({price:x.price,index:x.index}));
+  const above=direction==="LONG" ? pivots.filter(x=>x.price>entry) : pivots.filter(x=>x.price<entry);
+  const minReward=direction==="LONG" ? entry*1.03 : entry*0.97;
+  const tp1Pivot=above.find(x=>direction==="LONG" ? x.price>=minReward : x.price<=minReward);
+  const tp1=tp1Pivot?.price ?? (direction==="LONG" ? entry*1.05 : entry*0.95);
+  const minNext=direction==="LONG" ? tp1*1.015 : tp1*0.985;
+  const tp2Pivot=above.find(x=>direction==="LONG" ? x.price>=minNext : x.price<=minNext);
+  const fallbackTp2=direction==="LONG" ? Math.max(entry*1.10,tp1*1.05) : Math.min(entry*0.90,tp1*0.95);
+  const tp2=tp2Pivot?.price ?? fallbackTp2;
+  return {tp1,tp2,tp1Source:tp1Pivot?"4H swing pivot":"5% fallback",tp2Source:tp2Pivot?"next 4H swing pivot":"10%/runner fallback",tp1Pivot:tp1Pivot?.price,tp2Pivot:tp2Pivot?.price};
+}
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
   direction: "LONG" | "SHORT" | null;
@@ -201,9 +214,9 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     if(!stopResult.valid)missing.push(stopResult.invalidReason??"stop_width");
     else{
       const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
-      const target=direction==="LONG"?p+10*a:p-10*a;
-      rr=(direction==="LONG"?target-p:p-target)/Math.max(risk,EPS);
-      // R:R is risk/target information, not an entry gate.
+      const targets=structureTargets(direction,p,c);
+      rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
+      // R:R is informational only and is calculated from the actual TP2 target.
     }
   }
 
@@ -302,18 +315,18 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
   const stop=calculatedStop.stop;
-  const tp1=evaluation.direction==="LONG"?entryBase*1.05:entryBase*.95;
-  const tp2=evaluation.direction==="LONG"?entryBase*1.10:entryBase*.90;
-
+  const targets=structureTargets(evaluation.direction!,entryBase,c);
+  const risk=Math.abs(entryBase-stop);
+  const actualRr=Math.abs(targets.tp2-entryBase)/Math.max(risk,EPS);
   const s:Signal={
     id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:priceRound(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
-    stop:priceRound(stop),tp1:priceRound(tp1),tp2:priceRound(tp2),rr:r(evaluation.rr??0),expectedMove:r(Math.abs(tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
+    stop:priceRound(stop),tp1:priceRound(targets.tp1),tp2:priceRound(targets.tp2),rr:r(actualRr,2),expectedMove:r(Math.abs(targets.tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
     reason:`${evaluation.direction} ${signalType} | V28 4H trendline breakout lifecycle | 4H Stoch ${st4.k}/${st4.d}`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,ema5_1d:d.e5,ema13_1d:d.e13,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
+    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema5_1d:d.e5,ema13_1d:d.e13,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
-  debug.push(`[SIGNAL] ${s.direction} ${s.type} ${s.type} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
+  debug.push(`[SIGNAL] ${s.direction} ${s.type} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} (${targets.tp1Source}) | TP2 ${s.tp2} (${targets.tp2Source}) | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
   debug.push("[JARVIS] trade conditions passed — execution remains separate from opportunity guidance");
   debug.push("[ALERT] SURFACE");
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
