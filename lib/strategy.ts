@@ -114,6 +114,7 @@ export interface StopCalc {
 
 const MAX_LEVERAGE = 20;
 const MAINTENANCE_MARGIN_RATE = 0.01;
+const MIN_LIQUIDATION_BUFFER_PCT = 0.5;
 
 export function calculateStop(
   direction:"LONG"|"SHORT", entry:number, trendlinePrice:number, atrValue:number, candles:Candle[]
@@ -129,7 +130,8 @@ export function calculateStop(
   const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
   const liquidationPrice=direction==="LONG"?entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE):entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
   const liquidationBufferPct=direction==="LONG"?(stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100:(liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
-  return {stop,calc:{structuralAnchor:r(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:r(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid:true};
+  const valid=liquidationBufferPct>=MIN_LIQUIDATION_BUFFER_PCT;
+  return {stop,calc:{structuralAnchor:r(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:r(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid,invalidReason:valid?undefined:"stop_too_close_to_modelled_liquidation"};
 }
 function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValue:number,structuralAnchor:number):StopCalc{
   const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
