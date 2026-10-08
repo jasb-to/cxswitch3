@@ -26,8 +26,8 @@ const LEGACY_1D_LOG_KEY = "cxswitch:1d_trend_log_v2";
 
 export interface ActiveTrade {
   id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ENTRY" | "REVERSAL_SHORT" | "REVERSAL_LONG";
-  entry: number; stop: number; target: number; tp1?: number; tp2?: number; tp3?: number;
-  tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
+  entry: number; stop: number; target: number; tp1?: number; tp2?: number;
+  tp1HitAt?: number; tp2HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
   status: "ACTIVE"; context: any; version: number;
   holdAdvice?: { status: "healthy" | "warning" | "failed"; reason: string; newStop?: number; checkedAt: number };
 }
@@ -40,9 +40,6 @@ export interface SignalHistoryEntry {
   status: HistoryStatus; exitReason?: string; exitPrice?: number; exitTimestamp?: number; context: any; version: number;
 }
 
-function stagedTargets(s: any) {
-  return { tp1: s?.tp1 ?? s?.context?.stages?.tp1, tp2: s?.tp2 ?? s?.context?.stages?.tp2 ?? s?.target, tp3: s?.tp3 ?? s?.context?.stages?.tp3 ?? s?.target };
-}
 
 export async function runMigrationIfNeeded(): Promise<void> { return; }
 
@@ -91,7 +88,7 @@ export async function getActiveSignals(): Promise<ActiveTrade[]> {
 export async function setActiveSignals(signals: ActiveTrade[]): Promise<void> { await redis.set(ACTIVE_SIGNALS_KEY, signals); }
 export async function addActiveSignal(signal: Signal): Promise<void> {
   const active = await getActiveSignals();
-  const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? 0,tp1:signal.tp1,tp2:signal.tp2,tp3:signal.tp3,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",context:signal.context,version:signal.version};
+  const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? 0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",context:signal.context,version:signal.version};
   const idx = active.findIndex(a => a.pair === signal.pair && a.direction === signal.direction);
   if (idx >= 0) active[idx] = {...active[idx],...trade}; else active.push(trade);
   await setActiveSignals(active);
@@ -99,7 +96,7 @@ export async function addActiveSignal(signal: Signal): Promise<void> {
 }
 export async function removeActiveSignal(pair:string,direction:"LONG"|"SHORT"):Promise<void>{const active=await getActiveSignals();const filtered=active.filter(a=>!(a.pair===pair&&a.direction===direction));if(filtered.length!==active.length){await setActiveSignals(filtered);console.log(`[ACTIVE] Removed ${pair} ${direction}`);}}
 export async function removeActiveSignalById(id:string):Promise<void>{const active=await getActiveSignals();const filtered=active.filter(a=>a.id!==id);if(filtered.length!==active.length){await setActiveSignals(filtered);console.log(`[ACTIVE] Removed signal ${id}`);}}
-export async function updateActiveTradeMilestones(id:string,price:number):Promise<ActiveTrade|undefined>{const active=await getActiveSignals();const trade=active.find(a=>a.id===id);if(!trade)return undefined;const hit=(level:number|undefined,direction:"LONG"|"SHORT")=>level!==undefined&&(direction==="LONG"?price>=level:price<=level);let changed=false;if(!trade.tp1HitAt&&hit(trade.tp1,trade.direction)){trade.tp1HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP1 reached @ ${price}`);}if(!trade.tp2HitAt&&hit(trade.tp2,trade.direction)){trade.tp2HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP2 reached @ ${price}`);}if(!trade.tp3HitAt&&hit(trade.tp3,trade.direction)){trade.tp3HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP3 reached @ ${price}`);}if(changed)await setActiveSignals(active);return trade;}
+export async function updateActiveTradeMilestones(id:string,price:number):Promise<ActiveTrade|undefined>{const active=await getActiveSignals();const trade=active.find(a=>a.id===id);if(!trade)return undefined;const hit=(level:number|undefined,direction:"LONG"|"SHORT")=>level!==undefined&&(direction==="LONG"?price>=level:price<=level);let changed=false;if(!trade.tp1HitAt&&hit(trade.tp1,trade.direction)){trade.tp1HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP1 reached @ ${price}`);}if(!trade.tp2HitAt&&hit(trade.tp2,trade.direction)){trade.tp2HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP2 reached @ ${price}`);}if(changed)await setActiveSignals(active);return trade;}
 export async function getSignalHistory():Promise<SignalHistoryEntry[]>{
   const history=(await redis.get<SignalHistoryEntry[]>(SIGNAL_HISTORY_KEY))||[];
   const cleaned=await redis.get<boolean>(CLEANUP_KEY);
