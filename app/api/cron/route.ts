@@ -124,6 +124,8 @@ async function observeManualManagement(active:any[],marketData:any[]){
     const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
     const price=Number(m?.price);
     if(!candles.length||!Number.isFinite(price))continue;
+    const milestone=await updateHistoryMilestones(trade.id,price);
+    if(milestone)Object.assign(trade,milestone);
     const hold=shouldHold(toSignalLike(trade),candles,price);
     if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
       const improves=trade.direction==="LONG"?hold.newStop>Number(trade.stop):hold.newStop<Number(trade.stop);
