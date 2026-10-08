@@ -92,7 +92,8 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
 
 function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
   const tactical=directionFrom4H(m);
-  if(!tactical)return undefined;
+  const tacticalDirection=tactical==="BULL"?"LONG":tactical==="BEAR"?"SHORT":null;
+  if(!tacticalDirection)return undefined;
 
   const k1=Number(m?.stochK1d),d1=Number(m?.stochD1d),pk1=Number(m?.stochK1dPrev),pd1=Number(m?.stochD1dPrev);
   const k4=Number(m?.stochK4h),d4=Number(m?.stochD4h),pk4=Number(m?.stochK4hPrev),pd4=Number(m?.stochD4hPrev);
@@ -102,21 +103,21 @@ function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
   // The 4H tactical direction is the anchor: a Stoch move against it is
   // context/noise, not an opportunity. This prevents false alerts such as
   // "BULL opportunity" while 4H tactical direction is BULL but Stoch is bearish.
-  const fourHTurn=tactical==="LONG"
+  const fourHTurn=tacticalDirection==="LONG"
     ? (Number.isFinite(pk4)&&Number.isFinite(pd4)&&pk4<=pd4&&k4>d4) || k4>d4
     : (Number.isFinite(pk4)&&Number.isFinite(pd4)&&pk4>=pd4&&k4<d4) || k4<d4;
 
   if(!fourHTurn)return undefined;
 
-  const dailyTurn=tactical==="LONG"
+  const dailyTurn=tacticalDirection==="LONG"
     ? (Number.isFinite(pk1)&&Number.isFinite(pd1)&&pk1<=pd1&&k1>d1) || k1>d1
     : (Number.isFinite(pk1)&&Number.isFinite(pd1)&&pk1>=pd1&&k1<d1) || k1<d1;
 
   const both=dailyTurn;
-  const dirText=tactical==="LONG"?"bullish":"bearish";
+  const dirText=tacticalDirection==="LONG"?"bullish":"bearish";
 
   return {
-    direction:tactical,
+    direction:tacticalDirection,
     strength:both?"CONFIRMED":"DEVELOPING",
     reason:both
       ? `The 1D and 4H Stoch are turning ${dirText} together. Momentum is lining up.`
