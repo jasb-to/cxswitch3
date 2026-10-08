@@ -70,7 +70,8 @@ export function krakenPairFormat(pair: string): string {
     "HYPE/USD": "HYPEUSD",
     "DOGE/USD": "DOGEUSD",
     "LINK/USD": "LINKUSD",
-        "ZEC/USD": "ZECUSD",
+    "VIRTUAL/USD": "VIRTUALUSD",
+    "ZEC/USD": "ZECUSD",
   };
   return map[pair] || pair.replace("/", "");
 }
