@@ -9,7 +9,7 @@ export interface BreakoutRecord { direction:Direction; price:number; timestamp:n
 export interface SignalResult { signal?:Signal; market?:any; debug:string[]; breakoutRecord?:BreakoutRecord }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
-export const CURRENT_SIGNAL_VERSION=38;
+export const CURRENT_SIGNAL_VERSION=39;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
