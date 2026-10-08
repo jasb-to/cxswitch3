@@ -205,7 +205,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
       rr=(direction==="LONG"?target-p:p-target)/Math.max(risk,EPS);
       // R:R is risk/target information, not an entry gate.
     }
-  }else if(direction){missing.push("rr");}
+  }
 
   const deduped=[...new Set(missing.filter(Boolean))];
   return{
