@@ -5,7 +5,8 @@ export interface Signal {
   adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number;
   reason:string; timestamp:number; version:number; context?:any;
 }
-export interface SignalResult { signal?:Signal; market?:any; debug:string[] }
+export interface BreakoutRecord { direction:Direction; price:number; timestamp:number; candleIndex:number }
+export interface SignalResult { signal?:Signal; market?:any; debug:string[]; breakoutRecord?:BreakoutRecord }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
 export const CURRENT_SIGNAL_VERSION=38;
@@ -86,6 +87,7 @@ export interface GateEvaluation {
   missing: string[];
   allPassed: boolean;
   dailyTransition: boolean;
+  breakoutRecord?: BreakoutRecord;
 }
 
 export interface StopCalc {
@@ -135,7 +137,7 @@ function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValu
   };
 }
 
-export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number):GateEvaluation{
+export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,lastBreakout?:BreakoutRecord):GateEvaluation{
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
   const d=dailyTrend(c);
@@ -162,13 +164,27 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const prevLine=tl?tl.slope*(c.length-2)+tl.intercept:0;
   const closedBreak=!!tl&&!!last&&!!prev&&(direction==="LONG"?last.close>lastLine+0.25*a&&prev.close<=prevLine+0.25*a:last.close<lastLine-0.25*a&&prev.close>=prevLine-0.25*a);
 
-  // V28: ENTRY_1 is the early Stoch-extreme setup at the break line.
+  // V28 Entry 1: the early setup at the trendline. Keep this simple.
   const entry1=!!direction&&near&&!!zoneValue&&zoneValue.distancePct<=1.2&&(direction==="LONG"?st4.k<20:st4.k>80);
-  // V28: ENTRY_2 is the confirmed closed 4H break with Stoch timing.
+
+  // V28 Entry 2: a real break -> remember the break -> pull back -> retest the
+  // recorded breakout level -> reject/confirm. The retest is deliberately tied
+  // to the recorded breakout price, not whatever the trendline happens to be now.
+  const breakoutRecord:BreakoutRecord|undefined=closedBreak&&last&&tl
+    ? {direction:direction!,price:lastLine,timestamp:last.timestamp,candleIndex:c.length-1}
+    : lastBreakout;
+  const activeBreakout=!!breakoutRecord&&!!direction&&breakoutRecord.direction===direction
+    &&(last!.timestamp-breakoutRecord!.timestamp)>=0
+    &&(last!.timestamp-breakoutRecord!.timestamp)<=48*60*60*1000;
+  const retestDistance=activeBreakout?Math.abs(p-breakoutRecord!.price)/Math.max(Math.abs(breakoutRecord!.price),EPS):Infinity;
+  const retest=activeBreakout && retestDistance<=0.01 && !!last && !!prev
+    && (direction==="LONG"
+      ? last.low<=breakoutRecord!.price*1.01 && last.close>breakoutRecord!.price && last.close>=prev.close
+      : last.high>=breakoutRecord!.price*0.99 && last.close<breakoutRecord!.price && last.close<=prev.close);
   const rawEntry2=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
   const entry2Window=!!direction&&(direction==="LONG"?st4.k>=20&&st4.k<=55:st4.k>=45&&st4.k<=80);
-  const entry2=closedBreak&&beyond&&rawEntry2&&entry2Window;
-  const entry2Late=closedBreak&&beyond&&rawEntry2&&!entry2Window;
+  const entry2=retest&&rawEntry2&&entry2Window;
+  const entry2Late=retest&&rawEntry2&&!entry2Window;
   const signalType=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!signalType&&direction)missing.push(entry2Late?"entry2_late":"stoch_cross");
 
@@ -186,7 +202,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
       const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
       const target=direction==="LONG"?p+10*a:p-10*a;
       rr=(direction==="LONG"?target-p:p-target)/Math.max(risk,EPS);
-      if(rr<MIN_RR)missing.push("rr");
+      // R:R is risk/target information, not an entry gate.
     }
   }else if(direction){missing.push("rr");}
 
@@ -201,7 +217,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     stopCalc,
     missing:deduped,
     allPassed:deduped.length===0,
-    dailyTransition:!!dailyTransition
+    dailyTransition:!!dailyTransition,
+    breakoutRecord: breakoutRecord
   };
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
@@ -219,7 +236,7 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
   };
 }
 
-export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number){
+export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord){
   void candles1h;
   const debug:string[]=[];
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
@@ -234,13 +251,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const d=dailyTrend(c),cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
   const tactical=tacticalDirection(c);
-  const evaluation=evaluateGates(pair,c,p);
+  const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
   // Hard V28 direction lock: no signal may ever differ from the confirmed 1D direction.
   if(evaluation.direction && evaluation.direction!==d.direction){
     debug.push(`[LOCK] V28 direction mismatch blocked: gate=${evaluation.direction} 1D=${d.direction??"NEUTRAL"}`);
     debug.push("[SIGNAL] none — V28 direction lock");
-    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
   debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength}`);
@@ -253,7 +270,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       : "[1D] NEUTRAL | spread < 0.5%");
     debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
-    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
 
   const trendlinePrice=evaluation.zone?.price??0;
@@ -276,7 +293,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     debug.push(`[SIGNAL] none — missing ${evaluation.missing.join(", ")}`);
     debug.push("[JARVIS] observation only — no trade");
     debug.push("[ALERT] none");
-    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
 
   const signalType=evaluation.trigger.signalType!;
