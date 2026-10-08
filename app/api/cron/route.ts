@@ -11,7 +11,7 @@ import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
-const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","ZEC"] as const;
+const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC"] as const;
 const EXECUTION_MODE="MANUAL" as const;
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
@@ -152,7 +152,7 @@ async function observeManualManagement(active:any[],marketData:any[]){
 
 function pairFromFuturesSymbol(symbol:string):string|undefined{
   const s=symbol.toUpperCase().replace(/^(PI|PF)_/,"").replace(/[^A-Z0-9]/g,"");
-  const map:Record<string,string>={XBTUSD:"BTC",ETHUSD:"ETH",SOLUSD:"SOL",HYPEUSD:"HYPE",DOGEUSD:"DOGE",LINKUSD:"LINK",AVAXUSD:"AVAX",ZECUSD:"ZEC"};
+  const map:Record<string,string>={XBTUSD:"BTC",ETHUSD:"ETH",SOLUSD:"SOL",HYPEUSD:"HYPE",DOGEUSD:"DOGE",LINKUSD:"LINK",VIRTUALUSD:"VIRTUAL",ZECUSD:"ZEC"};
   return map[s];
 }
 
