@@ -178,7 +178,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     &&(last!.timestamp-breakoutRecord!.timestamp)>=0
     &&(last!.timestamp-breakoutRecord!.timestamp)<=48*60*60*1000;
   const retestDistance=activeBreakout?Math.abs(p-breakoutRecord!.price)/Math.max(Math.abs(breakoutRecord!.price),EPS):Infinity;
-  const retest=activeBreakout && retestDistance<=0.01 && !!last && !!prev
+  const retest=activeBreakout && retestDistance<=0.015 && !!last && !!prev
     && (direction==="LONG"
       ? last.low<=breakoutRecord!.price*1.01 && last.close>breakoutRecord!.price && last.close>=prev.close
       : last.high>=breakoutRecord!.price*0.99 && last.close<breakoutRecord!.price && last.close<=prev.close);
