@@ -64,30 +64,145 @@ function trendlinePivots(c:Candle[],high:boolean):Swing[]{
   }
   return out;
 }
-export interface TrendlineState{slope:number;intercept:number;pivots:Swing[];lastUpdated:number;direction:Direction;r2:number}
-const trendlineStore=new Map<string,TrendlineState>();
-export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
-  const len=candles.length,now=candles.at(-1)?.timestamp;
-  if(len<20||now===undefined)return null;
-  const pivots=trendlinePivots(candles,direction==="SHORT").slice(-5);
-  if(pivots.length<3)return null;
-  const existing=trendlineStore.get(pair),maxAge=7*24*60*60*1000;
-  if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
-    const lastPivot=pivots[pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
-    const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
-    if(deviation<0.02)return{...existing,r2:0.85};
+export interface TrendlineState {
+  slope:number;
+  intercept:number;
+  pivots:Swing[];
+  lastUpdated:number;
+  direction:Direction;
+  r2:number;
+  anchors:[Swing,Swing];
+  middleTouch:Swing;
+  touchCount:number;
+  wickBreaches:number;
+  closeBreaches:number;
+  score:number;
+  status:"INTACT"|"BROKEN";
+  breakoutIndex:number|null;
+  breakoutPrice:number|null;
+  breakoutDirection:Direction|null;
+  validationEndIndex:number;
+}
+interface TrendlineCandidate extends TrendlineState {}
+const TRENDLINE_LOOKBACK_BARS=180;
+const TRENDLINE_MAX_LATEST_ANCHOR_AGE=60;
+const TRENDLINE_MIN_ANCHOR_GAP=3;
+function lineAt(slope:number,intercept:number,index:number){return slope*index+intercept}
+function trendlineCandidateScore(
+  candles:Candle[],a:Swing,b:Swing,high:boolean,atrNow:number
+):TrendlineCandidate|null{
+  const span=b.index-a.index;
+  if(span<TRENDLINE_MIN_ANCHOR_GAP)return null;
+  const slope=(b.price-a.price)/span;
+  // Falling resistance can break upward; rising support can break downward.
+  if((high&&slope>=0)||(!high&&slope<=0))return null;
+  const intercept=a.price-slope*a.index;
+  const currentPrice=candles.at(-1)?.close??b.price;
+  const tolerance=Math.max(atrNow*0.28,currentPrice*0.0012);
+  const wickBreachTolerance=Math.max(atrNow*0.65,currentPrice*0.0025);
+  const closeBreachTolerance=Math.max(atrNow*0.35,currentPrice*0.0015);
+  const touches:Swing[]=[];
+  let wickBreaches=0,closeBreaches=0,bodyIntersections=0;
+  let breakoutIndex:number|null=null,breakoutPrice:number|null=null;
+  for(let i=a.index;i<candles.length;i++){
+    const candle=candles[i],line=lineAt(slope,intercept,i);
+    const edge=high?candle.high:candle.low;
+    const gap=high?edge-line:line-edge;
+    const closeGap=high?candle.close-line:line-candle.close;
+    const bodyEdge=high?Math.max(candle.open,candle.close):Math.min(candle.open,candle.close);
+    const bodyGap=high?bodyEdge-line:line-bodyEdge;
+    // Assess the line through its first close-break after anchor B. Retain it
+    // as a BROKEN candidate instead of losing the structure we want to detect.
+    if(i>b.index&&closeGap>closeBreachTolerance){
+      breakoutIndex=i;breakoutPrice=candle.close;break;
+    }
+    if(Math.abs(gap)<=tolerance)touches.push({index:i,price:edge,timestamp:candle.timestamp});
+    if(gap>wickBreachTolerance)wickBreaches++;
+    if(closeGap>closeBreachTolerance)closeBreaches++;
+    if(bodyGap>closeBreachTolerance)bodyIntersections++;
   }
-  const n=pivots.length,sumX=pivots.reduce((sum,p)=>sum+p.index,0),sumY=pivots.reduce((sum,p)=>sum+p.price,0);
-  const sumXY=pivots.reduce((sum,p)=>sum+p.index*p.price,0),sumX2=pivots.reduce((sum,p)=>sum+p.index*p.index,0);
-  const denominator=n*sumX2-sumX*sumX;
-  if(!denominator)return null;
-  const slope=(n*sumXY-sumX*sumY)/denominator,intercept=(sumY-slope*sumX)/n,yMean=sumY/n;
-  const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-yMean,2),0);
-  const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(slope*p.index+intercept),2),0);
-  const r2=ssTotal===0?0:1-ssResidual/ssTotal;
-  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:r(r2,2)};
-  trendlineStore.set(pair,state);
-  return state;
+  const validationEndIndex=breakoutIndex??candles.length-1;
+  const validTouches=touches.filter(t=>t.index<=validationEndIndex);
+  const middleTouches=validTouches.filter(t=>t.index>a.index+1&&t.index<b.index-1);
+  if(!middleTouches.length)return null;
+  if(wickBreaches>Math.max(2,Math.floor(span*0.035)))return null;
+  if(closeBreaches>Math.max(1,Math.floor(span*0.015)))return null;
+  const distinctTouches:Swing[]=[];
+  // Collapse adjacent candles around the same reaction into one touch. The two
+  // anchors and the required independent middle reaction remain distinct points.
+  const touchSpacing=3;
+  for(const touch of validTouches){
+    const last=distinctTouches.at(-1);
+    if(!last||touch.index-last.index>=touchSpacing)distinctTouches.push(touch);
+    else if(Math.abs(touch.price-lineAt(slope,intercept,touch.index))<
+      Math.abs(last.price-lineAt(slope,intercept,last.index)))distinctTouches[distinctTouches.length-1]=touch;
+  }
+  const selectedMiddleTouch=middleTouches
+    .sort((x,y)=>Math.abs(x.price-lineAt(slope,intercept,x.index))-Math.abs(y.price-lineAt(slope,intercept,y.index)))[0];
+  const touchIndices=new Set([...distinctTouches.map(t=>t.index),a.index,b.index,selectedMiddleTouch.index]);
+  if(touchIndices.size<3)return null;
+  const pivotList=trendlinePivots(candles,high).filter(p=>p.index>=a.index&&p.index<=validationEndIndex);
+  const pivotTouches=pivotList.filter(p=>Math.abs(p.price-lineAt(slope,intercept,p.index))<=tolerance);
+  const latestAge=candles.length-1-b.index;
+  // Recency matters more than raw historical touch volume: the objective is
+  // to catch the latest actionable structure, not the line with the longest life.
+  const recencyScore=Math.max(0,80-latestAge*3);
+  const spanScore=Math.min(10,Math.log2(span+1)*1.5);
+  const broken=breakoutIndex!==null;
+  // Preserve a freshly broken line even if the subsequent move changes direction.
+  // A recent confirmed break should outweigh several extra touches on a stale line.
+  const barsSinceBreak=broken?candles.length-1-breakoutIndex!:Infinity;
+  const breakRecencyBonus=broken?Math.max(0,60-barsSinceBreak*3):0;
+  const score=touchIndices.size*10+pivotTouches.length*5+4+
+    recencyScore+spanScore+breakRecencyBonus-wickBreaches*12-closeBreaches*24-bodyIntersections*1.5;
+  return {
+    slope,intercept,pivots:distinctTouches,lastUpdated:candles.at(-1)!.timestamp,
+    direction:high?"LONG":"SHORT",r2:0,anchors:[a,b],middleTouch:selectedMiddleTouch,
+    touchCount:touchIndices.size,wickBreaches,closeBreaches,score,
+    status:broken?"BROKEN":"INTACT",breakoutIndex,breakoutPrice,
+    breakoutDirection:broken?(high?"LONG":"SHORT"):null,validationEndIndex
+  };
+}
+export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
+  void pair;
+  const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
+  const len=c.length,now=c.at(-1)?.timestamp;
+  if(len<20||now===undefined)return null;
+  // Expected break direction determines which side of price to draw:
+  // LONG = falling resistance line to break upward; SHORT = rising support line to break downward.
+  const high=direction==="LONG";
+  const allPivots=trendlinePivots(c,high).filter(p=>p.index>=Math.max(0,len-TRENDLINE_LOOKBACK_BARS));
+  if(allPivots.length<3)return null;
+  const atrNow=atr(c);
+  if(!Number.isFinite(atrNow)||atrNow<=0)return null;
+  let best:TrendlineCandidate|null=null;
+  // Keep the confirmed-pivot pairs for established structures.
+  for(let bi=1;bi<allPivots.length;bi++){
+    const b=allPivots[bi];
+    if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)continue;
+    for(let ai=0;ai<bi;ai++){
+      const a=allPivots[ai];
+      const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
+      if(candidate&&(!best||candidate.score>best.score))best=candidate;
+    }
+  }
+  // Humans also draw a fresh line through a confirmed swing and a newer wick
+  // reaction before that second point becomes a strict 2-left/2-right pivot.
+  // Only use recent completed candles as provisional second anchors; the line
+  // must still pass the same intermediate-touch and breach validation.
+  const recentStart=Math.max(0,len-30);
+  const provisionalAnchors:Swing[]=c.slice(recentStart,len-1).map((x,offset)=>({
+    index:recentStart+offset,price:high?x.high:x.low,timestamp:x.timestamp
+  }));
+  for(const b of provisionalAnchors){
+    if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)continue;
+    for(const a of allPivots){
+      if(a.index>=b.index)continue;
+      const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
+      if(candidate&&(!best||candidate.score>best.score))best=candidate;
+    }
+  }
+  return best;
 }
 function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
@@ -183,7 +298,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const a=atr(c);
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
-  const tl=direction?getTrendline(pair,c,direction):null;
+  // Entry-zone geometry follows the daily move (LONG uses rising support,
+  // SHORT uses falling resistance); getTrendline's argument is break direction.
+  const candidateTl=direction?getTrendline(pair,c,direction==="LONG"?"SHORT":"LONG"):null;
+  const tl=candidateTl?.status==="INTACT"?candidateTl:null;
   const trendlineSlope=tl?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
   const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
@@ -246,13 +364,64 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="SHORT").slice(-2);
-  const state=getTrendline(pair,c,direction);
+  // This parameter is the daily bias; invert it to report that bias's
+  // support/resistance line, separately from the expected-break setup below.
+  const state=getTrendline(pair,c,direction==="LONG"?"SHORT":"LONG");
+  // Direction is the expected breakout, not the existing trend:
+  // SHORT => rising swing-low support to break downward;
+  // LONG => falling swing-high resistance to break upward.
+  const support=getTrendline(pair,c,"SHORT");
+  const resistance=getTrendline(pair,c,"LONG");
+  const pack=(line:TrendlineState|null)=>line?({
+    anchors:line.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    middleTouch:{i:line.middleTouch.index,p:line.middleTouch.price,t:line.middleTouch.timestamp},
+    touchCount:line.touchCount,wickBreaches:line.wickBreaches,
+    closeBreaches:line.closeBreaches,score:line.score,status:line.status,
+    breakoutIndex:line.breakoutIndex,breakoutPrice:line.breakoutPrice,
+    breakoutDirection:line.breakoutDirection,validationEndIndex:line.validationEndIndex,
+    slope:line.slope,priceAtCurrent:line.slope*(c.length-1)+line.intercept
+  }):null;
+  const recent=c.slice(-12);
+  const first=recent[0]?.close??0,last=recent.at(-1)?.close??0;
+  const localMovePct=first?((last-first)/first)*100:0;
+  // Avoid forcing a direction when the last ~48h is effectively sideways.
+  const moveThresholdPct=0.25;
+  const expectedBreakLine=localMovePct>moveThresholdPct
+    ?"RISING_SUPPORT_BREAKDOWN"
+    :localMovePct< -moveThresholdPct
+      ?"FALLING_RESISTANCE_BREAKOUT":"NO_CLEAR_LOCAL_MOVE";
+  // If price has just broken a valid line, report that structure first.
+  // The post-break selloff/bounce can reverse the last-12-bar slope, so using
+  // only current net movement would select the opposite line at exactly the wrong time.
+  const recentBrokenLines=[support,resistance]
+    .filter((line):line is TrendlineState=>!!line&&line.status==="BROKEN"&&
+      line.breakoutIndex!==null&&c.length-1-line.breakoutIndex<=12)
+    .sort((a,b)=>(b.breakoutIndex??-1)-(a.breakoutIndex??-1));
+  const breakSetupLine=recentBrokenLines[0]??
+    (expectedBreakLine==="RISING_SUPPORT_BREAKDOWN"
+      ?support:expectedBreakLine==="FALLING_RESISTANCE_BREAKOUT"?resistance:null);
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
     pair,
     direction,
-    pivots:pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    localMovePct,
+    expectedBreakLine,
+    // The candidate selected for expected break direction is separate from
+    // the daily-bias line, so diagnostics cannot silently confuse the two.
+    selected:pack(breakSetupLine),
+    dailyBiasLine:pack(state),
+    risingSupport:pack(support),
+    fallingResistance:pack(resistance),
+    currentPrice:c.at(-1)?.close??null,
+    recentPivotLows:trendlinePivots(c,false).filter(x=>x.index>=Math.max(0,c.length-TRENDLINE_LOOKBACK_BARS)).slice(-15).map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    recentPivotHighs:trendlinePivots(c,true).filter(x=>x.index>=Math.max(0,c.length-TRENDLINE_LOOKBACK_BARS)).slice(-15).map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    pivots:state?.pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??[],
+    anchors:state?.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??null,
+    middleTouch:state?{i:state.middleTouch.index,p:state.middleTouch.price,t:state.middleTouch.timestamp}:null,
+    touchCount:state?.touchCount??0,
+    wickBreaches:state?.wickBreaches??null,
+    closeBreaches:state?.closeBreaches??null,
+    score:state?.score??null,
     slope:state?.slope??null,
     intercept:state?.intercept??null,
     priceAtCurrent
@@ -308,6 +477,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   if(swingDebug){
     debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
     debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
+    debug.push(`[TL VALIDATION] ${pair} | localMove12 ${swingDebug.localMovePct.toFixed(2)}% | expected ${swingDebug.expectedBreakLine} | selected ${JSON.stringify(swingDebug.selected)} | risingSupport ${JSON.stringify(swingDebug.risingSupport)} | fallingResistance ${JSON.stringify(swingDebug.fallingResistance)}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
