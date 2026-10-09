@@ -1,15 +1,22 @@
 // lib/telegram.ts — canonical CXSwitch alerts
 import { CXSWITCH_VERSION } from "./version";
 
-const formatPrice=(value:any)=>{
+function formatPrice(value:any):string{
   if(value===undefined||value===null||value==="-")return "-";
   const n=Number(value);
   if(!Number.isFinite(n))return String(value);
-  if(Math.abs(n)>=1000)return n.toFixed(0);
-  if(Math.abs(n)>=1)return n.toFixed(2);
-  if(Math.abs(n)>=0.1)return n.toFixed(3);
-  return n.toFixed(5);
-};
+  if(n>=1000)return n.toFixed(0);
+  if(n>=100)return n.toFixed(1);
+  if(n>=1)return n.toFixed(2);
+  if(n>=0.1)return n.toFixed(3);
+  if(n>=0.01)return n.toFixed(5); // Preserve five-decimal runtime prices such as DOGE.
+  return n.toFixed(6);
+}
+
+function formatPoints(risk:number):string{
+  const formatted=risk>=1?risk.toFixed(2):risk>=0.01?risk.toFixed(4):risk.toFixed(6);
+  return formatted.replace(/0+$/,"").replace(/\.$/,"");
+}
 
 export async function sendAlert(signal:any){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
@@ -47,7 +54,7 @@ export async function sendAlert(signal:any){
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type}`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,"",
     `Entry: ${formatPrice(entry)} · MARKET`,
-    `SL: ${formatPrice(stop)}`,`Risk: ${riskDistance>0 ? riskDistance.toFixed(2)+" pts ("+(signal.context?.stopCalc?.riskPct?.toFixed(2)??"-")+"%)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.liquidationPrice??signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${bufferText}`,
+    `SL: ${formatPrice(stop)}`,`Risk: ${riskDistance>0 ? formatPoints(riskDistance)+" pts ("+(signal.context?.stopCalc?.riskPct?.toFixed(2)??"-")+"%)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.liquidationPrice??signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${bufferText}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
     `RR (TP1): ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
