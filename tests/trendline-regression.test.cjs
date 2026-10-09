@@ -99,39 +99,42 @@ function dailyBullishWithDescendingRecentLows() {
   });
 }
 
-test("LONG trendline rejects descending swing lows", () => {
+test("LONG trendline accepts descending swing lows; slope is diagnostic, not a veto", () => {
   const candles = trendlineCandles("descending");
-  assert.equal(strategy.getTrendline("TEST-DESCENDING-LONG", candles, "LONG"), null);
+  const line = strategy.getTrendline("TEST-DESCENDING-LONG", candles, "LONG");
+  assert.ok(line);
+  assert.ok(line.slope < 0);
 
   const debug = strategy.getTrendlineDebug("TEST-DESCENDING-LONG-DEBUG", candles, "LONG");
-  assert.equal(debug.invalidSlope, true);
-  assert.equal(debug.validForDirection, false);
+  assert.equal(debug.trendlineAvailable, true);
   assert.ok(debug.slope < 0);
   assert.equal(debug.pivots.length, 5);
 });
 
-test("SHORT trendline rejects ascending swing highs", () => {
+test("SHORT trendline accepts ascending swing highs; slope is diagnostic, not a veto", () => {
   const candles = highTrendlineCandles("ascending");
-  assert.equal(strategy.getTrendline("TEST-ASCENDING-SHORT", candles, "SHORT"), null);
+  const line = strategy.getTrendline("TEST-ASCENDING-SHORT", candles, "SHORT");
+  assert.ok(line);
+  assert.ok(line.slope > 0);
 
   const debug = strategy.getTrendlineDebug("TEST-ASCENDING-SHORT-DEBUG", candles, "SHORT");
-  assert.equal(debug.invalidSlope, true);
-  assert.equal(debug.validForDirection, false);
+  assert.equal(debug.trendlineAvailable, true);
   assert.ok(debug.slope > 0);
   assert.equal(debug.pivots.length, 5);
 });
 
-test("a cached LONG line is not reused when fresh swing lows descend", () => {
+test("a cached LONG line is refreshed when fresh swing lows descend", () => {
   const pair = "TEST-CACHE-INVERSION";
-  const valid = strategy.getTrendline(pair, trendlineCandles("ascending"), "LONG");
-  assert.ok(valid);
-  assert.ok(valid.slope > 0);
+  const initial = strategy.getTrendline(pair, trendlineCandles("ascending"), "LONG");
+  assert.ok(initial);
+  assert.ok(initial.slope > 0);
 
   const inverted = strategy.getTrendline(pair, trendlineCandles("descending"), "LONG");
-  assert.equal(inverted, null, "the fresh inverted fit must invalidate the prior cached line");
+  assert.ok(inverted);
+  assert.ok(inverted.slope < 0, "fresh pivots replace the cache when the anchors no longer fit");
 });
 
-test("SOL-style inverted trendline produces no signal and explicit invalid debug", () => {
+test("SOL-style inverted trendline is diagnostic and does not create a slope-invalid gate", () => {
   const candles = dailyBullishWithDescendingRecentLows();
   const result = strategy.generateSignal(
     "SOL-REGRESSION",
@@ -145,8 +148,8 @@ test("SOL-style inverted trendline produces no signal and explicit invalid debug
   assert.equal(result.signal, undefined, "an inverted LONG support line must never produce a signal");
   const gates = result.debug.find((line) => line.startsWith("[GATES]"));
   assert.ok(gates);
-  assert.match(gates, /"missing":\["trendline_invalid"\]/);
-  assert.doesNotMatch(gates, /"missing":\[[^\]]*"zone"/);
+  assert.doesNotMatch(gates, /trendline_invalid/);
+  assert.doesNotMatch(gates, /4h_ema_opposed/);
 
   const swings = result.debug.find((line) => line.startsWith("[SWINGS]"));
   assert.ok(swings);
@@ -155,11 +158,11 @@ test("SOL-style inverted trendline produces no signal and explicit invalid debug
 
   const trendline = result.debug.find((line) => line.startsWith("[TL]"));
   assert.ok(trendline);
-  assert.match(trendline, /invalid for LONG \(slope must be positive\)/);
+  assert.match(trendline, /slope diagnostic only, not an entry gate/);
   assert.match(trendline, /r2 /);
 });
 
-test("opposed 4H EMA blocks a real ENTRY_2 gate and Jarvis narrates the veto", () => {
+test("opposed 4H EMA does not veto ENTRY_2; Jarvis keeps it contextual", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = entry2VetoCandles();
   const pair = "SOL-ENTRY2-EMA-REGRESSION";
@@ -176,12 +179,12 @@ test("opposed 4H EMA blocks a real ENTRY_2 gate and Jarvis narrates the veto", (
     assert.equal(aligned.trigger.entry2, true);
     assert.equal(aligned.trigger.signalType, "ENTRY_2");
 
-    // Flip only the diagnostic state; the exact same candles and price must be vetoed.
+    // Flip only the diagnostic state; the exact same candles and price remain eligible.
     emaDiagnostic.get4HEmaDiagnostic = () => ({ label: "BEARISH MEDIUM", direction: "BEARISH" });
     const opposed = strategy.evaluateGates(pair, candles, currentPrice);
-    assert.equal(opposed.trigger.entry2, false);
-    assert.equal(opposed.trigger.signalType, null);
-    assert.ok(opposed.missing.includes("4h_ema_opposed"));
+    assert.equal(opposed.trigger.entry2, true);
+    assert.equal(opposed.trigger.signalType, "ENTRY_2");
+    assert.equal(opposed.missing.includes("4h_ema_opposed"), false);
 
     const narration = jarvis.narratePairState(
       "SOL",
@@ -195,9 +198,8 @@ test("opposed 4H EMA blocks a real ENTRY_2 gate and Jarvis narrates the veto", (
       undefined,
     );
     assert.match(narration, /The 1D is bullish/);
-    assert.match(narration, /4H EMA is BEARISH MEDIUM \(opposing\)/);
-    assert.match(narration, /ENTRY_2 blocked until the 4H turns bullish/);
-    assert.doesNotMatch(narration, /watching for price to come into position/i);
+    assert.match(narration, /4H is bearish/);
+    assert.doesNotMatch(narration, /ENTRY_2 blocked/i);
   } finally {
     emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
   }
