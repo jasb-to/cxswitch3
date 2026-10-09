@@ -30,7 +30,7 @@ function dailyTrend(c:Candle[]):DailyRegime{
   const d=daily(c);
   if(d.length<25)return{direction:null,strength:"NEUTRAL",e5:0,e13:0,spread:0,spreadContracting:false,e5Slope:0,e13Slope:0};
   const closes=d.map(x=>x.close),ema5=ema(closes,5),ema13=ema(closes,13);
-  const e5=ema5.at(-1)!,e13=ema13.at(-1)!,e5Prev=ema5.at(-2)!,e13Prev=ema13.at(-2)!,price=closes.at(-1)!;
+  const e5=ema5.at(-1)!,e13=ema13.at(-1)!,e5Prev=ema5.at(-2)!,e13Prev=ema13.at(-2)!;
   const spread=Math.abs(e5-e13)/Math.max(price,EPS)*100;
   const spreadContracting=Math.abs(e5-e13)<Math.abs(e5Prev-e13Prev);
   const e5Slope=e5-e5Prev,e13Slope=e13-e13Prev;
@@ -89,8 +89,6 @@ function fitTrendline(candles:Candle[],direction:Direction):TrendlineFit|null{
   return{pivots,slope,intercept,r2:r(r2,2)};
 }
 
-// Fail loudly if an invalid line ever reaches a reuse/store path. Expected bad
-// market structure is handled by returning null before this assertion is reached.
 function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):TrendlineResult{
   const len=candles.length,now=candles.at(-1)?.timestamp;
   const candidatePivots=len>=7?trendlinePivots(candles,direction==="SHORT").slice(-5):[];
