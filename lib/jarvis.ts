@@ -223,42 +223,14 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   // One human-readable situation summary. The dashboard already shows the raw indicators.
   // Jarvis explains the relationship between timeframes rather than repeating indicator labels.
   if(!evaluation.direction){
-    if(evaluation.dailyTransition&&dailyDir==="NEUTRAL"){
-      const dailyCloses=dailyState(c).map(x=>x.close);
-      const dailyPrice=dailyCloses.at(-1)??p;
-      const e8d=Number(market?.ema8_1d??emaState(dailyCloses,8).at(-1)??0);
-      const e21d=Number(market?.ema21_1d??emaState(dailyCloses,21).at(-1)??0);
-      const alignment=dailyPrice<e8d&&dailyPrice<e21d
-        ? "below both EMAs"
-        : dailyPrice>e8d&&dailyPrice>e21d
-          ? "above both EMAs"
-          : "not aligned with both EMAs";
-      return "[JARVIS STATE] "+pair+" — No direction. Daily is transitioning: price "+Math.round(dailyPrice).toLocaleString("en-US")+" is "+alignment+" (EMA8 "+Math.round(e8d).toLocaleString("en-US")+", EMA21 "+Math.round(e21d).toLocaleString("en-US")+") . Waiting for the daily to resolve.";
-    }
-    if(evaluation.dailyTransition){
-      if(fourH==="BEAR" && dailyDir==="BULL")
-        return "[JARVIS STATE] "+pair+" — The 1D is still bullish, but it is losing strength. The 4H has already turned bearish, so a reversal is developing, not confirmed. We are staying out until the 1D confirms.";
-      if(fourH==="BULL" && dailyDir==="BEAR")
-        return "[JARVIS STATE] "+pair+" — The 1D is still bearish, but it is losing strength. The 4H is turning bullish, so a reversal is developing, not confirmed. We are staying out until the 1D confirms.";
-      return "[JARVIS STATE] "+pair+" — The 1D is weakening and the 4H is changing with it. This is a transition, not a confirmed reversal. We are watching for the daily trend to confirm.";
-    }
-    if(dailyDir==="NEUTRAL")
-      return "[JARVIS STATE] "+pair+" — The 1D has not chosen a clear direction yet. The 4H is "+fourHText+". The 4H can move first, but V28 needs the daily direction before we trade.";
-    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and V28 is waiting for the 4H setup to develop. There is no trade to take yet.";
+    const dailyCloses=dailyState(c).map(x=>x.close);
+    const dailyPrice=dailyCloses.at(-1)??p;
+    const e5d=Number(market?.ema5_1d??emaState(dailyCloses,5).at(-1)??0);
+    const e13d=Number(market?.ema13_1d??emaState(dailyCloses,13).at(-1)??0);
+    return "[JARVIS STATE] "+pair+" — No daily direction yet. 1D EMA5 "+Math.round(e5d).toLocaleString("en-US")+" / EMA13 "+Math.round(e13d).toLocaleString("en-US")+". The 4H is "+fourHText+" context; V28 is waiting for a trendline + StochRSI entry setup, not an extra 4H confirmation.";
   }
 
   const dir=evaluation.direction;
-  if(!signal&&evaluation.missing.includes("trendline_invalid")){
-    const explanation=dir==="LONG"
-      ?"swing lows are descending, not ascending support for a LONG."
-      :"swing highs are ascending, not descending resistance for a SHORT.";
-    return "[JARVIS STATE] "+pair+" — Trendline invalid — "+explanation+" Waiting for the structure to turn.";
-  }
-  if(!signal&&evaluation.missing.includes("4h_ema_opposed")){
-    const emaLabel=String(market?.fourH513?.label||market?.fourH513?.stage||get4HEmaDiagnostic(c).label);
-    const turnDirection=dir==="LONG"?"bullish":"bearish";
-    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+", but the 4H EMA is "+emaLabel+" (opposing). ENTRY_2 blocked until the 4H turns "+turnDirection+".";
-  }
   const distancePct=evaluation.zone?.distancePct??Infinity;
   const slope=Number(evaluation.trendlineSlope??0);
   const trendText=dir==="LONG"
