@@ -264,8 +264,8 @@ export async function GET(request:Request){
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
   snapshot.fourH513=ema513;
   const canonicalDailyDirection=String(snapshot.dailyDirection||"NEUTRAL");
-  // Keep dashboard/Jarvis daily bias identical to strategy.ts dailyTrend(): direct EMA5/13 relationship.
-  // Do not reapply the retired 0.5% neutral threshold here.
+  // Keep dashboard/Jarvis daily bias identical to pasted V28 strategy.ts dailyTrend(): EMA8/21 direction plus 20-day HH/LL strength.
+  // Do not reapply the retired EMA5/13 spread threshold here.
   snapshot.dailyDirection=canonicalDailyDirection;
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
   snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"?"LONG":canonicalDailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
