@@ -9,9 +9,9 @@ export interface BreakoutRecord { direction:Direction; price:number; timestamp:n
 export interface SignalResult { signal?:Signal; market?:any; debug:string[]; breakoutRecord?:BreakoutRecord }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
-export const CURRENT_SIGNAL_VERSION=39;
+export const CURRENT_SIGNAL_VERSION=40;
 type Direction="LONG"|"SHORT";
-const MIN_RR=1.35, TTL=24*60*60*1000, EPS=1e-12;
+const MIN_RR=1.5, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
 export function evaluateTp1RewardRisk(direction:Direction,entry:number,stop:number,tp1:number){
   const riskTp1=direction==="LONG"?entry-stop:stop-entry;
@@ -157,18 +157,37 @@ function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):Tr
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
   return getTrendlineResult(pair,candles,direction).state;
 }
-function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
+export function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[],atrValue:number,stop:number):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="LONG").slice(-12).map(x=>({price:x.price,index:x.index}));
-  const above=direction==="LONG" ? pivots.filter(x=>x.price>entry) : pivots.filter(x=>x.price<entry);
-  const minReward=direction==="LONG" ? entry*1.03 : entry*0.97;
-  const tp1Pivot=above.find(x=>direction==="LONG" ? x.price>=minReward : x.price<=minReward);
-  const tp1=tp1Pivot?.price ?? (direction==="LONG" ? entry*1.05 : entry*0.95);
-  const minNext=direction==="LONG" ? tp1*1.015 : tp1*0.985;
-  const tp2Pivot=above.find(x=>direction==="LONG" ? x.price>=minNext : x.price<=minNext);
-  const fallbackTp2=direction==="LONG" ? Math.max(entry*1.10,tp1*1.05) : Math.min(entry*0.90,tp1*0.95);
-  const tp2=tp2Pivot?.price ?? fallbackTp2;
-  return {tp1,tp2,tp1Source:tp1Pivot?"4H swing pivot":"5% fallback",tp2Source:tp2Pivot?"next 4H swing pivot":"10%/runner fallback",tp1Pivot:tp1Pivot?.price,tp2Pivot:tp2Pivot?.price};
+  const structuralTargets=swings(c,direction==="LONG")
+    .slice(-12)
+    .filter(x=>direction==="LONG"?x.price>entry:x.price<entry)
+    .sort((a,b)=>direction==="LONG"?a.price-b.price:b.price-a.price);
+  const minTp1Distance=Math.max(entry*0.035,0.5*atrValue);
+  const tp1Candidate=structuralTargets.find(x=>Math.abs(x.price-entry)>=minTp1Distance);
+  const tp1=tp1Candidate?.price??(direction==="LONG"?entry+minTp1Distance:entry-minTp1Distance);
+  const risk=Math.abs(entry-stop);
+  const minTp2Distance=Math.max(entry*0.07,1.5*risk);
+  const tp2Candidate=structuralTargets.find(x=>
+    direction==="LONG"
+      ? x.price>tp1&&x.price>=entry+minTp2Distance
+      : x.price<tp1&&x.price<=entry-minTp2Distance
+  );
+  const fallbackDistance=Math.max(entry*0.07,1.5*risk);
+  const tp2=tp2Candidate?.price??(direction==="LONG"?entry+fallbackDistance:entry-fallbackDistance);
+  return {
+    tp1,tp2,
+    tp1Source:tp1Candidate?"4H swing pivot":"3.5%/0.5 ATR fallback",
+    tp2Source:tp2Candidate?"next qualifying 4H swing pivot":"7%/1.5R fallback",
+    tp1Pivot:tp1Candidate?.price,tp2Pivot:tp2Candidate?.price
+  };
+}
+export function evaluateTp2RewardRisk(direction:Direction,entry:number,stop:number,tp2:number){
+  void direction;
+  const risk=Math.abs(entry-stop);
+  const rewardTp2=Math.abs(tp2-entry);
+  const rrTp2=rewardTp2/Math.max(risk,EPS);
+  return{rr:rrTp2,passes:rrTp2>=MIN_RR};
 }
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*0.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
@@ -205,10 +224,16 @@ export function calculateStop(
   if(!Number.isFinite(entry)||entry<=0||!Number.isFinite(atrValue)||atrValue<=0)
     return {stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_inputs"};
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const recentSwing=swings(c,direction==="SHORT").at(-1);
-  const atrStop=direction==="LONG"?entry-1.5*atrValue:entry+1.5*atrValue;
-  const structuralAnchor=recentSwing?.price ?? (direction==="LONG"?trendlinePrice-1.5*atrValue:trendlinePrice+1.5*atrValue);
-  const stop=direction==="LONG"?Math.min(structuralAnchor,atrStop):Math.max(structuralAnchor,atrStop);
+  const closed=c.slice(0,-1);
+  const recentWindow=closed.slice(-10);
+  if(!recentWindow.length)
+    return {stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_no_closed_candles"};
+  const recentSwing=direction==="LONG"
+    ? Math.min(...recentWindow.map(x=>x.low))
+    : Math.max(...recentWindow.map(x=>x.high));
+  const atrFloor=direction==="LONG"?entry-1.5*atrValue:entry+1.5*atrValue;
+  const structuralAnchor=recentSwing;
+  const stop=direction==="LONG"?Math.min(recentSwing,atrFloor):Math.max(recentSwing,atrFloor);
   const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
   const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
   const liquidationPrice=direction==="LONG"?entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE):entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
@@ -312,7 +337,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     // Preserve V28 eligibility: liquidation-buffer diagnostics are informational,
     // not an additional entry gate. Telegram must warn clearly when unsafe.
     const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
-    const targets=structureTargets(direction,p,c);
+    const targets=structureTargets(direction,p,c,a,stopResult.stop);
     rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
     // R:R is informational only and is calculated from the actual TP2 target.
   }
@@ -444,14 +469,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
   const stop=calculatedStop.stop;
-  const targets=structureTargets(evaluation.direction!,entryBase,c);
+  const targets=structureTargets(evaluation.direction!,entryBase,c,a,stop);
   const risk=Math.abs(entryBase-stop);
-  const rrTp1Result=evaluateTp1RewardRisk(evaluation.direction!,entryBase,stop,targets.tp1);
-  const rrTp2=Math.abs(targets.tp2-entryBase)/Math.max(risk,EPS);
-  debug.push(`[RR] ${pair} ${evaluation.direction} ${signalType} | TP1 RR ${rrTp1Result.rr.toFixed(2)} | TP2 RR ${rrTp2.toFixed(2)} (informational)`);
-  if(!rrTp1Result.passes){
-    debug.push(`[SIGNAL BLOCKED] ${pair} ${evaluation.direction} ${signalType} | TP1 RR ${rrTp1Result.rr.toFixed(2)} < ${MIN_RR}`);
-    debug.push("[SIGNAL] none — RR(TP1) below minimum");
+  const rrTp1=Math.abs(targets.tp1-entryBase)/Math.max(risk,EPS);
+  const rrTp2Result=evaluateTp2RewardRisk(evaluation.direction!,entryBase,stop,targets.tp2);
+  const rrTp2=rrTp2Result.rr;
+  debug.push(`[RR] ${pair} ${evaluation.direction} ${signalType} | TP1 RR ${rrTp1.toFixed(2)} | TP2 RR ${rrTp2.toFixed(2)} (minimum ${MIN_RR})`);
+  if(!rrTp2Result.passes){
+    debug.push(`[SIGNAL BLOCKED] ${pair} | TP2 RR ${rrTp2.toFixed(2)} < ${MIN_RR}`);
+    debug.push("[SIGNAL] none — RR(TP2) below minimum");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   const actualRr=rrTp2;
