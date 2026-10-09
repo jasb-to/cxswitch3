@@ -2,6 +2,7 @@
 import { Redis } from "./supabase-kv";
 
 import { evaluateGates } from "./strategy";
+import { get4HEmaDiagnostic } from "./ema-diagnostic";
 import type { Candle, Signal } from "./strategy";
 
 const redis = new Redis();
@@ -242,10 +243,9 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
     return "[JARVIS STATE] "+pair+" — Trendline invalid — "+explanation+" Waiting for the structure to turn.";
   }
   if(!signal&&evaluation.missing.includes("4h_ema_opposed")){
-    const explanation=dir==="LONG"
-      ?"the 4H EMA is bearish against this LONG"
-      :"the 4H EMA is bullish against this SHORT";
-    return "[JARVIS STATE] "+pair+" — ENTRY_2 blocked — "+explanation+". Waiting for 4H EMA alignment.";
+    const emaLabel=String(market?.fourH513?.label||market?.fourH513?.stage||get4HEmaDiagnostic(c).label);
+    const turnDirection=dir==="LONG"?"bullish":"bearish";
+    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+", but the 4H EMA is "+emaLabel+" (opposing). ENTRY_2 blocked until the 4H turns "+turnDirection+".";
   }
   const distancePct=evaluation.zone?.distancePct??Infinity;
   const slope=Number(evaluation.trendlineSlope??0);
