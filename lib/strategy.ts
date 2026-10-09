@@ -30,27 +30,25 @@ function daily(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [..
 interface DailyRegime {
   direction: Direction|null;
   strength: "LOW"|"MEDIUM"|"HIGH"|"STRONG"|"NEUTRAL";
-  e8:number; e21:number; spread:number; spreadContracting:boolean; e8Slope:number; e21Slope:number;
+  e5:number; e13:number; spread:number; spreadContracting:boolean; e5Slope:number; e13Slope:number;
 }
 function dailyTrend(c:Candle[]):DailyRegime{
   const d=daily(c);
-  if(d.length<25)return{direction:null,strength:"NEUTRAL",e8:0,e21:0,spread:0,spreadContracting:false,e8Slope:0,e21Slope:0};
-  const closes=d.map(x=>x.close),ema8=ema(closes,8),ema21=ema(closes,21);
-  const e8=ema8.at(-1)!,e21=ema21.at(-1)!,e8Prev=ema8.at(-2)!,e21Prev=ema21.at(-2)!,price=closes.at(-1)!;
-  const spread=Math.abs(e8-e21)/Math.max(price,EPS)*100;
-  const spreadContracting=Math.abs(e8-e21)<Math.abs(e8Prev-e21Prev);
-  const e8Slope=e8-e8Prev,e21Slope=e21-e21Prev;
-  // Require price and EMA ordering to agree before assigning the daily direction.
-  // Mixed alignment is a transition: stay flat rather than trade a stale EMA crossover.
-  const fullyBullish=price>e8&&e8>e21;
-  const fullyBearish=price<e8&&e8<e21;
-  const direction:Direction|null=fullyBullish?"LONG":fullyBearish?"SHORT":null;
-  if(!direction)return{direction:null,strength:"NEUTRAL",e8,e21,spread,spreadContracting,e8Slope,e21Slope};
+  if(d.length<25)return{direction:null,strength:"NEUTRAL",e5:0,e13:0,spread:0,spreadContracting:false,e5Slope:0,e13Slope:0};
+  const closes=d.map(x=>x.close),ema5=ema(closes,5),ema13=ema(closes,13);
+  const e5=ema5.at(-1)!,e13=ema13.at(-1)!,e5Prev=ema5.at(-2)!,e13Prev=ema13.at(-2)!,price=closes.at(-1)!;
+  const spread=Math.abs(e5-e13)/Math.max(price,EPS)*100;
+  const spreadContracting=Math.abs(e5-e13)<Math.abs(e5Prev-e13Prev);
+  const e5Slope=e5-e5Prev,e13Slope=e13-e13Prev;
+  // Original V28 direction rule with the requested faster 1D EMA 5/13.
+  // EMA relationship alone chooses direction; no price-side or spread gate.
+  const direction:Direction|null=e5>e13?"LONG":e5<e13?"SHORT":null;
+  if(!direction)return{direction:null,strength:"NEUTRAL",e5,e13,spread,spreadContracting,e5Slope,e13Slope};
   const highs=d.slice(-20).map(x=>x.high),lows=d.slice(-20).map(x=>x.low);
   const hh=highs.at(-1)!>Math.max(...highs.slice(0,-1));
   const ll=lows.at(-1)!<Math.min(...lows.slice(0,-1));
   const strength=(direction==="LONG"&&hh)||(direction==="SHORT"&&ll)?"STRONG":"MEDIUM";
-  return{direction,strength,e8,e21,spread,spreadContracting,e8Slope,e21Slope};
+  return{direction,strength,e5,e13,spread,spreadContracting,e5Slope,e13Slope};
 }
 function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean;label:string}{
   const x=get4HEmaDiagnostic(c);
@@ -123,21 +121,9 @@ function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):Tr
     trendlineStore.delete(pair);
     return{state:null,invalidSlope:false,pivots:candidatePivots,slope:null,intercept:null,r2:null};
   }
-  // Enforce the trendline invariant on the freshly fitted line before considering
-  // the cache. A LONG needs rising swing lows; a SHORT needs falling swing highs.
-  if(!slopeMatchesDirection(direction,fit.slope)){
-    trendlineStore.delete(pair);
-    return{state:null,invalidSlope:true,...fit};
-  }
-
+  // V28 keeps the fitted line even if its slope is not textbook. The slope is diagnostic only.
   let existing=trendlineStore.get(pair);
   const maxAge=7*24*60*60*1000;
-  // A stale or corrupted cache entry is never eligible for reuse, even if a
-  // future refactor accidentally moves the fresh-fit validation.
-  if(existing&&!slopeMatchesDirection(existing.direction,existing.slope)){
-    trendlineStore.delete(pair);
-    existing=undefined;
-  }
   if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
     assertTrendlineSlopeInvariant(direction,existing.slope);
     const lastPivot=fit.pivots[fit.pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
@@ -289,11 +275,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const dailyTransition = (dailyHistoryReady&&!d.direction) || (!!d.direction&&d.strength==="LOW"&&d.spreadContracting);
   const direction=d.direction;
   if(dailyHistoryReady&&!d.direction){
-    const dailyCloses=daily(c).map(x=>x.close),price=dailyCloses.at(-1)??0;
-    const relation=price<d.e8&&price<d.e21?"price below both EMAs; EMA ordering conflicts":
-      price>d.e8&&price>d.e21?"price above both EMAs; EMA ordering conflicts":
-      "price/EMA alignment is mixed";
-    console.log(`[1D TRANSITION] ${pair} | price ${price} | ${relation} (EMA8 ${d.e8}, EMA21 ${d.e21}) — no direction`);
+    console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
   }
   const missing:string[]=[];
   if(!direction)missing.push("direction");
@@ -322,14 +304,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // provided it is not already at the extreme. No breakout/retest lifecycle.
   const entry2Candidate=!!direction&&near&&turn&&!extreme;
   const ema4h=get4HEmaDiagnostic(c);
-  // 4H EMA opposition vetoes ENTRY_2 only. ENTRY_1 remains eligible against
-  // the 4H EMA because it is the deep-pullback entry.
-  const entry2EmaOpposed=entry2Candidate&&!!direction&&(
-    (direction==="LONG"&&ema4h.label.includes("BEARISH"))||
-    (direction==="SHORT"&&ema4h.label.includes("BULLISH"))
-  );
-  if(entry2EmaOpposed)missing.push("4h_ema_opposed");
-  const entry2=entry2Candidate&&!entry2EmaOpposed;
+  // 4H EMA 5/13 is momentum/context only; it never vetoes an otherwise valid V28 entry.
+  const entry2=entry2Candidate;
   let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!entry1&&!entry2Candidate&&direction&&!trendlineInvalid)missing.push("stoch_turn_or_extreme");
 
@@ -409,9 +385,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       `first daily ts/close: ${new Date(auditDaily[0]?.timestamp??0).toISOString()} / ${auditDaily[0]?.close??0}`,
       `last daily ts/close: ${new Date(auditDaily.at(-1)?.timestamp??0).toISOString()} / ${auditDaily.at(-1)?.close??0}`,
       `last 5 daily closes: ${JSON.stringify(auditDaily.slice(-5).map(x=>({ts:new Date(x.timestamp).toISOString(),close:x.close}))) }`,
-      `EMA8: ${ema(auditCloses,8).at(-1)??0}`,
-      `EMA21: ${ema(auditCloses,21).at(-1)??0}`,
-      `direction: ${auditCloses.length<25?"NULL (fewer than 25 daily candles)":((ema(auditCloses,8).at(-1)??0)>(ema(auditCloses,21).at(-1)??0)?"LONG":"SHORT")}`
+      \`EMA5: ${ema(auditCloses,5).at(-1)??0}\`,
+      \`EMA13: ${ema(auditCloses,13).at(-1)??0}\`,
+      \`direction: ${auditCloses.length<25?"NULL (fewer than 25 daily candles)":((ema(auditCloses,5).at(-1)??0)>(ema(auditCloses,13).at(-1)??0)?"LONG":"SHORT")}\`
     ];
     console.log(auditLines.join(" | "));
   }
@@ -424,7 +400,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{debug};
   }
 
-  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
+  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,e8_1d=ema(dailyCloses,8).at(-1)??0,e21_1d=ema(dailyCloses,21).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
@@ -434,7 +410,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     debug.push("[SIGNAL] none — V28 direction lock");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
-  debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} | spread ${d.spread.toFixed(2)}%`);
+  debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
   debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength}`);
 
   if(!evaluation.direction){
@@ -443,7 +419,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
         ? `[1D TRANSITION] ${d.direction==="LONG"?"BULLISH":"BEARISH"} weakening/turning | WATCH — no new direction until the 1D transition confirms`
         : `[DIRECTION] V28 1D ${d.direction} | 4H is timing/context only`)
       : (dailyCandles.length>=25
-        ? `[1D TRANSITION] ${pair} | price ${dailyCloses.at(-1)??0} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} — mixed alignment, no direction`
+        ? `[1D TRANSITION] ${pair} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} equal — no direction`
         : "[1D] NEUTRAL | insufficient daily history"));
     debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
@@ -505,7 +481,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     stop:priceRound(stop),tp1:priceRound(targets.tp1),tp2:priceRound(targets.tp2),rr:r(actualRr,2),expectedMove:r(Math.abs(targets.tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
     reason:`${evaluation.direction} ${signalType} | V28 trendline proximity + 4H Stoch | 4H Stoch ${st4.k}/${st4.d}`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema8_1d:d.e8,ema21_1d:d.e21,ema5_1d:e5_1d,ema13_1d:e13_1d,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
+    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema8_1d:e8_1d,ema21_1d:e21_1d,ema5_1d:e5_1d,ema13_1d:e13_1d,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
   debug.push(`[SIGNAL] ${s.direction} ${s.type} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} (${targets.tp1Source}) | TP2 ${s.tp2} (${targets.tp2Source}) | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
@@ -567,4 +543,4 @@ export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.ti
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now=Date.now()){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason})}return{active,exited}}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return"TP_HIT";return"ACTIVE"}
-export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),d=dailyTrend(c),e5d=ema(dailyCloses,5).at(-1)??0,e13d=ema(dailyCloses,13).at(-1)??0,st=stoch(q),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";const tactical=tacticalDirection(c);return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:d.e8,ema21_1d:d.e21,ema5_1d:e5d,ema13_1d:e13d,dailyDirection:d.direction==="LONG"?"BULL":d.direction==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:d.strength,fourHDirection:e8>e21?"BULL":"BEAR",fourHTacticalDirection:tactical.direction==="LONG"?"BULL":tactical.direction==="SHORT"?"BEAR":"NEUTRAL",fourHTacticalLabel:tactical.label,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd}}
+export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),d=dailyTrend(c),e5d=ema(dailyCloses,5).at(-1)??0,e13d=ema(dailyCloses,13).at(-1)??0,e8d=ema(dailyCloses,8).at(-1)??0,e21d=ema(dailyCloses,21).at(-1)??0,st=stoch(q),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";const tactical=tacticalDirection(c);return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:e8d,ema21_1d:e21d,ema5_1d:e5d,ema13_1d:e13d,dailyDirection:d.direction==="LONG"?"BULL":d.direction==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:d.strength,fourHDirection:e8>e21?"BULL":"BEAR",fourHTacticalDirection:tactical.direction==="LONG"?"BULL":tactical.direction==="SHORT"?"BEAR":"NEUTRAL",fourHTacticalLabel:tactical.label,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd}}
