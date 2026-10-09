@@ -68,7 +68,6 @@ export interface TrendlineState{slope:number;intercept:number;pivots:Swing[];las
 interface TrendlineFit{pivots:Swing[];slope:number;intercept:number;r2:number}
 interface TrendlineResult{
   state:TrendlineState|null;
-  invalidSlope:boolean;
   pivots:Swing[];
   slope:number|null;
   intercept:number|null;
@@ -101,12 +100,12 @@ function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):Tr
   const candidatePivots=len>=7?trendlinePivots(candles,direction==="SHORT").slice(-5):[];
   if(len<20||now===undefined){
     trendlineStore.delete(pair);
-    return{state:null,invalidSlope:false,pivots:candidatePivots,slope:null,intercept:null,r2:null};
+    return{state:null,pivots:candidatePivots,slope:null,intercept:null,r2:null};
   }
   const fit=fitTrendline(candles,direction);
   if(!fit){
     trendlineStore.delete(pair);
-    return{state:null,invalidSlope:false,pivots:candidatePivots,slope:null,intercept:null,r2:null};
+    return{state:null,pivots:candidatePivots,slope:null,intercept:null,r2:null};
   }
   // V28 keeps the fitted line even if its slope is not textbook. The slope is diagnostic only.
   let existing=trendlineStore.get(pair);
@@ -116,12 +115,12 @@ function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):Tr
     const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
     if(deviation<0.02){
       const state={...existing,r2:0.85};
-      return{state,invalidSlope:false,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
+      return{state,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
     }
   }
   const state:TrendlineState={...fit,lastUpdated:now,direction};
   trendlineStore.set(pair,state);
-  return{state,invalidSlope:false,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
+  return{state,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
 }
 
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
@@ -236,7 +235,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
   // A mature daily history with mixed price/EMA alignment is an explicit no-direction transition.
   const dailyHistoryReady=daily(c).length>=25;
-  const dailyTransition = (dailyHistoryReady&&!d.direction) || (!!d.direction&&d.strength==="LOW"&&d.spreadContracting);
+  const dailyTransition = dailyHistoryReady&&!d.direction;
   const direction=d.direction;
   if(dailyHistoryReady&&!d.direction){
     console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
@@ -248,11 +247,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
   const trendlineResult=direction?getTrendlineResult(pair,c,direction):null;
   const tl=trendlineResult?.state??null;
-  const trendlineInvalid=trendlineResult?.invalidSlope??false;
   const trendlineSlope=tl?.slope??trendlineResult?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
   const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
-  if(!zoneValue)missing.push(trendlineInvalid?"trendline_invalid":"zone");
+  if(!zoneValue)missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
   // Pasted V28 entry geometry: within 1.2% of the trendline is "near".
@@ -271,7 +269,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // 4H EMA 5/13 is momentum/context only; it never vetoes an otherwise valid V28 entry.
   const entry2=entry2Candidate;
   let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
-  if(!entry1&&!entry2Candidate&&direction&&!trendlineInvalid)missing.push("stoch_turn_or_extreme");
+  if(!entry1&&!entry2Candidate&&direction)missing.push("stoch_turn_or_extreme");
 
   const emaAdvisory:string[]=[];
   if(signalType && direction==="SHORT" && !ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
@@ -323,8 +321,7 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
     intercept,
     priceAtCurrent,
     r2:result.state?.r2??result.r2,
-    invalidSlope:result.invalidSlope,
-    validForDirection:!!result.state&&slopeMatchesDirection(direction,result.state.slope)
+    trendlineAvailable:!!result.state
   };
 }
 
@@ -376,9 +373,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   if(!evaluation.direction){
     debug.push(d.direction
-      ? (d.strength==="LOW"&&d.spreadContracting
-        ? `[1D TRANSITION] ${d.direction==="LONG"?"BULLISH":"BEARISH"} weakening/turning | WATCH — no new direction until the 1D transition confirms`
-        : `[DIRECTION] V28 1D ${d.direction} | 4H is timing/context only`)
+      ? `[DIRECTION] V28 1D ${d.direction} | 4H is timing/context only`
       : (dailyCandles.length>=25
         ? `[1D TRANSITION] ${pair} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} equal — no direction`
         : "[1D] NEUTRAL | insufficient daily history"));
@@ -398,11 +393,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
   if(swingDebug){
     debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
-    const slopeStatus=swingDebug.invalidSlope
-      ?`invalid for ${evaluation.direction} (slope must be ${evaluation.direction==="LONG"?"positive":"negative"})`
-      :swingDebug.validForDirection
-        ?`valid for ${evaluation.direction}`
-        :"unavailable";
+    const slopeStatus=swingDebug.trendlineAvailable
+      ?"available; slope is diagnostic only, not an entry gate"
+      :"unavailable";
     debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | ${slopeStatus} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"} | r2 ${swingDebug.r2??"—"}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
