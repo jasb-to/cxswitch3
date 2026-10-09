@@ -57,23 +57,18 @@ const trendlineStore=new Map<string,TrendlineState>();
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
   const now=candles.at(-1)?.timestamp;
   if(now===undefined)return null;
-  const existing=trendlineStore.get(pair);
-  if(existing&&existing.direction===direction){
-    const ageDays=(now-existing.lastUpdated)/(24*60*60*1000);
-    const recentSwings=swings(candles,direction==="LONG").slice(-5);
-    const currentLinePrice=existing.slope*(candles.length-1)+existing.intercept;
-    const lastSwing=recentSwings.at(-1);
-    const deviation=lastSwing?Math.abs(lastSwing.price-currentLinePrice)/Math.max(Math.abs(currentLinePrice),EPS):0;
-    if(ageDays<7&&deviation<0.02)return existing;
-  }
-  const tr=swings(candles,direction==="LONG").slice(-5);
-  const f=line(tr);
-  if(!f)return null;
-  // V28 breakout line geometry: LONG breaks descending resistance;
-  // SHORT breaks ascending support.
-  if(direction==="LONG" && f.slope>=0)return null;
-  if(direction==="SHORT" && f.slope<=0)return null;
-  const state:TrendlineState={slope:f.slope,intercept:f.intercept,pivots:tr,lastUpdated:now,direction,r2:0};
+  // V28 geometry: the two most recent confirmed swing highs define LONG
+  // descending resistance; the two most recent confirmed swing lows define
+  // SHORT ascending support. Do not fit/regress five pivots or reuse a stale line.
+  const pivots=swings(candles,direction==="LONG").slice(-2);
+  if(pivots.length<2)return null;
+  const first=pivots[0],last=pivots[1];
+  const span=last.index-first.index;
+  if(span<=0)return null;
+  const slope=(last.price-first.price)/span;
+  if(direction==="LONG"&&slope>=0)return null;
+  if(direction==="SHORT"&&slope<=0)return null;
+  const state:TrendlineState={slope,intercept:first.price-slope*first.index,pivots,lastUpdated:now,direction,r2:0};
   trendlineStore.set(pair,state);
   return state;
 }
@@ -176,37 +171,21 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(!zoneValue)missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
-  const near=!!zoneValue && Math.abs(p-linePrice)<=Math.max(0.75*a,p*0.0025);
-  const beyond=!!zoneValue && (direction==="LONG"?p>linePrice+0.25*a:p<linePrice-0.25*a);
-  const last=c.at(-1),prev=c.at(-2);
-  const lastLine=tl?tl.slope*(c.length-1)+tl.intercept:0;
-  const prevLine=tl?tl.slope*(c.length-2)+tl.intercept:0;
-  const closedBreak=!!tl&&!!last&&!!prev&&(direction==="LONG"?last.close>lastLine+0.25*a&&prev.close<=prevLine+0.25*a:last.close<lastLine-0.25*a&&prev.close>=prevLine-0.25*a);
+  // Pasted V28 entry geometry: within 1.2% of the trendline is "near".
+  // Do not add the newer ATR/price proximity gate on top of this threshold.
+  const near=!!zoneValue && zoneValue.distancePct<1.2;
+  const last=c.at(-1);
+  const breakoutRecord:BreakoutRecord|undefined=undefined;
 
-  // V28 Entry 1: the early setup at the trendline. Keep this simple.
-  const entry1=!!direction&&near&&!!zoneValue&&zoneValue.distancePct<=1.2&&(direction==="LONG"?st4.k<20:st4.k>80);
-
-  // V28 Entry 2: a real break -> remember the break -> pull back -> retest the
-  // recorded breakout level -> reject/confirm. The retest is deliberately tied
-  // to the recorded breakout price, not whatever the trendline happens to be now.
-  const recordedBreakoutAge=last&&lastBreakout ? last.timestamp-lastBreakout.timestamp : Infinity;
-  const breakoutRecord:BreakoutRecord|undefined=closedBreak&&last&&tl
-    ? {direction:direction!,price:lastLine,timestamp:last.timestamp,candleIndex:c.length-1}
-    : (lastBreakout && recordedBreakoutAge>=0 && recordedBreakoutAge<=48*60*60*1000 ? lastBreakout : undefined);
-  const activeBreakout=!!breakoutRecord&&!!direction&&breakoutRecord.direction===direction
-    &&(last!.timestamp-breakoutRecord!.timestamp)>=0
-    &&(last!.timestamp-breakoutRecord!.timestamp)<=48*60*60*1000;
-  const retestDistance=activeBreakout?Math.abs(p-breakoutRecord!.price)/Math.max(Math.abs(breakoutRecord!.price),EPS):Infinity;
-  const retest=activeBreakout && retestDistance<=0.015 && !!last && !!prev
-    && (direction==="LONG"
-      ? last.low<=breakoutRecord!.price*1.01 && last.close>breakoutRecord!.price && last.close>=prev.close
-      : last.high>=breakoutRecord!.price*0.99 && last.close<breakoutRecord!.price && last.close<=prev.close);
-  const rawEntry2=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
-  const entry2Window=!!direction&&(direction==="LONG"?st4.k>=20&&st4.k<=55:st4.k>=45&&st4.k<=80);
-  const entry2=retest&&rawEntry2&&entry2Window;
-  const entry2Late=retest&&rawEntry2&&!entry2Window;
+  const extreme=!!direction&&(direction==="LONG"?st4.k<20:st4.k>80);
+  const turn=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
+  // ENTRY_1: trendline proximity + directional extreme StochRSI.
+  const entry1=!!direction&&near&&extreme;
+  // ENTRY_2: trendline proximity + StochRSI turning with the daily bias,
+  // provided it is not already at the extreme. No breakout/retest lifecycle.
+  const entry2=!!direction&&near&&turn&&!extreme;
   const signalType=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
-  if(!signalType&&direction)missing.push(entry2Late?"entry2_late":"stoch_cross");
+  if(!signalType&&direction)missing.push("stoch_turn_or_extreme");
 
   const rv=rsi(c.map(x=>x.close));
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
