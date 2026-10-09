@@ -104,6 +104,7 @@ export interface GateEvaluation {
   missing: string[];
   allPassed: boolean;
   dailyTransition: boolean;
+  emaAdvisory: string[];
   breakoutRecord?: BreakoutRecord;
 }
 
@@ -230,6 +231,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     missing:deduped,
     allPassed:deduped.length===0,
     dailyTransition:!!dailyTransition,
+    emaAdvisory,
     breakoutRecord: breakoutRecord
   };
 }
