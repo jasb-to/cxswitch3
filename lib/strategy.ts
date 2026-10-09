@@ -65,18 +65,20 @@ function trendlinePivots(c:Candle[],high:boolean):Swing[]{
   return out;
 }
 export interface TrendlineState{slope:number;intercept:number;pivots:Swing[];lastUpdated:number;direction:Direction;r2:number}
+interface TrendlineFit{pivots:Swing[];slope:number;intercept:number;r2:number}
+interface TrendlineResult{
+  state:TrendlineState|null;
+  invalidSlope:boolean;
+  pivots:Swing[];
+  slope:number|null;
+  intercept:number|null;
+  r2:number|null;
+}
 const trendlineStore=new Map<string,TrendlineState>();
-export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
-  const len=candles.length,now=candles.at(-1)?.timestamp;
-  if(len<20||now===undefined)return null;
+
+function fitTrendline(candles:Candle[],direction:Direction):TrendlineFit|null{
   const pivots=trendlinePivots(candles,direction==="SHORT").slice(-5);
   if(pivots.length<3)return null;
-  const existing=trendlineStore.get(pair),maxAge=7*24*60*60*1000;
-  if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
-    const lastPivot=pivots[pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
-    const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
-    if(deviation<0.02)return{...existing,r2:0.85};
-  }
   const n=pivots.length,sumX=pivots.reduce((sum,p)=>sum+p.index,0),sumY=pivots.reduce((sum,p)=>sum+p.price,0);
   const sumXY=pivots.reduce((sum,p)=>sum+p.index*p.price,0),sumX2=pivots.reduce((sum,p)=>sum+p.index*p.index,0);
   const denominator=n*sumX2-sumX*sumX;
@@ -85,9 +87,67 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-yMean,2),0);
   const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(slope*p.index+intercept),2),0);
   const r2=ssTotal===0?0:1-ssResidual/ssTotal;
-  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:r(r2,2)};
+  return{pivots,slope,intercept,r2:r(r2,2)};
+}
+
+function slopeMatchesDirection(direction:Direction,slope:number):boolean{
+  return direction==="LONG"?slope>0:slope<0;
+}
+
+// Fail loudly if an invalid line ever reaches a reuse/store path. Expected bad
+// market structure is handled by returning null before this assertion is reached.
+function assertTrendlineSlopeInvariant(direction:Direction,slope:number):void{
+  if(!slopeMatchesDirection(direction,slope)){
+    const required=direction==="LONG"?"positive":"negative";
+    throw new Error(`[TRENDLINE INVARIANT] ${direction} trendline slope must be ${required}; received ${slope}`);
+  }
+}
+
+function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):TrendlineResult{
+  const len=candles.length,now=candles.at(-1)?.timestamp;
+  const candidatePivots=len>=7?trendlinePivots(candles,direction==="SHORT").slice(-5):[];
+  if(len<20||now===undefined){
+    trendlineStore.delete(pair);
+    return{state:null,invalidSlope:false,pivots:candidatePivots,slope:null,intercept:null,r2:null};
+  }
+  const fit=fitTrendline(candles,direction);
+  if(!fit){
+    trendlineStore.delete(pair);
+    return{state:null,invalidSlope:false,pivots:candidatePivots,slope:null,intercept:null,r2:null};
+  }
+  // Enforce the trendline invariant on the freshly fitted line before considering
+  // the cache. A LONG needs rising swing lows; a SHORT needs falling swing highs.
+  if(!slopeMatchesDirection(direction,fit.slope)){
+    trendlineStore.delete(pair);
+    return{state:null,invalidSlope:true,...fit};
+  }
+
+  let existing=trendlineStore.get(pair);
+  const maxAge=7*24*60*60*1000;
+  // A stale or corrupted cache entry is never eligible for reuse, even if a
+  // future refactor accidentally moves the fresh-fit validation.
+  if(existing&&!slopeMatchesDirection(existing.direction,existing.slope)){
+    trendlineStore.delete(pair);
+    existing=undefined;
+  }
+  if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
+    assertTrendlineSlopeInvariant(direction,existing.slope);
+    const lastPivot=fit.pivots[fit.pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
+    const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
+    if(deviation<0.02){
+      const state={...existing,r2:0.85};
+      assertTrendlineSlopeInvariant(direction,state.slope);
+      return{state,invalidSlope:false,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
+    }
+  }
+  const state:TrendlineState={...fit,lastUpdated:now,direction};
+  assertTrendlineSlopeInvariant(direction,state.slope);
   trendlineStore.set(pair,state);
-  return state;
+  return{state,invalidSlope:false,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
+}
+
+export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
+  return getTrendlineResult(pair,candles,direction).state;
 }
 function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
@@ -183,11 +243,13 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const a=atr(c);
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
-  const tl=direction?getTrendline(pair,c,direction):null;
-  const trendlineSlope=tl?.slope??0;
+  const trendlineResult=direction?getTrendlineResult(pair,c,direction):null;
+  const tl=trendlineResult?.state??null;
+  const trendlineInvalid=trendlineResult?.invalidSlope??false;
+  const trendlineSlope=tl?.slope??trendlineResult?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
   const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
-  if(!zoneValue)missing.push("zone");
+  if(!zoneValue)missing.push(trendlineInvalid?"trendline_invalid":"zone");
 
   const st4=stoch(c.map(x=>x.close));
   // Pasted V28 entry geometry: within 1.2% of the trendline is "near".
@@ -201,15 +263,22 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const entry1=!!direction&&near&&extreme;
   // ENTRY_2: trendline proximity + StochRSI turning with the daily bias,
   // provided it is not already at the extreme. No breakout/retest lifecycle.
-  const entry2=!!direction&&near&&turn&&!extreme;
-  let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
-  if(!signalType&&direction)missing.push("stoch_turn_or_extreme");
-
-  // Exact pasted V28 behavior: 4H EMA is advisory context, not an entry veto.
+  const entry2Candidate=!!direction&&near&&turn&&!extreme;
   const ema4h=get4HEmaDiagnostic(c);
+  // 4H EMA opposition vetoes ENTRY_2 only. ENTRY_1 remains eligible against
+  // the 4H EMA because it is the deep-pullback entry.
+  const entry2EmaOpposed=entry2Candidate&&!!direction&&(
+    (direction==="LONG"&&ema4h.label.includes("BEARISH"))||
+    (direction==="SHORT"&&ema4h.label.includes("BULLISH"))
+  );
+  if(entry2EmaOpposed)missing.push("4h_ema_opposed");
+  const entry2=entry2Candidate&&!entry2EmaOpposed;
+  let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
+  if(!entry1&&!entry2Candidate&&direction&&!trendlineInvalid)missing.push("stoch_turn_or_extreme");
+
   const emaAdvisory:string[]=[];
-  if(signalType && direction==="SHORT" && !ema4h.stage.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
-  if(signalType==="ENTRY_2" && direction==="LONG" && ema4h.stage.includes("BEARISH"))emaAdvisory.push("4h_ema_bearish");
+  if(signalType && direction==="SHORT" && !ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
+  if(signalType==="ENTRY_1" && direction==="LONG" && ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_bearish_entry1_allowed");
 
   const rv=rsi(c.map(x=>x.close));
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
@@ -246,16 +315,20 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="SHORT").slice(-2);
-  const state=getTrendline(pair,c,direction);
-  const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
+  const result=getTrendlineResult(pair,c,direction);
+  const slope=result.state?.slope??result.slope;
+  const intercept=result.state?.intercept??result.intercept;
+  const priceAtCurrent=slope!==null&&intercept!==null?slope*(c.length-1)+intercept:null;
   return {
     pair,
     direction,
-    pivots:pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
-    slope:state?.slope??null,
-    intercept:state?.intercept??null,
-    priceAtCurrent
+    pivots:result.pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    slope,
+    intercept,
+    priceAtCurrent,
+    r2:result.state?.r2??result.r2,
+    invalidSlope:result.invalidSlope,
+    validForDirection:!!result.state&&slopeMatchesDirection(direction,result.state.slope)
   };
 }
 
@@ -307,7 +380,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
   if(swingDebug){
     debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
-    debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
+    const slopeStatus=swingDebug.invalidSlope
+      ?`invalid for ${evaluation.direction} (slope must be ${evaluation.direction==="LONG"?"positive":"negative"})`
+      :swingDebug.validForDirection
+        ?`valid for ${evaluation.direction}`
+        :"unavailable";
+    debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | ${slopeStatus} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"} | r2 ${swingDebug.r2??"—"}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
