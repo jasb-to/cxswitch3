@@ -13,6 +13,12 @@ export const CURRENT_SIGNAL_VERSION=39;
 type Direction="LONG"|"SHORT";
 const MIN_RR=1.35, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
+export function evaluateTp1RewardRisk(direction:Direction,entry:number,stop:number,tp1:number){
+  const riskTp1=direction==="LONG"?entry-stop:stop-entry;
+  const rewardTp1=direction==="LONG"?tp1-entry:entry-tp1;
+  const rrTp1=rewardTp1/Math.max(riskTp1,EPS);
+  return{rr:rrTp1,passes:rrTp1>=MIN_RR};
+}
 const priceRound=(n:number)=>{if(!Number.isFinite(n))return n;const d=Math.abs(n)>=1000?0:Math.abs(n)>=1?2:Math.abs(n)>=0.1?3:5;return r(n,d)};
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}
 function rsiSeries(a:number[],p=14){if(a.length<=p)return[];let g=0,l=0;for(let i=1;i<=p;i++){const x=a[i]-a[i-1];if(x>=0)g+=x;else l-=x}let ag=g/p,al=l/p,o=[al===0?100:100-100/(1+ag/al)];for(let i=p+1;i<a.length;i++){const x=a[i]-a[i-1];ag=(ag*(p-1)+Math.max(x,0))/p;al=(al*(p-1)+Math.max(-x,0))/p;o.push(al===0?100:100-100/(1+ag/al))}return o}
@@ -164,7 +170,7 @@ function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]
   const tp2=tp2Pivot?.price ?? fallbackTp2;
   return {tp1,tp2,tp1Source:tp1Pivot?"4H swing pivot":"5% fallback",tp2Source:tp2Pivot?"next 4H swing pivot":"10%/runner fallback",tp1Pivot:tp1Pivot?.price,tp2Pivot:tp2Pivot?.price};
 }
-function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H",trendlinePrice=0){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(trendlinePrice>0&&Number.isFinite(trendlinePrice)){if(dir==="LONG"&&p>trendlinePrice*1.03)return"LONG blocked: price is more than 3% above the ascending support trendline";if(dir==="SHORT"&&p<trendlinePrice*.97)return"SHORT blocked: price is more than 3% below the descending resistance trendline"}else{if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)"}return null}
+function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*0.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
   direction: "LONG" | "SHORT" | null;
   zone: { valid: boolean; type: string; price: number; distancePct: number } | null;
@@ -294,9 +300,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(signalType==="ENTRY_1" && direction==="LONG" && ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_bearish_entry1_allowed");
 
   const rv=rsi(c.map(x=>x.close));
-  // Use the same validated directional trendline as the entry zone; fall back to EMA21 only when unavailable.
-  const exhaustionTrendlinePrice=tl&&!trendlineInvalid?linePrice:0;
-  const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H",exhaustionTrendlinePrice):null;
+  // Exhaustion remains anchored to 4H EMA(21); trendline geometry does not change this rule.
+  const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
   if(exhaustion)missing.push("exhaustion");
 
   let rr:number|null=null;
@@ -441,7 +446,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const stop=calculatedStop.stop;
   const targets=structureTargets(evaluation.direction!,entryBase,c);
   const risk=Math.abs(entryBase-stop);
-  const actualRr=Math.abs(targets.tp2-entryBase)/Math.max(risk,EPS);
+  const rrTp1Result=evaluateTp1RewardRisk(evaluation.direction!,entryBase,stop,targets.tp1);
+  const rrTp2=Math.abs(targets.tp2-entryBase)/Math.max(risk,EPS);
+  debug.push(`[RR] ${pair} ${evaluation.direction} ${signalType} | TP1 RR ${rrTp1Result.rr.toFixed(2)} | TP2 RR ${rrTp2.toFixed(2)} (informational)`);
+  if(!rrTp1Result.passes){
+    debug.push(`[SIGNAL BLOCKED] ${pair} ${evaluation.direction} ${signalType} | TP1 RR ${rrTp1Result.rr.toFixed(2)} < ${MIN_RR}`);
+    debug.push("[SIGNAL] none — RR(TP1) below minimum");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
+  }
+  const actualRr=rrTp2;
   const s:Signal={
     id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:priceRound(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
     stop:priceRound(stop),tp1:priceRound(targets.tp1),tp2:priceRound(targets.tp2),rr:r(actualRr,2),expectedMove:r(Math.abs(targets.tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
