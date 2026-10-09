@@ -18,7 +18,7 @@ loaded.require = (id) => id === "./ema-diagnostic"
   ? { get4HEmaDiagnostic: () => ({ turning: false, spread: 0, stage: "NEUTRAL", label: "NEUTRAL" }) }
   : originalRequire(id);
 loaded._compile(compiled, filename);
-const { evaluateTp2RewardRisk, calculateStop, structureTargets } = loaded.exports;
+const { evaluateTp2RewardRisk, calculateStop, structureTargets, calculateLiquidationBufferPct, passesLiquidationBuffer } = loaded.exports;
 
 function candle(index, { high = 0.0845, low = 0.0835, close = 0.084, open = close } = {}) {
   return { timestamp: index * 14_400_000, open, high, low, close, volume: 1 };
@@ -71,4 +71,28 @@ test("DOGE-style short selects structural TP1 and TP2 at the required distances"
   assert.ok((entry - targets.tp2) / entry >= 0.07);
   assert.ok(targets.tp2 < targets.tp1);
   assert.ok(evaluateTp2RewardRisk("SHORT", entry, stop, targets.tp2).rr >= 1.5);
+});
+
+test("20x short with stop beyond modelled liquidation is invalid and blocked", () => {
+  const entry = 0.08524;
+  const stop = 0.08964;
+  const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 0.088, low: 0.084, close: 0.085 }));
+  candles[10] = candle(10, { high: stop, low: 0.084, close: entry });
+  const result = calculateStop("SHORT", entry, 0.085, 0.0005, candles);
+  assert.equal(result.stop, stop);
+  assert.ok(Math.abs(result.calc.liquidationPrice - 0.08865) < 0.00001);
+  assert.ok(result.calc.liquidationBufferPct < 0);
+  assert.equal(result.valid, false);
+  assert.equal(passesLiquidationBuffer(result.calc.liquidationBufferPct), false);
+});
+
+test("same short stop has a safe modelled liquidation buffer at 10x", () => {
+  const entry = 0.08524;
+  const stop = 0.08964;
+  const liq10x = entry * (1 + 1 / 10 - 0.01);
+  const buffer10x = calculateLiquidationBufferPct("SHORT", entry, stop, 10);
+  assert.ok(Math.abs(liq10x - 0.09291) < 0.00001);
+  assert.ok(Math.abs(buffer10x - ((liq10x - stop) / liq10x * 100)) < 1e-9);
+  assert.ok(buffer10x > 3.5 && buffer10x < 3.6);
+  assert.equal(passesLiquidationBuffer(buffer10x), true);
 });

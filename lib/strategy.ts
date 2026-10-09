@@ -218,6 +218,19 @@ const MAX_LEVERAGE = 20;
 const MAINTENANCE_MARGIN_RATE = 0.01;
 const MIN_LIQUIDATION_BUFFER_PCT = 0.5;
 
+export function calculateLiquidationBufferPct(direction:"LONG"|"SHORT",entry:number,stop:number,leverage=MAX_LEVERAGE):number {
+  const liquidationPrice=direction==="LONG"
+    ? entry*(1-1/leverage+MAINTENANCE_MARGIN_RATE)
+    : entry*(1+1/leverage-MAINTENANCE_MARGIN_RATE);
+  return direction==="LONG"
+    ? (stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100
+    : (liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
+}
+
+export function passesLiquidationBuffer(bufferPct:number|null|undefined):boolean {
+  return typeof bufferPct==="number"&&Number.isFinite(bufferPct)&&bufferPct>=MIN_LIQUIDATION_BUFFER_PCT;
+}
+
 export function calculateStop(
   direction:"LONG"|"SHORT", entry:number, trendlinePrice:number, atrValue:number, candles:Candle[]
 ): { stop:number; calc:StopCalc; valid:boolean; invalidReason?:string } {
@@ -237,8 +250,8 @@ export function calculateStop(
   const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
   const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
   const liquidationPrice=direction==="LONG"?entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE):entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
-  const liquidationBufferPct=direction==="LONG"?(stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100:(liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
-  const valid=liquidationBufferPct>=MIN_LIQUIDATION_BUFFER_PCT;
+  const liquidationBufferPct=calculateLiquidationBufferPct(direction,entry,stop,MAX_LEVERAGE);
+  const valid=passesLiquidationBuffer(liquidationBufferPct);
   return {stop,calc:{structuralAnchor:priceRound(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid,invalidReason:valid?undefined:"stop_too_close_to_modelled_liquidation"};
 }
 function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValue:number,structuralAnchor:number):StopCalc{
@@ -247,9 +260,7 @@ function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValu
   const liquidationPrice=direction==="LONG"
     ? entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE)
     : entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
-  const liquidationBufferPct=direction==="LONG"
-    ? (stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100
-    : (liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
+  const liquidationBufferPct=calculateLiquidationBufferPct(direction,entry,stop,MAX_LEVERAGE);
   return {
     structuralAnchor:priceRound(structuralAnchor),
     atrMultiplier:r(atrMultiplier,2),
@@ -334,8 +345,9 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(direction&&tl&&a>0){
     const stopResult=calculateStop(direction,p,linePrice,a,c);
     stopCalc=stopResult.calc;
-    // Preserve V28 eligibility: liquidation-buffer diagnostics are informational,
-    // not an additional entry gate. Telegram must warn clearly when unsafe.
+    if(!passesLiquidationBuffer(stopCalc.liquidationBufferPct)){
+      missing.push("liquidation_buffer");
+    }
     const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
     const targets=structureTargets(direction,p,c,a,stopResult.stop);
     rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
@@ -469,6 +481,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
   const stop=calculatedStop.stop;
+  if(!calculatedStop.valid||!passesLiquidationBuffer(calculatedStop.calc.liquidationBufferPct)){
+    debug.push(`[SIGNAL BLOCKED] ${pair} | liquidation buffer ${calculatedStop.calc.liquidationBufferPct}% < ${MIN_LIQUIDATION_BUFFER_PCT}%`);
+    debug.push("[SIGNAL] none — stop is too close to or beyond modelled liquidation");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
+  }
   const targets=structureTargets(evaluation.direction!,entryBase,c,a,stop);
   const risk=Math.abs(entryBase-stop);
   const rrTp1=Math.abs(targets.tp1-entryBase)/Math.max(risk,EPS);
