@@ -164,7 +164,7 @@ function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]
   const tp2=tp2Pivot?.price ?? fallbackTp2;
   return {tp1,tp2,tp1Source:tp1Pivot?"4H swing pivot":"5% fallback",tp2Source:tp2Pivot?"next 4H swing pivot":"10%/runner fallback",tp1Pivot:tp1Pivot?.price,tp2Pivot:tp2Pivot?.price};
 }
-function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
+function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H",trendlinePrice=0){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(trendlinePrice>0&&Number.isFinite(trendlinePrice)){if(dir==="LONG"&&p>trendlinePrice*1.03)return"LONG blocked: price is more than 3% above the ascending support trendline";if(dir==="SHORT"&&p<trendlinePrice*.97)return"SHORT blocked: price is more than 3% below the descending resistance trendline"}else{if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)"}return null}
 export interface GateEvaluation {
   direction: "LONG" | "SHORT" | null;
   zone: { valid: boolean; type: string; price: number; distancePct: number } | null;
@@ -294,7 +294,9 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(signalType==="ENTRY_1" && direction==="LONG" && ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_bearish_entry1_allowed");
 
   const rv=rsi(c.map(x=>x.close));
-  const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
+  // Use the same validated directional trendline as the entry zone; fall back to EMA21 only when unavailable.
+  const exhaustionTrendlinePrice=tl&&!trendlineInvalid?linePrice:0;
+  const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H",exhaustionTrendlinePrice):null;
   if(exhaustion)missing.push("exhaustion");
 
   let rr:number|null=null;
