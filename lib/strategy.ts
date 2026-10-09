@@ -260,7 +260,9 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const a=atr(c);
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
-  const tl=direction?getTrendline(pair,c,direction):null;
+  // Entry-zone geometry follows the daily move (LONG uses rising support,
+  // SHORT uses falling resistance); getTrendline's argument is break direction.
+  const tl=direction?getTrendline(pair,c,direction==="LONG"?"SHORT":"LONG"):null;
   const trendlineSlope=tl?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
   const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_RESISTANCE":"TRENDLINE_SUPPORT",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
@@ -323,7 +325,9 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const state=getTrendline(pair,c,direction);
+  // This parameter is the daily bias; invert it to report that bias's
+  // support/resistance line, separately from the expected-break setup below.
+  const state=getTrendline(pair,c,direction==="LONG"?"SHORT":"LONG");
   // Direction is the expected breakout, not the existing trend:
   // SHORT => rising swing-low support to break downward;
   // LONG => falling swing-high resistance to break upward.
