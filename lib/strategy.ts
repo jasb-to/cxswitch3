@@ -143,7 +143,7 @@ function trendlineCandidateScore(
   const latestAge=candles.length-1-b.index;
   // Recency matters more than raw historical touch volume: the objective is
   // to catch the latest actionable structure, not the line with the longest life.
-  const recencyScore=Math.max(0,60-latestAge*2);
+  const recencyScore=Math.max(0,80-latestAge*3);
   const spanScore=Math.min(10,Math.log2(span+1)*1.5);
   const broken=breakoutIndex!==null;
   // Preserve a freshly broken line even if the subsequent move changes direction.
