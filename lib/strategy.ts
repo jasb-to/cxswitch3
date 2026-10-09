@@ -57,38 +57,33 @@ const trendlineStore=new Map<string,TrendlineState>();
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
   const now=candles.at(-1)?.timestamp;
   if(now===undefined)return null;
-  const existing=trendlineStore.get(pair);
-  if(existing&&existing.direction===direction){
-    const ageDays=(now-existing.lastUpdated)/(24*60*60*1000);
-    const recentSwings=swings(candles,direction==="LONG").slice(-5);
-    const currentLinePrice=existing.slope*(candles.length-1)+existing.intercept;
-    const lastSwing=recentSwings.at(-1);
-    const deviation=lastSwing?Math.abs(lastSwing.price-currentLinePrice)/Math.max(Math.abs(currentLinePrice),EPS):0;
-    if(ageDays<7&&deviation<0.02)return existing;
-  }
-  const tr=swings(candles,direction==="LONG").slice(-5);
-  const f=line(tr);
-  if(!f)return null;
-  // V28 breakout line geometry: LONG breaks descending resistance;
-  // SHORT breaks ascending support.
-  if(direction==="LONG" && f.slope>=0)return null;
-  if(direction==="SHORT" && f.slope<=0)return null;
-  const state:TrendlineState={slope:f.slope,intercept:f.intercept,pivots:tr,lastUpdated:now,direction,r2:0};
+  // Pasted V28 geometry: two most recent confirmed pivot lows for LONG,
+  // or pivot highs for SHORT. No five-pivot regression or stale cached line.
+  const pivots=swings(candles,direction==="SHORT").slice(-2);
+  if(pivots.length<2)return null;
+  const first=pivots[0],last=pivots[1];
+  const span=last.index-first.index;
+  if(span<=0)return null;
+  const slope=(last.price-first.price)/span;
+  const intercept=first.price-slope*first.index;
+  const lineAtLast=slope*(candles.length-1)+intercept;
+  const lastCandle=candles.at(-1);
+  const atrValue=atr(candles);
+  const breakBuffer=Math.max(Math.abs(lastCandle?.close??0)*0.005,atrValue*0.35);
+  // V28 invalidates a support/resistance line only after a meaningful close
+  // through it; do not reject a line merely because its slope is not textbook.
+  if(lastCandle && direction==="LONG" && lastCandle.close<lineAtLast-breakBuffer)return null;
+  if(lastCandle && direction==="SHORT" && lastCandle.close>lineAtLast+breakBuffer)return null;
+  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:0};
   trendlineStore.set(pair,state);
   return state;
 }
-function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
-  const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="LONG").slice(-12).map(x=>({price:x.price,index:x.index}));
-  const above=direction==="LONG" ? pivots.filter(x=>x.price>entry) : pivots.filter(x=>x.price<entry);
-  const minReward=direction==="LONG" ? entry*1.03 : entry*0.97;
-  const tp1Pivot=above.find(x=>direction==="LONG" ? x.price>=minReward : x.price<=minReward);
-  const tp1=tp1Pivot?.price ?? (direction==="LONG" ? entry*1.05 : entry*0.95);
-  const minNext=direction==="LONG" ? tp1*1.015 : tp1*0.985;
-  const tp2Pivot=above.find(x=>direction==="LONG" ? x.price>=minNext : x.price<=minNext);
-  const fallbackTp2=direction==="LONG" ? Math.max(entry*1.10,tp1*1.05) : Math.min(entry*0.90,tp1*0.95);
-  const tp2=tp2Pivot?.price ?? fallbackTp2;
-  return {tp1,tp2,tp1Source:tp1Pivot?"4H swing pivot":"5% fallback",tp2Source:tp2Pivot?"next 4H swing pivot":"10%/runner fallback",tp1Pivot:tp1Pivot?.price,tp2Pivot:tp2Pivot?.price};
+function structureTargets(direction:"LONG"|"SHORT",entry:number,stop:number):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
+  // V28 target geometry: fixed R-multiples from the actual structural/ATR stop.
+  // Keep the app's TP1/TP2 contract: TP1 = 1R, TP2 = 1.5R.
+  const risk=Math.abs(entry-stop);
+  const sign=direction==="LONG"?1:-1;
+  return {tp1:entry+sign*risk,tp2:entry+sign*risk*1.5,tp1Source:"1R",tp2Source:"1.5R"};
 }
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
@@ -155,6 +150,7 @@ function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValu
 }
 
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,lastBreakout?:BreakoutRecord):GateEvaluation{
+  void lastBreakout;
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
   const d=dailyTrend(c);
@@ -176,37 +172,32 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(!zoneValue)missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
-  const near=!!zoneValue && Math.abs(p-linePrice)<=Math.max(0.75*a,p*0.0025);
-  const beyond=!!zoneValue && (direction==="LONG"?p>linePrice+0.25*a:p<linePrice-0.25*a);
-  const last=c.at(-1),prev=c.at(-2);
-  const lastLine=tl?tl.slope*(c.length-1)+tl.intercept:0;
-  const prevLine=tl?tl.slope*(c.length-2)+tl.intercept:0;
-  const closedBreak=!!tl&&!!last&&!!prev&&(direction==="LONG"?last.close>lastLine+0.25*a&&prev.close<=prevLine+0.25*a:last.close<lastLine-0.25*a&&prev.close>=prevLine-0.25*a);
+  // Pasted V28 entry geometry: within 1.2% of the trendline is "near".
+  // Do not add the newer ATR/price proximity gate on top of this threshold.
+  const near=!!zoneValue && Math.abs(p-linePrice)/Math.max(Math.abs(linePrice),EPS)<0.012;
+  const breakoutRecord:BreakoutRecord|undefined=undefined;
 
-  // V28 Entry 1: the early setup at the trendline. Keep this simple.
-  const entry1=!!direction&&near&&!!zoneValue&&zoneValue.distancePct<=1.2&&(direction==="LONG"?st4.k<20:st4.k>80);
+  const extreme=!!direction&&(direction==="LONG"?st4.k<20:st4.k>80);
+  const turn=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
+  // ENTRY_1: trendline proximity + directional extreme StochRSI.
+  const entry1=!!direction&&near&&extreme;
+  // ENTRY_2: trendline proximity + StochRSI turning with the daily bias,
+  // provided it is not already at the extreme. No breakout/retest lifecycle.
+  const entry2=!!direction&&near&&turn&&!extreme;
+  let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
+  if(!signalType&&direction)missing.push("stoch_turn_or_extreme");
 
-  // V28 Entry 2: a real break -> remember the break -> pull back -> retest the
-  // recorded breakout level -> reject/confirm. The retest is deliberately tied
-  // to the recorded breakout price, not whatever the trendline happens to be now.
-  const recordedBreakoutAge=last&&lastBreakout ? last.timestamp-lastBreakout.timestamp : Infinity;
-  const breakoutRecord:BreakoutRecord|undefined=closedBreak&&last&&tl
-    ? {direction:direction!,price:lastLine,timestamp:last.timestamp,candleIndex:c.length-1}
-    : (lastBreakout && recordedBreakoutAge>=0 && recordedBreakoutAge<=48*60*60*1000 ? lastBreakout : undefined);
-  const activeBreakout=!!breakoutRecord&&!!direction&&breakoutRecord.direction===direction
-    &&(last!.timestamp-breakoutRecord!.timestamp)>=0
-    &&(last!.timestamp-breakoutRecord!.timestamp)<=48*60*60*1000;
-  const retestDistance=activeBreakout?Math.abs(p-breakoutRecord!.price)/Math.max(Math.abs(breakoutRecord!.price),EPS):Infinity;
-  const retest=activeBreakout && retestDistance<=0.015 && !!last && !!prev
-    && (direction==="LONG"
-      ? last.low<=breakoutRecord!.price*1.01 && last.close>breakoutRecord!.price && last.close>=prev.close
-      : last.high>=breakoutRecord!.price*0.99 && last.close<breakoutRecord!.price && last.close<=prev.close);
-  const rawEntry2=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
-  const entry2Window=!!direction&&(direction==="LONG"?st4.k>=20&&st4.k<=55:st4.k>=45&&st4.k<=80);
-  const entry2=retest&&rawEntry2&&entry2Window;
-  const entry2Late=retest&&rawEntry2&&!entry2Window;
-  const signalType=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
-  if(!signalType&&direction)missing.push(entry2Late?"entry2_late":"stoch_cross");
+  // Restore the original 4H EMA diagnostic checks: they are a small directional
+  // confirmation on selected entry types, not a breakout/retest lifecycle.
+  const ema4h=get4HEmaDiagnostic(c);
+  if(signalType && direction==="SHORT" && !ema4h.stage.includes("BEARISH")){
+    missing.push("4h_ema_not_bearish");
+    signalType=null;
+  }
+  if(signalType==="ENTRY_2" && direction==="LONG" && ema4h.stage.includes("BEARISH")){
+    missing.push("4h_ema_bearish");
+    signalType=null;
+  }
 
   const rv=rsi(c.map(x=>x.close));
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
@@ -217,13 +208,12 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(direction&&tl&&a>0){
     const stopResult=calculateStop(direction,p,linePrice,a,c);
     stopCalc=stopResult.calc;
-    if(!stopResult.valid)missing.push(stopResult.invalidReason??"stop_width");
-    else{
-      const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
-      const targets=structureTargets(direction,p,c);
-      rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
-      // R:R is informational only and is calculated from the actual TP2 target.
-    }
+    // Liquidation distance is informational for manual alerts; it must not
+    // suppress a valid V28 setup. The signal carries the buffer diagnostics.
+    const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
+    const targets=structureTargets(direction,p,stopResult.stop);
+    rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
+    // R:R is informational only and is calculated from the actual TP2 target.
   }
 
   const deduped=[...new Set(missing.filter(Boolean))];
@@ -243,7 +233,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="SHORT").slice(-5);
+  const pivots=swings(c,direction==="SHORT").slice(-2);
   const state=getTrendline(pair,c,direction);
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
@@ -321,7 +311,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
   const stop=calculatedStop.stop;
-  const targets=structureTargets(evaluation.direction!,entryBase,c);
+  const targets=structureTargets(evaluation.direction!,entryBase,stop);
   const risk=Math.abs(entryBase-stop);
   const actualRr=Math.abs(targets.tp2-entryBase)/Math.max(risk,EPS);
   const s:Signal={
