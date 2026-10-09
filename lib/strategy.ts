@@ -390,7 +390,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TRIGGER] 4H Stoch K ${st4.k.toFixed(1)} / D ${st4.d.toFixed(1)} | ${trendlineType} distance ${Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2):"—"}% | ENTRY_1=${evaluation.trigger.entry1} ENTRY_2=${evaluation.trigger.entry2}`);
   const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
   if(swingDebug){
-    debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
+    // Operator-facing logs show only the two candle-wick anchors. All intervening
+    // candle wicks are still scored internally; there is no need to print every
+    // pivot and flood the dashboard with 15–18 points.
+    debug.push(`[TL POINTS] ${pair} | anchors: ${JSON.stringify(swingDebug.anchors)} | wick touches ${swingDebug.touches} | breaches ${swingDebug.violations}`);
     debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
