@@ -127,7 +127,7 @@ function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):Tr
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
   return getTrendlineResult(pair,candles,direction).state;
 }
-export function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[],atrValue:number,stop:number):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
+export function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
   const structuralTargets=swings(c,direction==="LONG")
     .slice(-12)
@@ -173,7 +173,6 @@ export interface StopCalc {
 
 const MAX_LEVERAGE = 20;
 const MAINTENANCE_MARGIN_RATE = 0.01;
-const MIN_LIQUIDATION_BUFFER_PCT = 0.5; // Informational warning threshold only.
 
 export function calculateLiquidationBufferPct(direction:"LONG"|"SHORT",entry:number,stop:number,leverage=MAX_LEVERAGE):number {
   const liquidationPrice=direction==="LONG"
@@ -182,10 +181,6 @@ export function calculateLiquidationBufferPct(direction:"LONG"|"SHORT",entry:num
   return direction==="LONG"
     ? (stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100
     : (liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
-}
-
-export function passesLiquidationBuffer(bufferPct:number|null|undefined):boolean {
-  return typeof bufferPct==="number"&&Number.isFinite(bufferPct)&&bufferPct>=MIN_LIQUIDATION_BUFFER_PCT;
 }
 
 export function calculateStop(
@@ -293,7 +288,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     const stopResult=calculateStop(direction,p,linePrice,a,c);
     stopCalc=stopResult.calc;
     const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
-    const targets=structureTargets(direction,p,c,a,stopResult.stop);
+    const targets=structureTargets(direction,p,c);
     rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
     // R:R is informational only and is calculated from the actual TP2 target.
   }
@@ -429,7 +424,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     debug.push(`[SIGNAL BLOCKED] ${pair} | invalid stop inputs`);
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
-  const targets=structureTargets(evaluation.direction!,entryBase,c,a,stop);
+  const targets=structureTargets(evaluation.direction!,entryBase,c);
   const risk=Math.abs(entryBase-stop);
   const rrTp1=Math.abs(targets.tp1-entryBase)/Math.max(risk,EPS);
   const rrTp2=Math.abs(targets.tp2-entryBase)/Math.max(risk,EPS);
