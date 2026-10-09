@@ -86,7 +86,7 @@ export interface TrendlineState {
 interface TrendlineCandidate extends TrendlineState {}
 const TRENDLINE_LOOKBACK_BARS=180;
 const TRENDLINE_MAX_LATEST_ANCHOR_AGE=60;
-const TRENDLINE_MIN_ANCHOR_GAP=8;
+const TRENDLINE_MIN_ANCHOR_GAP=3;
 function lineAt(slope:number,intercept:number,index:number){return slope*index+intercept}
 function trendlineCandidateScore(
   candles:Candle[],a:Swing,b:Swing,high:boolean,atrNow:number
@@ -128,9 +128,12 @@ function trendlineCandidateScore(
   if(wickBreaches>Math.max(2,Math.floor(span*0.035)))return null;
   if(closeBreaches>Math.max(1,Math.floor(span*0.015)))return null;
   const distinctTouches:Swing[]=[];
+  // Short, fresh structures can have valid reactions only 1–2 candles apart.
+  // Keep those distinct on micro trendlines; use wider spacing for older lines.
+  const touchSpacing=span<8?1:3;
   for(const touch of validTouches){
     const last=distinctTouches.at(-1);
-    if(!last||touch.index-last.index>=3)distinctTouches.push(touch);
+    if(!last||touch.index-last.index>=touchSpacing)distinctTouches.push(touch);
     else if(Math.abs(touch.price-lineAt(slope,intercept,touch.index))<
       Math.abs(last.price-lineAt(slope,intercept,last.index)))distinctTouches[distinctTouches.length-1]=touch;
   }
@@ -169,11 +172,28 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   const atrNow=atr(c);
   if(!Number.isFinite(atrNow)||atrNow<=0)return null;
   let best:TrendlineCandidate|null=null;
+  // Keep the confirmed-pivot pairs for established structures.
   for(let bi=1;bi<allPivots.length;bi++){
     const b=allPivots[bi];
     if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)continue;
     for(let ai=0;ai<bi;ai++){
       const a=allPivots[ai];
+      const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
+      if(candidate&&(!best||candidate.score>best.score))best=candidate;
+    }
+  }
+  // Humans also draw a fresh line through a confirmed swing and a newer wick
+  // reaction before that second point becomes a strict 2-left/2-right pivot.
+  // Only use recent completed candles as provisional second anchors; the line
+  // must still pass the same intermediate-touch and breach validation.
+  const recentStart=Math.max(0,len-30);
+  const provisionalAnchors:Swing[]=c.slice(recentStart,len-1).map((x,offset)=>({
+    index:recentStart+offset,price:high?x.high:x.low,timestamp:x.timestamp
+  }));
+  for(const b of provisionalAnchors){
+    if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)continue;
+    for(const a of allPivots){
+      if(a.index>=b.index)continue;
       const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
       if(candidate&&(!best||candidate.score>best.score))best=candidate;
     }
