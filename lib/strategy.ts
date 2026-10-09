@@ -11,7 +11,7 @@ import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
 export const CURRENT_SIGNAL_VERSION=39;
 type Direction="LONG"|"SHORT";
-const MIN_RR=1.35, DAILY_NEUTRAL_SPREAD_PCT=0.5, TTL=24*60*60*1000, EPS=1e-12;
+const MIN_RR=1.35, TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
 const priceRound=(n:number)=>{if(!Number.isFinite(n))return n;const d=Math.abs(n)>=1000?0:Math.abs(n)>=1?2:Math.abs(n)>=0.1?3:5;return r(n,d)};
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}
@@ -33,7 +33,9 @@ function dailyTrend(c:Candle[]):DailyRegime{
   const signedSpread=e5-e13,spread=Math.abs(signedSpread)/Math.max(p,EPS)*100;
   const prevSigned=e5Prev-e13Prev,spreadContracting=Math.abs(signedSpread)<Math.abs(prevSigned);
   const e5Slope=e5-e5Prev,e13Slope=e13-e13Prev;
-  const direction:Direction|null=spread<=DAILY_NEUTRAL_SPREAD_PCT?null:e5>e13?"LONG":"SHORT";
+  // V28 fast daily bias: use the EMA 5/13 relationship directly. Do not
+  // suppress a valid bias merely because the spread is small near a transition.
+  const direction:Direction|null=e5>e13?"LONG":e5<e13?"SHORT":null;
   if(!direction)return{direction:null,strength:"NEUTRAL",e5,e13,spread,spreadContracting,e5Slope,e13Slope};
   const weakening=direction==="LONG"?(e5Slope<0&&spreadContracting):(e5Slope>0&&spreadContracting);
   const strong=spread>=1.5&&!spreadContracting&&(direction==="LONG"?e5Slope>=0:e5Slope<=0);
@@ -159,7 +161,9 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
   // During a 1D transition we deliberately watch rather than flip direction early.
   const dailyTransition = d.direction && d.strength === "LOW" && d.spreadContracting;
-  const direction=dailyTransition ? null : d.direction;
+  // V28: daily EMA 5/13 chooses direction. Weakening/contracting spread is
+  // diagnostic context only; it must not delay an otherwise valid entry.
+  const direction=d.direction;
   const missing:string[]=[];
   if(!direction)missing.push("direction");
 
