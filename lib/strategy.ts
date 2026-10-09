@@ -34,9 +34,11 @@ function dailyTrend(c:Candle[]):DailyRegime{
   const spread=Math.abs(e8-e21)/Math.max(price,EPS)*100;
   const spreadContracting=Math.abs(e8-e21)<Math.abs(e8Prev-e21Prev);
   const e8Slope=e8-e8Prev,e21Slope=e21-e21Prev;
-  // Exact pasted V28 daily bias: EMA8/EMA21 chooses direction; the most recent
-  // daily candle's 20-day HH/LL structure determines whether that bias is strong.
-  const direction:Direction|null=e8>e21?"LONG":"SHORT";
+  // Require price and EMA ordering to agree before assigning the daily direction.
+  // Mixed alignment is a transition: stay flat rather than trade a stale EMA crossover.
+  const fullyBullish=price>e8&&e8>e21;
+  const fullyBearish=price<e8&&e8<e21;
+  const direction:Direction|null=fullyBullish?"LONG":fullyBearish?"SHORT":null;
   if(!direction)return{direction:null,strength:"NEUTRAL",e8,e21,spread,spreadContracting,e8Slope,e21Slope};
   const highs=d.slice(-20).map(x=>x.high),lows=d.slice(-20).map(x=>x.low);
   const hh=highs.at(-1)!>Math.max(...highs.slice(0,-1));
@@ -238,11 +240,17 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
   // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
-  // During a 1D transition we deliberately watch rather than flip direction early.
-  const dailyTransition = d.direction && d.strength === "LOW" && d.spreadContracting;
-  // V28: daily EMA 8/21 chooses direction. Weakening/contracting spread is
-  // diagnostic context only; it must not delay an otherwise valid entry.
+  // A mature daily history with mixed price/EMA alignment is an explicit no-direction transition.
+  const dailyHistoryReady=daily(c).length>=25;
+  const dailyTransition = (dailyHistoryReady&&!d.direction) || (!!d.direction&&d.strength==="LOW"&&d.spreadContracting);
   const direction=d.direction;
+  if(dailyHistoryReady&&!d.direction){
+    const dailyCloses=daily(c).map(x=>x.close),price=dailyCloses.at(-1)??0;
+    const relation=price<d.e8&&price<d.e21?"price below both EMAs; EMA ordering conflicts":
+      price>d.e8&&price>d.e21?"price above both EMAs; EMA ordering conflicts":
+      "price/EMA alignment is mixed";
+    console.log(`[1D TRANSITION] ${pair} | price ${price} | ${relation} (EMA8 ${d.e8}, EMA21 ${d.e21}) — no direction`);
+  }
   const missing:string[]=[];
   if(!direction)missing.push("direction");
 
@@ -388,7 +396,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       ? (d.strength==="LOW"&&d.spreadContracting
         ? `[1D TRANSITION] ${d.direction==="LONG"?"BULLISH":"BEARISH"} weakening/turning | WATCH — no new direction until the 1D transition confirms`
         : `[DIRECTION] V28 1D ${d.direction} | 4H is timing/context only`)
-      : "[1D] NEUTRAL | insufficient daily history or EMA8/EMA21 equal");
+      : (dailyCandles.length>=25
+        ? `[1D TRANSITION] ${pair} | price ${dailyCloses.at(-1)??0} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} — mixed alignment, no direction`
+        : "[1D] NEUTRAL | insufficient daily history"));
     debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
