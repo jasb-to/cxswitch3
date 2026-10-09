@@ -24,25 +24,23 @@ function daily(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [..
 interface DailyRegime {
   direction: Direction|null;
   strength: "LOW"|"MEDIUM"|"HIGH"|"STRONG"|"NEUTRAL";
-  e5:number; e13:number; spread:number; spreadContracting:boolean; e5Slope:number; e13Slope:number;
+  e5:number; e13:number; spread:number;
 }
 function dailyTrend(c:Candle[]):DailyRegime{
   const d=daily(c);
-  if(d.length<25)return{direction:null,strength:"NEUTRAL",e5:0,e13:0,spread:0,spreadContracting:false,e5Slope:0,e13Slope:0};
+  if(d.length<25)return{direction:null,strength:"NEUTRAL",e5:0,e13:0,spread:0};
   const closes=d.map(x=>x.close),ema5=ema(closes,5),ema13=ema(closes,13);
   const e5=ema5.at(-1)!,e13=ema13.at(-1)!,e5Prev=ema5.at(-2)!,e13Prev=ema13.at(-2)!,price=closes.at(-1)!;
   const spread=Math.abs(e5-e13)/Math.max(price,EPS)*100;
-  const spreadContracting=Math.abs(e5-e13)<Math.abs(e5Prev-e13Prev);
-  const e5Slope=e5-e5Prev,e13Slope=e13-e13Prev;
   // Original V28 direction rule with the requested faster 1D EMA 5/13.
   // EMA relationship alone chooses direction; no price-side or spread gate.
   const direction:Direction|null=e5>e13?"LONG":e5<e13?"SHORT":null;
-  if(!direction)return{direction:null,strength:"NEUTRAL",e5,e13,spread,spreadContracting,e5Slope,e13Slope};
+  if(!direction)return{direction:null,strength:"NEUTRAL",e5,e13,spread};
   const highs=d.slice(-20).map(x=>x.high),lows=d.slice(-20).map(x=>x.low);
   const hh=highs.at(-1)!>Math.max(...highs.slice(0,-1));
   const ll=lows.at(-1)!<Math.min(...lows.slice(0,-1));
   const strength=(direction==="LONG"&&hh)||(direction==="SHORT"&&ll)?"STRONG":"MEDIUM";
-  return{direction,strength,e5,e13,spread,spreadContracting,e5Slope,e13Slope};
+  return{direction,strength,e5,e13,spread};
 }
 function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean;label:string}{
   const x=get4HEmaDiagnostic(c);
@@ -177,7 +175,7 @@ export function calculateLiquidationBufferPct(direction:"LONG"|"SHORT",entry:num
 }
 
 export function calculateStop(
-  direction:"LONG"|"SHORT", entry:number, trendlinePrice:number, atrValue:number, candles:Candle[]
+  direction:"LONG"|"SHORT", entry:number, atrValue:number, candles:Candle[]
 ): { stop:number; calc:StopCalc; valid:boolean; invalidReason?:string } {
   if(!Number.isFinite(entry)||entry<=0||!Number.isFinite(atrValue)||atrValue<=0)
     return {stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_inputs"};
@@ -199,23 +197,6 @@ export function calculateStop(
   // Liquidation distance is informational and never suppresses a V28 entry.
   return {stop,calc:{structuralAnchor:priceRound(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid:true};
 }
-function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValue:number,structuralAnchor:number):StopCalc{
-  const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
-  const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
-  const liquidationPrice=direction==="LONG"
-    ? entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE)
-    : entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
-  const liquidationBufferPct=calculateLiquidationBufferPct(direction,entry,stop,MAX_LEVERAGE);
-  return {
-    structuralAnchor:priceRound(structuralAnchor),
-    atrMultiplier:r(atrMultiplier,2),
-    riskPct:r(riskPct,2),
-    liquidationBufferPct:r(liquidationBufferPct,2),
-    liquidationPrice:priceRound(liquidationPrice),
-    marginUsagePct:r(riskPct*MAX_LEVERAGE,1)
-  };
-}
-
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,lastBreakout?:BreakoutRecord):GateEvaluation{
   console.log(`[EVAL CALL] pair=${pair} candles4h=${candles4h.length} at ${new Date().toISOString()}`);
   void lastBreakout;
@@ -227,7 +208,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
   // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
-  // A mature daily history with mixed price/EMA alignment is an explicit no-direction transition.
+  // With enough history, only an exact EMA5/EMA13 tie leaves the daily direction neutral.
   const dailyHistoryReady=daily(c).length>=25;
   const dailyTransition = dailyHistoryReady&&!d.direction;
   const direction=d.direction;
@@ -277,7 +258,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   let rr:number|null=null;
   let stopCalc:StopCalc|null=null;
   if(direction&&tl&&a>0){
-    const stopResult=calculateStop(direction,p,linePrice,a,c);
+    const stopResult=calculateStop(direction,p,a,c);
     stopCalc=stopResult.calc;
     const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
     const targets=structureTargets(direction,p,c);
@@ -405,7 +386,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const signalType=evaluation.trigger.signalType!;
   const entryBase=p;
   debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
-  const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
+  const calculatedStop=calculateStop(evaluation.direction!,entryBase,a,c);
   const stop=calculatedStop.stop;
   if(!calculatedStop.valid){
     debug.push(`[SIGNAL BLOCKED] ${pair} | invalid stop inputs`);
