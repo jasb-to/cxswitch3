@@ -341,6 +341,26 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   void candles1h;
   const debug:string[]=[];
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
+  // Runtime audit must run before any early return and must not depend on debug output being surfaced.
+  const normalizedPair=String(pair).toUpperCase().replace(/[^A-Z0-9]/g,"");
+  const isBtcPair=normalizedPair==="BTC" || (/^BTC(?:USDT|USDC|USD|BUSD|FDUSD|EUR|GBP|PERP)$/.test(normalizedPair));
+  if(isBtcPair){
+    const auditDaily=daily(c),auditCloses=auditDaily.map(x=>x.close);
+    const auditLines=[
+      `[1D AUDIT] pair=${pair} normalized=${normalizedPair}`,
+      `input 4H candles: ${c.length}`,
+      `first 4H ts: ${new Date(c[0]?.timestamp??0).toISOString()}`,
+      `last 4H ts: ${new Date(c.at(-1)?.timestamp??0).toISOString()}`,
+      `aggregated daily candles: ${auditDaily.length}`,
+      `first daily ts/close: ${new Date(auditDaily[0]?.timestamp??0).toISOString()} / ${auditDaily[0]?.close??0}`,
+      `last daily ts/close: ${new Date(auditDaily.at(-1)?.timestamp??0).toISOString()} / ${auditDaily.at(-1)?.close??0}`,
+      `last 5 daily closes: ${JSON.stringify(auditDaily.slice(-5).map(x=>({ts:new Date(x.timestamp).toISOString(),close:x.close}))) }`,
+      `EMA8: ${ema(auditCloses,8).at(-1)??0}`,
+      `EMA21: ${ema(auditCloses,21).at(-1)??0}`,
+      `direction: ${auditCloses.length<25?"NULL (fewer than 25 daily candles)":((ema(auditCloses,8).at(-1)??0)>(ema(auditCloses,21).at(-1)??0)?"LONG":"SHORT")}`
+    ];
+    console.log(auditLines.join(" | "));
+  }
   const p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
   if(daily(c).length<25){
     debug.push("[1D] NEUTRAL | fewer than 25 daily candles");
@@ -351,20 +371,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   }
 
   const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
-  if(pair==="BTC"){
-    const last5Daily=dailyCandles.slice(-5).map(x=>({ts:new Date(x.timestamp).toISOString(),close:x.close}));
-    debug.push(`[1D AUDIT] ${pair}`);
-    debug.push(`  input 4H candles:        ${c.length}`);
-    debug.push(`  first 4H ts:             ${new Date(c[0]?.timestamp??0).toISOString()}`);
-    debug.push(`  last  4H ts:             ${new Date(c.at(-1)?.timestamp??0).toISOString()}`);
-    debug.push(`  aggregated daily candles: ${dailyCandles.length}`);
-    debug.push(`  first daily ts/close:    ${new Date(dailyCandles[0]?.timestamp??0).toISOString()} / ${dailyCandles[0]?.close??0}`);
-    debug.push(`  last  daily ts/close:    ${new Date(dailyCandles.at(-1)?.timestamp??0).toISOString()} / ${dailyCandles.at(-1)?.close??0}`);
-    debug.push(`  last 5 daily closes:     ${JSON.stringify(last5Daily)}`);
-    debug.push(`  EMA8:                    ${ema(dailyCloses,8).at(-1)??0}`);
-    debug.push(`  EMA21:                   ${ema(dailyCloses,21).at(-1)??0}`);
-    debug.push(`  direction:               ${d.direction??"NULL"}`);
-  }
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
