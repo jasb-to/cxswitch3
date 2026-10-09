@@ -26,6 +26,15 @@ export async function sendAlert(signal:any){
   const expectedMove=Number.isFinite(entry)&&Number.isFinite(tp2)&&entry!==0
     ? Math.round((Math.abs(tp2-entry)/Math.abs(entry))*1000)/10
     : signal.expectedMove??"-";
+  const stop=Number(signal.stopLoss??signal.stop);
+  const riskDistance=Number.isFinite(entry)&&Number.isFinite(stop)?Math.abs(entry-stop):0;
+  const rrTp1=riskDistance>0&&Number.isFinite(tp1)?Math.abs(tp1-entry)/riskDistance:null;
+  const rrTp2=riskDistance>0&&Number.isFinite(tp2)?Math.abs(tp2-entry)/riskDistance:null;
+  const bufferValue=signal.context?.stopToLiquidationBufferPct??signal.context?.stopCalc?.liquidationBufferPct;
+  const buffer=bufferValue==null?null:Number(bufferValue);
+  const bufferText=buffer!=null&&Number.isFinite(buffer)
+    ? `${buffer.toFixed(2)}%${buffer<0?" ⚠️ STOP BEYOND MODELLED LIQUIDATION":buffer<0.5?" ⚠️ BELOW 0.50% MINIMUM BUFFER":""}`
+    : "-";
 
   const signalClass=signal.signalClass??signal.context?.signalClass;
   const sizeMultiplier=signal.sizeMultiplier??signal.context?.sizeMultiplier;
@@ -38,10 +47,12 @@ export async function sendAlert(signal:any){
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type}`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,"",
     `Entry: ${formatPrice(entry)} · MARKET`,
-    `SL: ${formatPrice(signal.stopLoss??signal.stop)}`,`Risk: ${Number.isFinite(entry)&&Number.isFinite(Number(signal.stopLoss??signal.stop)) ? Math.abs(entry-Number(signal.stopLoss??signal.stop)).toFixed(2)+" pts ("+(signal.context?.stopCalc?.riskPct?.toFixed(2)??"-")+"%)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.liquidationPrice??signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${(signal.context?.stopToLiquidationBufferPct??signal.context?.stopCalc?.liquidationBufferPct)!=null ? Number(signal.context?.stopToLiquidationBufferPct??signal.context?.stopCalc?.liquidationBufferPct).toFixed(2)+"%" : "-"}`,
+    `SL: ${formatPrice(stop)}`,`Risk: ${riskDistance>0 ? riskDistance.toFixed(2)+" pts ("+(signal.context?.stopCalc?.riskPct?.toFixed(2)??"-")+"%)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.liquidationPrice??signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${bufferText}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
-    `RR (TP1): ${signal.rr??"-"}`,`Size: ${sizeMultiplier===0.5 ? "50%"+(signalClass==="REVERSAL" ? " (counter-trend)" : " (reduced for liquidation buffer)") : "100%"}`,
+    `RR (TP1): ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
+    `RR (TP2): ${rrTp2==null?"-":rrTp2.toFixed(2)+"R"}`,
+    `Size: ${sizeMultiplier===0.5 ? "50%"+(signalClass==="REVERSAL" ? " (counter-trend)" : buffer!=null&&Number.isFinite(buffer)&&buffer<0.5 ? " (⚠️ reduced size does NOT remove liquidation risk)" : " (risk-reduced sizing; liquidation risk remains)") : "100%"}`,
     jarvisLine,
     `Expected Move: ${expectedMove}%`,
     signal.reason||""

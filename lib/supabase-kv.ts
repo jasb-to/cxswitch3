@@ -26,7 +26,11 @@ function expiry(ex?: number) {
 }
 
 export class Redis {
-  private db = getClient();
+  // Resolve credentials on first database operation, not during module import/build-time route analysis.
+  // Runtime persistence calls still fail loudly if the required production credentials are absent.
+  private get db(): SupabaseClient {
+    return getClient();
+  }
 
   async get<T = unknown>(key: string): Promise<T | null> {
     const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).maybeSingle();

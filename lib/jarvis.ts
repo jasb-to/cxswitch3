@@ -236,7 +236,10 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
 
   const dir=evaluation.direction;
   const distancePct=evaluation.zone?.distancePct??Infinity;
-  const trendText=dir==="LONG"?"ascending support":"descending resistance";
+  const slope=Number(evaluation.trendlineSlope??0);
+  const trendText=dir==="LONG"
+    ? (slope>0?"ascending support":slope<0?"descending support":"flat support")
+    : (slope<0?"descending resistance":slope>0?"ascending resistance":"flat resistance");
   const st=evaluation.trigger;
   const q=c.map(x=>x.close);
   const rawStoch=stochState(q);
@@ -251,7 +254,7 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   if(signal){
     const stopCtx=signal.context?.stopCalc;
     const riskText=stopCtx?" Stop "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk).":"";
-    return "[JARVIS STATE] "+pair+" — V28 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+" and the 4H structure is aligned. "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
+    return "[JARVIS STATE] "+pair+" — V28 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+"; the 4H is "+fourHText+" (context, not an entry veto in pasted V28). "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
   }
   if(!evaluation.zone)
     return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and we are looking for a "+(dir==="LONG"?"long":"short")+" setup. The 4H is "+fourHText+". We still need a validated "+trendText+" and the right Stoch timing.";

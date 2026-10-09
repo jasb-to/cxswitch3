@@ -205,8 +205,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!signalType&&direction)missing.push("stoch_turn_or_extreme");
 
-  // 4H EMA diagnostics are context only in pasted V28; they must not veto
-  // an otherwise valid trendline + directional StochRSI entry.
+  // Exact pasted V28 behavior: 4H EMA is advisory context, not an entry veto.
   const ema4h=get4HEmaDiagnostic(c);
   const emaAdvisory:string[]=[];
   if(signalType && direction==="SHORT" && !ema4h.stage.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
@@ -221,8 +220,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(direction&&tl&&a>0){
     const stopResult=calculateStop(direction,p,linePrice,a,c);
     stopCalc=stopResult.calc;
-    // Liquidation distance is informational for manual alerts; it must not
-    // suppress a valid V28 setup. The signal carries the buffer diagnostics.
+    // Preserve V28 eligibility: liquidation-buffer diagnostics are informational,
+    // not an additional entry gate. Telegram must warn clearly when unsafe.
     const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
     const targets=structureTargets(direction,p,c);
     rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
