@@ -239,7 +239,7 @@ export function calculateStop(
   const liquidationPrice=direction==="LONG"?entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE):entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
   const liquidationBufferPct=direction==="LONG"?(stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100:(liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
   const valid=liquidationBufferPct>=MIN_LIQUIDATION_BUFFER_PCT;
-  return {stop,calc:{structuralAnchor:r(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:r(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid,invalidReason:valid?undefined:"stop_too_close_to_modelled_liquidation"};
+  return {stop,calc:{structuralAnchor:priceRound(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid,invalidReason:valid?undefined:"stop_too_close_to_modelled_liquidation"};
 }
 function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValue:number,structuralAnchor:number):StopCalc{
   const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
@@ -251,11 +251,11 @@ function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValu
     ? (stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100
     : (liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
   return {
-    structuralAnchor:r(structuralAnchor),
+    structuralAnchor:priceRound(structuralAnchor),
     atrMultiplier:r(atrMultiplier,2),
     riskPct:r(riskPct,2),
     liquidationBufferPct:r(liquidationBufferPct,2),
-    liquidationPrice:r(liquidationPrice),
+    liquidationPrice:priceRound(liquidationPrice),
     marginUsagePct:r(riskPct*MAX_LEVERAGE,1)
   };
 }
