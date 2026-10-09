@@ -94,6 +94,15 @@ function slopeMatchesDirection(direction:Direction,slope:number):boolean{
   return direction==="LONG"?slope>0:slope<0;
 }
 
+// Fail loudly if an invalid line ever reaches a reuse/store path. Expected bad
+// market structure is handled by returning null before this assertion is reached.
+function assertTrendlineSlopeInvariant(direction:Direction,slope:number):void{
+  if(!slopeMatchesDirection(direction,slope)){
+    const required=direction==="LONG"?"positive":"negative";
+    throw new Error(`[TRENDLINE INVARIANT] ${direction} trendline slope must be ${required}; received ${slope}`);
+  }
+}
+
 function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):TrendlineResult{
   const len=candles.length,now=candles.at(-1)?.timestamp;
   const candidatePivots=len>=7?trendlinePivots(candles,direction==="SHORT").slice(-5):[];
@@ -113,16 +122,26 @@ function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):Tr
     return{state:null,invalidSlope:true,...fit};
   }
 
-  const existing=trendlineStore.get(pair),maxAge=7*24*60*60*1000;
-  if(existing&&existing.direction===direction&&slopeMatchesDirection(direction,existing.slope)&&(now-existing.lastUpdated)<maxAge){
+  let existing=trendlineStore.get(pair);
+  const maxAge=7*24*60*60*1000;
+  // A stale or corrupted cache entry is never eligible for reuse, even if a
+  // future refactor accidentally moves the fresh-fit validation.
+  if(existing&&!slopeMatchesDirection(existing.direction,existing.slope)){
+    trendlineStore.delete(pair);
+    existing=undefined;
+  }
+  if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
+    assertTrendlineSlopeInvariant(direction,existing.slope);
     const lastPivot=fit.pivots[fit.pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
     const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
     if(deviation<0.02){
       const state={...existing,r2:0.85};
+      assertTrendlineSlopeInvariant(direction,state.slope);
       return{state,invalidSlope:false,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
     }
   }
   const state:TrendlineState={...fit,lastUpdated:now,direction};
+  assertTrendlineSlopeInvariant(direction,state.slope);
   trendlineStore.set(pair,state);
   return{state,invalidSlope:false,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
 }
@@ -308,7 +327,8 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
     intercept,
     priceAtCurrent,
     r2:result.state?.r2??result.r2,
-    invalidSlope:result.invalidSlope
+    invalidSlope:result.invalidSlope,
+    validForDirection:!!result.state&&slopeMatchesDirection(direction,result.state.slope)
   };
 }
 
@@ -360,7 +380,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
   if(swingDebug){
     debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
-    debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
+    const slopeStatus=swingDebug.invalidSlope
+      ?`invalid for ${evaluation.direction} (slope must be ${evaluation.direction==="LONG"?"positive":"negative"})`
+      :swingDebug.validForDirection
+        ?`valid for ${evaluation.direction}`
+        :"unavailable";
+    debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | ${slopeStatus} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"} | r2 ${swingDebug.r2??"—"}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
