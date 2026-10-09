@@ -141,13 +141,15 @@ function trendlineCandidateScore(
   const pivotList=trendlinePivots(candles,high).filter(p=>p.index>=a.index&&p.index<=validationEndIndex);
   const pivotTouches=pivotList.filter(p=>Math.abs(p.price-lineAt(slope,intercept,p.index))<=tolerance);
   const latestAge=candles.length-1-b.index;
-  const recencyScore=Math.max(0,12-latestAge/5);
+  // Recency matters more than raw historical touch volume: the objective is
+  // to catch the latest actionable structure, not the line with the longest life.
+  const recencyScore=Math.max(0,60-latestAge*2);
   const spanScore=Math.min(10,Math.log2(span+1)*1.5);
   const broken=breakoutIndex!==null;
-  // A recent, well-validated line that has just broken is especially relevant:
-  // don't let a fresh post-break pivot automatically hide the broken structure.
+  // Preserve a freshly broken line even if the subsequent move changes direction.
+  // A recent confirmed break should outweigh several extra touches on a stale line.
   const barsSinceBreak=broken?candles.length-1-breakoutIndex!:Infinity;
-  const breakRecencyBonus=broken?Math.max(0,35-barsSinceBreak*2):0;
+  const breakRecencyBonus=broken?Math.max(0,60-barsSinceBreak*3):0;
   const score=distinctTouches.length*10+pivotTouches.length*5+middleTouches.length*4+
     recencyScore+spanScore+breakRecencyBonus-wickBreaches*12-closeBreaches*24-bodyIntersections*1.5;
   return {
