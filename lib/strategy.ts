@@ -340,9 +340,14 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
   const recent=c.slice(-12);
   const first=recent[0]?.close??0,last=recent.at(-1)?.close??0;
   const localMovePct=first?((last-first)/first)*100:0;
-  const expectedBreakLine=localMovePct>=0
-    ?"RISING_SUPPORT_BREAKDOWN":"FALLING_RESISTANCE_BREAKOUT";
-  const breakSetupLine=localMovePct>=0?support:resistance;
+  // Avoid forcing a direction when the last ~48h is effectively sideways.
+  const moveThresholdPct=0.25;
+  const expectedBreakLine=localMovePct>moveThresholdPct
+    ?"RISING_SUPPORT_BREAKDOWN"
+    :localMovePct< -moveThresholdPct
+      ?"FALLING_RESISTANCE_BREAKOUT":"NO_CLEAR_LOCAL_MOVE";
+  const breakSetupLine=expectedBreakLine==="RISING_SUPPORT_BREAKDOWN"
+    ?support:expectedBreakLine==="FALLING_RESISTANCE_BREAKOUT"?resistance:null;
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
     pair,
