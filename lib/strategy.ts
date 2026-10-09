@@ -146,7 +146,7 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
       // Touches matter, but fewer breaches and a recent second anchor matter
       // more than collecting touches on an old, obsolete line.
       const recency=(b.index-latestAnchor)/Math.max(1,len-latestAnchor);
-      const score=touches*100+pivotTouches*30-violations*40+Math.min(span/len,1)*10-recency*5;
+      const score=touches*100+pivotTouches*30-violations*40+Math.min(span/len,1)*10+recency*5;
       if(!best||score>best.score||
         (score===best.score&&touches>best.touches)||
         (score===best.score&&touches===best.touches&&span>best.span)){
