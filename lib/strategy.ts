@@ -23,24 +23,26 @@ function adx(c:Candle[],p=14){if(c.length<p+2)return 0;const tr:number[]=[],pl:n
 function daily(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [...c].sort((a,b)=>a.timestamp-b.timestamp)){const z=new Date(x.timestamp),k=z.toISOString().slice(0,10),b=m.get(k)??[];b.push(x);m.set(k,b)}return[...m.values()].map(b=>({timestamp:b[0].timestamp,open:b[0].open,high:Math.max(...b.map(x=>x.high)),low:Math.min(...b.map(x=>x.low)),close:b.at(-1)!.close,volume:b.reduce((s,x)=>s+x.volume,0)}))}
 interface DailyRegime {
   direction: Direction|null;
-  strength: "LOW"|"MEDIUM"|"HIGH"|"NEUTRAL";
-  e5:number; e13:number; spread:number; spreadContracting:boolean; e5Slope:number; e13Slope:number;
+  strength: "LOW"|"MEDIUM"|"HIGH"|"STRONG"|"NEUTRAL";
+  e8:number; e21:number; spread:number; spreadContracting:boolean; e8Slope:number; e21Slope:number;
 }
 function dailyTrend(c:Candle[]):DailyRegime{
   const d=daily(c);
-  if(d.length<25)return{direction:null,strength:"NEUTRAL",e5:0,e13:0,spread:0,spreadContracting:false,e5Slope:0,e13Slope:0};
-  const a=d.map(x=>x.close),e5s=ema(a,5),e13s=ema(a,13),e5=e5s.at(-1)!,e13=e13s.at(-1)!,e5Prev=e5s.at(-2)!,e13Prev=e13s.at(-2)!,p=a.at(-1)!;
-  const signedSpread=e5-e13,spread=Math.abs(signedSpread)/Math.max(p,EPS)*100;
-  const prevSigned=e5Prev-e13Prev,spreadContracting=Math.abs(signedSpread)<Math.abs(prevSigned);
-  const e5Slope=e5-e5Prev,e13Slope=e13-e13Prev;
-  // V28 fast daily bias: use the EMA 5/13 relationship directly. Do not
-  // suppress a valid bias merely because the spread is small near a transition.
-  const direction:Direction|null=e5>e13?"LONG":e5<e13?"SHORT":null;
-  if(!direction)return{direction:null,strength:"NEUTRAL",e5,e13,spread,spreadContracting,e5Slope,e13Slope};
-  const weakening=direction==="LONG"?(e5Slope<0&&spreadContracting):(e5Slope>0&&spreadContracting);
-  const strong=spread>=1.5&&!spreadContracting&&(direction==="LONG"?e5Slope>=0:e5Slope<=0);
-  const strength=strong?"HIGH":weakening||spread<0.75?"LOW":"MEDIUM";
-  return{direction,strength,e5,e13,spread,spreadContracting,e5Slope,e13Slope};
+  if(d.length<25)return{direction:null,strength:"NEUTRAL",e8:0,e21:0,spread:0,spreadContracting:false,e8Slope:0,e21Slope:0};
+  const closes=d.map(x=>x.close),ema8=ema(closes,8),ema21=ema(closes,21);
+  const e8=ema8.at(-1)!,e21=ema21.at(-1)!,e8Prev=ema8.at(-2)!,e21Prev=ema21.at(-2)!,price=closes.at(-1)!;
+  const spread=Math.abs(e8-e21)/Math.max(price,EPS)*100;
+  const spreadContracting=Math.abs(e8-e21)<Math.abs(e8Prev-e21Prev);
+  const e8Slope=e8-e8Prev,e21Slope=e21-e21Prev;
+  // Exact pasted V28 daily bias: EMA8/EMA21 chooses direction; the most recent
+  // daily candle's 20-day HH/LL structure determines whether that bias is strong.
+  const direction:Direction|null=e8>e21?"LONG":e8<e21?"SHORT":null;
+  if(!direction)return{direction:null,strength:"NEUTRAL",e8,e21,spread,spreadContracting,e8Slope,e21Slope};
+  const highs=d.slice(-20).map(x=>x.high),lows=d.slice(-20).map(x=>x.low);
+  const hh=highs.at(-1)!>Math.max(...highs.slice(0,-1));
+  const ll=lows.at(-1)!<Math.min(...lows.slice(0,-1));
+  const strength=(direction==="LONG"&&hh)||(direction==="SHORT"&&ll)?"STRONG":"MEDIUM";
+  return{direction,strength,e8,e21,spread,spreadContracting,e8Slope,e21Slope};
 }
 function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean;label:string}{
   const x=get4HEmaDiagnostic(c);
@@ -55,26 +57,25 @@ function line(p:Swing[]){if(p.length<2)return null;const n=p.length,sx=p.reduce(
 export interface TrendlineState{slope:number;intercept:number;pivots:Swing[];lastUpdated:number;direction:Direction;r2:number}
 const trendlineStore=new Map<string,TrendlineState>();
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
-  const now=candles.at(-1)?.timestamp;
-  if(now===undefined)return null;
-  // Pasted V28 geometry: two most recent confirmed pivot lows for LONG,
-  // or pivot highs for SHORT. No five-pivot regression or stale cached line.
-  const pivots=swings(candles,direction==="SHORT").slice(-2);
-  if(pivots.length<2)return null;
-  const first=pivots[0],last=pivots[1];
-  const span=last.index-first.index;
-  if(span<=0)return null;
-  const slope=(last.price-first.price)/span;
-  const intercept=first.price-slope*first.index;
-  const lineAtLast=slope*(candles.length-1)+intercept;
-  const lastCandle=candles.at(-1);
-  const atrValue=atr(candles);
-  const breakBuffer=Math.max(Math.abs(lastCandle?.close??0)*0.005,atrValue*0.35);
-  // V28 invalidates a support/resistance line only after a meaningful close
-  // through it; do not reject a line merely because its slope is not textbook.
-  if(lastCandle && direction==="LONG" && lastCandle.close<lineAtLast-breakBuffer)return null;
-  if(lastCandle && direction==="SHORT" && lastCandle.close>lineAtLast+breakBuffer)return null;
-  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:0};
+  const len=candles.length,now=candles.at(-1)?.timestamp;
+  if(len<20||now===undefined)return null;
+  const pivots=swings(candles,direction==="SHORT").slice(-5);
+  if(pivots.length<3)return null;
+  const existing=trendlineStore.get(pair),maxAge=7*24*60*60*1000;
+  if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
+    const lastPivot=pivots[pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
+    const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
+    if(deviation<0.02)return{...existing,r2:0.85};
+  }
+  const n=pivots.length,sumX=pivots.reduce((sum,p)=>sum+p.index,0),sumY=pivots.reduce((sum,p)=>sum+p.price,0);
+  const sumXY=pivots.reduce((sum,p)=>sum+p.index*p.price,0),sumX2=pivots.reduce((sum,p)=>sum+p.index*p.index,0);
+  const denominator=n*sumX2-sumX*sumX;
+  if(!denominator)return null;
+  const slope=(n*sumXY-sumX*sumY)/denominator,intercept=(sumY-slope*sumX)/n,yMean=sumY/n;
+  const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-yMean,2),0);
+  const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(slope*p.index+intercept),2),0);
+  const r2=ssTotal===0?0:1-ssResidual/ssTotal;
+  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:r(r2,2)};
   trendlineStore.set(pair,state);
   return state;
 }
@@ -163,7 +164,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
   // During a 1D transition we deliberately watch rather than flip direction early.
   const dailyTransition = d.direction && d.strength === "LOW" && d.spreadContracting;
-  // V28: daily EMA 5/13 chooses direction. Weakening/contracting spread is
+  // V28: daily EMA 8/21 chooses direction. Weakening/contracting spread is
   // diagnostic context only; it must not delay an otherwise valid entry.
   const direction=d.direction;
   const missing:string[]=[];
@@ -193,17 +194,12 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!signalType&&direction)missing.push("stoch_turn_or_extreme");
 
-  // Restore the original 4H EMA diagnostic checks: they are a small directional
-  // confirmation on selected entry types, not a breakout/retest lifecycle.
+  // 4H EMA diagnostics are context only in pasted V28; they must not veto
+  // an otherwise valid trendline + directional StochRSI entry.
   const ema4h=get4HEmaDiagnostic(c);
-  if(signalType && direction==="SHORT" && !ema4h.stage.includes("BEARISH")){
-    missing.push("4h_ema_not_bearish");
-    signalType=null;
-  }
-  if(signalType==="ENTRY_2" && direction==="LONG" && ema4h.stage.includes("BEARISH")){
-    missing.push("4h_ema_bearish");
-    signalType=null;
-  }
+  const emaAdvisory:string[]=[];
+  if(signalType && direction==="SHORT" && !ema4h.stage.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
+  if(signalType==="ENTRY_2" && direction==="LONG" && ema4h.stage.includes("BEARISH"))emaAdvisory.push("4h_ema_bearish");
 
   const rv=rsi(c.map(x=>x.close));
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
@@ -275,7 +271,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     debug.push("[SIGNAL] none — V28 direction lock");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
-  debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
+  debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA8 ${r(d.e8)} | EMA21 ${r(d.e21)} | spread ${d.spread.toFixed(2)}%`);
   debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength}`);
 
   if(!evaluation.direction){
@@ -283,7 +279,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       ? (d.strength==="LOW"&&d.spreadContracting
         ? `[1D TRANSITION] ${d.direction==="LONG"?"BULLISH":"BEARISH"} weakening/turning | WATCH — no new direction until the 1D transition confirms`
         : `[DIRECTION] V28 1D ${d.direction} | 4H is timing/context only`)
-      : "[1D] NEUTRAL | insufficient daily history or EMA5/EMA13 equal");
+      : "[1D] NEUTRAL | insufficient daily history or EMA8/EMA21 equal");
     debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
@@ -325,7 +321,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     stop:priceRound(stop),tp1:priceRound(targets.tp1),tp2:priceRound(targets.tp2),rr:r(actualRr,2),expectedMove:r(Math.abs(targets.tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
     reason:`${evaluation.direction} ${signalType} | V28 trendline proximity + 4H Stoch | 4H Stoch ${st4.k}/${st4.d}`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema5_1d:d.e5,ema13_1d:d.e13,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
+    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema8_1d:d.e8,ema21_1d:d.e21,ema5_1d:d.e8,ema13_1d:d.e21,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
   debug.push(`[SIGNAL] ${s.direction} ${s.type} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} (${targets.tp1Source}) | TP2 ${s.tp2} (${targets.tp2Source}) | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
@@ -387,4 +383,4 @@ export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.ti
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now=Date.now()){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason})}return{active,exited}}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return"TP_HIT";return"ACTIVE"}
-export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),d=dailyTrend(c),st=stoch(q),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";const tactical=tacticalDirection(c);return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema5_1d:d.e5,ema13_1d:d.e13,dailyDirection:d.direction==="LONG"?"BULL":d.direction==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:d.strength,fourHDirection:e8>e21?"BULL":"BEAR",fourHTacticalDirection:tactical.direction==="LONG"?"BULL":tactical.direction==="SHORT"?"BEAR":"NEUTRAL",fourHTacticalLabel:tactical.label,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd}}
+export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),d=dailyTrend(c),st=stoch(q),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";const tactical=tacticalDirection(c);return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema5_1d:d.e8,ema13_1d:d.e21,dailyDirection:d.direction==="LONG"?"BULL":d.direction==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:d.strength,fourHDirection:e8>e21?"BULL":"BEAR",fourHTacticalDirection:tactical.direction==="LONG"?"BULL":tactical.direction==="SHORT"?"BEAR":"NEUTRAL",fourHTacticalLabel:tactical.label,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd}}
