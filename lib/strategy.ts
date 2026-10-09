@@ -95,25 +95,36 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
 
   const currentAtr=atr(candles);
   const tolerance=Math.max(currentAtr*0.2,Math.abs(candles.at(-1)!.close)*0.0015);
+  // A trendline must describe the *current* structure, not an old line that
+  // price crossed weeks ago. Candidate anchors are therefore limited to the
+  // last ~30 days, with the second anchor inside the last 15 days (4H bars).
+  // This is a recency constraint on geometry, not a new trade-entry gate.
+  const earliestAnchor = Math.max(0, len - 180);
+  const latestAnchor = Math.max(earliestAnchor, len - 90);
   let best:{slope:number;intercept:number;anchors:[Swing,Swing];touches:number;violations:number;score:number;span:number}|null=null;
 
   for(let i=0;i<pivots.length-1;i++){
+    const a=pivots[i];
+    if(a.index<earliestAnchor)continue;
     for(let j=i+1;j<pivots.length;j++){
-      const a=pivots[i],b=pivots[j],dx=b.index-a.index;
-      if(dx<=0)continue;
+      const b=pivots[j],dx=b.index-a.index;
+      if(b.index<latestAnchor||dx<=0)continue;
       const slope=(b.price-a.price)/dx;
       const intercept=a.price-slope*a.index;
       let pivotTouches=0,wickTouches=0,violations=0,lastTouchIndex=-Infinity;
 
+      // The two anchor pivots are exact by construction. Count additional
+      // confirmed pivots that genuinely sit on the same line.
       for(const pivot of pivots){
         if(pivot.index<a.index)continue;
         const projected=slope*pivot.index+intercept;
         if(Math.abs(pivot.price-projected)<=tolerance)pivotTouches++;
       }
 
-      // Score real candle wicks as the user does on TradingView. Count at most
-      // one touch every three candles so a cluster cannot inflate the score.
-      // A small ATR-based tolerance accommodates ordinary wick variation.
+      // Validate against closed candle wicks from the first anchor forward.
+      // Resistance cannot repeatedly sit below candle highs; support cannot
+      // repeatedly sit above candle lows. The previous selector merely gave
+      // breaches a tiny score penalty, so a stale/broken line could still win.
       for(let k=a.index;k<len-1;k++){
         const candle=candles[k],wick=isResistance?candle.high:candle.low;
         const projected=slope*k+intercept;
@@ -125,9 +136,17 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
       }
 
       if(pivotTouches<2||wickTouches<3)continue;
-      const touches=wickTouches;
       const span=b.index-a.index;
-      const score=touches*100+pivotTouches*30-violations*2+Math.min(span/len,1)*10;
+      // A line with too many breaches is broken, not a valid support/resistance
+      // line. Permit a few noisy wicks, but reject repeated closes/wick breaks.
+      const maxViolations=Math.max(3,Math.ceil(span*0.04));
+      if(violations>maxViolations)continue;
+
+      const touches=wickTouches;
+      // Touches matter, but fewer breaches and a recent second anchor matter
+      // more than collecting touches on an old, obsolete line.
+      const recency=(b.index-latestAnchor)/Math.max(1,len-latestAnchor);
+      const score=touches*100+pivotTouches*30-violations*40+Math.min(span/len,1)*10+recency*5;
       if(!best||score>best.score||
         (score===best.score&&touches>best.touches)||
         (score===best.score&&touches===best.touches&&span>best.span)){
@@ -135,6 +154,7 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
       }
     }
   }
+
   if(!best)return null;
 
   const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-pivots.reduce((s,q)=>s+q.price,0)/pivots.length,2),0);
@@ -371,7 +391,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TRIGGER] 4H Stoch K ${st4.k.toFixed(1)} / D ${st4.d.toFixed(1)} | ${trendlineType} distance ${Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2):"—"}% | ENTRY_1=${evaluation.trigger.entry1} ENTRY_2=${evaluation.trigger.entry2}`);
   const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
   if(swingDebug){
-    debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
+    // Operator-facing logs show only the two candle-wick anchors. All intervening
+    // candle wicks are still scored internally; there is no need to print every
+    // pivot and flood the dashboard with 15–18 points.
+    debug.push(`[TL POINTS] ${pair} | anchors: ${JSON.stringify(swingDebug.anchors)} | wick touches ${swingDebug.touches} | breaches ${swingDebug.violations}`);
     debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
