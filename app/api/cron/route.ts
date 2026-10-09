@@ -296,7 +296,7 @@ export async function GET(request:Request){
     return;
   }
   try{
-    await sendAlert({symbol:signal.pair,state:"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,signalClass:signal.signalClass,sizeMultiplier:signal.sizeMultiplier,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",context:signal.context,jarvis:jarvisReview});
+    await sendAlert({symbol:signal.pair,state:"ENTRY",price:signal.entry,bias:signal.direction,stopLoss:signal.stop,takeProfit:signal.tp2,takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,signalClass:signal.signalClass,sizeMultiplier:signal.sizeMultiplier,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",context:signal.context,jarvis:jarvisReview});
   }catch(e){await releaseTelegramAlert(alertKey);throw e;}
   await appendSignalHistory(signal);
   stateSignal=signal;
