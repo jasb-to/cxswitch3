@@ -141,7 +141,10 @@ function trendlineCandidateScore(
   const recencyScore=Math.max(0,12-latestAge/5);
   const spanScore=Math.min(10,Math.log2(span+1)*1.5);
   const broken=breakoutIndex!==null;
-  const breakRecencyBonus=broken?Math.max(0,8-(candles.length-1-breakoutIndex!)/4):0;
+  // A recent, well-validated line that has just broken is especially relevant:
+  // don't let a fresh post-break pivot automatically hide the broken structure.
+  const barsSinceBreak=broken?candles.length-1-breakoutIndex!:Infinity;
+  const breakRecencyBonus=broken?Math.max(0,35-barsSinceBreak*2):0;
   const score=distinctTouches.length*10+pivotTouches.length*5+middleTouches.length*4+
     recencyScore+spanScore+breakRecencyBonus-wickBreaches*12-closeBreaches*24-bodyIntersections*1.5;
   return {
@@ -363,8 +366,16 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
     ?"RISING_SUPPORT_BREAKDOWN"
     :localMovePct< -moveThresholdPct
       ?"FALLING_RESISTANCE_BREAKOUT":"NO_CLEAR_LOCAL_MOVE";
-  const breakSetupLine=expectedBreakLine==="RISING_SUPPORT_BREAKDOWN"
-    ?support:expectedBreakLine==="FALLING_RESISTANCE_BREAKOUT"?resistance:null;
+  // If price has just broken a valid line, report that structure first.
+  // The post-break selloff/bounce can reverse the last-12-bar slope, so using
+  // only current net movement would select the opposite line at exactly the wrong time.
+  const recentBrokenLines=[support,resistance]
+    .filter((line):line is TrendlineState=>!!line&&line.status==="BROKEN"&&
+      line.breakoutIndex!==null&&c.length-1-line.breakoutIndex<=12)
+    .sort((a,b)=>(b.breakoutIndex??-1)-(a.breakoutIndex??-1));
+  const breakSetupLine=recentBrokenLines[0]??
+    (expectedBreakLine==="RISING_SUPPORT_BREAKDOWN"
+      ?support:expectedBreakLine==="FALLING_RESISTANCE_BREAKOUT"?resistance:null);
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
     pair,
