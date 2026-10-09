@@ -128,16 +128,19 @@ function trendlineCandidateScore(
   if(wickBreaches>Math.max(2,Math.floor(span*0.035)))return null;
   if(closeBreaches>Math.max(1,Math.floor(span*0.015)))return null;
   const distinctTouches:Swing[]=[];
-  // Short, fresh structures can have valid reactions only 1–2 candles apart.
-  // Keep those distinct on micro trendlines; use wider spacing for older lines.
-  const touchSpacing=span<8?1:3;
+  // Collapse adjacent candles around the same reaction into one touch. The two
+  // anchors and the required independent middle reaction remain distinct points.
+  const touchSpacing=3;
   for(const touch of validTouches){
     const last=distinctTouches.at(-1);
     if(!last||touch.index-last.index>=touchSpacing)distinctTouches.push(touch);
     else if(Math.abs(touch.price-lineAt(slope,intercept,touch.index))<
       Math.abs(last.price-lineAt(slope,intercept,last.index)))distinctTouches[distinctTouches.length-1]=touch;
   }
-  if(distinctTouches.length<3)return null;
+  const selectedMiddleTouch=middleTouches
+    .sort((x,y)=>Math.abs(x.price-lineAt(slope,intercept,x.index))-Math.abs(y.price-lineAt(slope,intercept,y.index)))[0];
+  const touchIndices=new Set([...distinctTouches.map(t=>t.index),a.index,b.index,selectedMiddleTouch.index]);
+  if(touchIndices.size<3)return null;
   const pivotList=trendlinePivots(candles,high).filter(p=>p.index>=a.index&&p.index<=validationEndIndex);
   const pivotTouches=pivotList.filter(p=>Math.abs(p.price-lineAt(slope,intercept,p.index))<=tolerance);
   const latestAge=candles.length-1-b.index;
@@ -150,13 +153,12 @@ function trendlineCandidateScore(
   // A recent confirmed break should outweigh several extra touches on a stale line.
   const barsSinceBreak=broken?candles.length-1-breakoutIndex!:Infinity;
   const breakRecencyBonus=broken?Math.max(0,60-barsSinceBreak*3):0;
-  const score=distinctTouches.length*10+pivotTouches.length*5+middleTouches.length*4+
+  const score=touchIndices.size*10+pivotTouches.length*5+middleTouches.length*4+
     recencyScore+spanScore+breakRecencyBonus-wickBreaches*12-closeBreaches*24-bodyIntersections*1.5;
   return {
     slope,intercept,pivots:distinctTouches,lastUpdated:candles.at(-1)!.timestamp,
-    direction:high?"LONG":"SHORT",r2:0,anchors:[a,b],middleTouch:middleTouches
-      .sort((x,y)=>Math.abs(x.price-lineAt(slope,intercept,x.index))-Math.abs(y.price-lineAt(slope,intercept,y.index)))[0],
-    touchCount:distinctTouches.length,wickBreaches,closeBreaches,score,
+    direction:high?"LONG":"SHORT",r2:0,anchors:[a,b],middleTouch:selectedMiddleTouch,
+    touchCount:touchIndices.size,wickBreaches,closeBreaches,score,
     status:broken?"BROKEN":"INTACT",breakoutIndex,breakoutPrice,
     breakoutDirection:broken?(high?"LONG":"SHORT"):null,validationEndIndex
   };
