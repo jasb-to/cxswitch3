@@ -340,13 +340,19 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
   const recent=c.slice(-12);
   const first=recent[0]?.close??0,last=recent.at(-1)?.close??0;
   const localMovePct=first?((last-first)/first)*100:0;
+  const expectedBreakLine=localMovePct>=0
+    ?"RISING_SUPPORT_BREAKDOWN":"FALLING_RESISTANCE_BREAKOUT";
+  const breakSetupLine=localMovePct>=0?support:resistance;
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
     pair,
     direction,
     localMovePct,
-    expectedBreakLine:localMovePct>=0?"RISING_SUPPORT_BREAKDOWN":"FALLING_RESISTANCE_BREAKOUT",
-    selected:pack(state),
+    expectedBreakLine,
+    // The candidate selected for expected break direction is separate from
+    // the daily-bias line, so diagnostics cannot silently confuse the two.
+    selected:pack(breakSetupLine),
+    dailyBiasLine:pack(state),
     risingSupport:pack(support),
     fallingResistance:pack(resistance),
     pivots:state?.pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??[],
