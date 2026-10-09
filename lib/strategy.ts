@@ -326,8 +326,10 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
   // Research both geometries independently of the daily bias. A rising move
   // should be tested against rising support (potential downside break); a
   // falling move against falling resistance (potential upside break).
-  const support=getTrendline(pair,c,"SHORT");
-  const resistance=getTrendline(pair,c,"LONG");
+  // The direction argument is the prevailing move: LONG selects rising
+  // swing-low support; SHORT selects falling swing-high resistance.
+  const support=getTrendline(pair,c,"LONG");
+  const resistance=getTrendline(pair,c,"SHORT");
   const pack=(line:TrendlineState|null)=>line?({
     anchors:line.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
     middleTouch:{i:line.middleTouch.index,p:line.middleTouch.price,t:line.middleTouch.timestamp},
