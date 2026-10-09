@@ -263,13 +263,15 @@ export async function GET(request:Request){
   // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
   snapshot.fourH513=ema513;
-  const dailyPrice=Number(snapshot.price||price),dailyE5=Number(snapshot.ema5_1d),dailyE13=Number(snapshot.ema13_1d),dailySpread=Math.abs(dailyE5-dailyE13)/Math.max(dailyPrice,1e-12)*100;
-  snapshot.dailyDirection=dailySpread<=0.5?"NEUTRAL":dailyE5>dailyE13?"BULL":"BEAR";
+  const canonicalDailyDirection=String(snapshot.dailyDirection||"NEUTRAL");
+  // Keep dashboard/Jarvis daily bias identical to strategy.ts dailyTrend(): direct EMA5/13 relationship.
+  // Do not reapply the retired 0.5% neutral threshold here.
+  snapshot.dailyDirection=canonicalDailyDirection;
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
-  snapshot.dailyLive={state:snapshot.dailyDirection,candidateState:snapshot.dailyDirection,direction:snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
+  snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"?"LONG":canonicalDailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
-  if(pair==="BTC"&&gateDebug)console.log(`[GATES] BTC — ${gateDebug.slice(8)}`);
+  if(gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
   dbg.filter(x=>x.startsWith("[SWINGS]")||x.startsWith("[TL]")).forEach(x=>console.log(x));
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
