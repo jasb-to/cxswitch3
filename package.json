@@ -6,7 +6,8 @@
   "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "test": "node --test tests/*.test.cjs",
+    "build": "pnpm test && next build",
     "start": "next start",
     "lint": "eslint ."
   },
