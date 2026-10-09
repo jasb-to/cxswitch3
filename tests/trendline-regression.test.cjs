@@ -19,6 +19,7 @@ require.extensions[".ts"] = (module, filename) => {
 };
 
 const strategy = require("../lib/strategy.ts");
+const emaDiagnostic = require("../lib/ema-diagnostic.ts");
 const jarvis = require("../lib/jarvis.ts");
 const FOUR_HOURS = 4 * 60 * 60 * 1000;
 
@@ -55,6 +56,26 @@ function highTrendlineCandles(direction, count = 40) {
     close: 116,
     volume: 1,
   }));
+}
+
+function entry2VetoCandles() {
+  const count = 28 * 6;
+  const pivotIndexes = [130, 138, 146, 154, 162];
+  const pivotLows = [108, 109, 110, 111, 112];
+  const start = Date.UTC(2026, 0, 1);
+  return Array.from({ length: count }, (_, i) => {
+    const close = 100 + i * 0.1 + 0.2 * Math.sin((i + 2) * Math.PI / 2);
+    const pivotIndex = pivotIndexes.indexOf(i);
+    const low = pivotIndex >= 0 ? pivotLows[pivotIndex] : 100 + i * 0.1 - 2;
+    return {
+      timestamp: start + i * FOUR_HOURS,
+      open: close - 0.25,
+      high: close + 2,
+      low,
+      close,
+      volume: 1,
+    };
+  });
 }
 
 function dailyBullishWithDescendingRecentLows() {
@@ -138,32 +159,39 @@ test("SOL-style inverted trendline produces no signal and explicit invalid debug
   assert.match(trendline, /r2 /);
 });
 
-test("Jarvis explains an opposed 4H EMA ENTRY_2 veto instead of generic positioning", () => {
-  const originalEvaluateGates = strategy.evaluateGates;
-  strategy.evaluateGates = () => ({
-    direction: "LONG",
-    zone: { valid: true, type: "TRENDLINE_SUPPORT", price: 109.8, distancePct: 0.4 },
-    trendlineSlope: 0.1,
-    trigger: { entry1: false, entry2: false, signalType: null },
-    exhaustion: null,
-    rr: null,
-    stopCalc: null,
-    missing: ["4h_ema_opposed"],
-    allPassed: false,
-    dailyTransition: false,
-    emaAdvisory: [],
-  });
+test("opposed 4H EMA blocks a real ENTRY_2 gate and Jarvis narrates the veto", () => {
+  const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
+  const candles = entry2VetoCandles();
+  const pair = "SOL-ENTRY2-EMA-REGRESSION";
+  const line = strategy.getTrendline(pair, candles, "LONG");
+  assert.ok(line);
+  assert.ok(line.slope > 0);
+  const currentPrice = line.slope * (candles.length - 1) + line.intercept;
 
   try {
+    // Prove the fixture would otherwise qualify as ENTRY_2 at the same price.
+    emaDiagnostic.get4HEmaDiagnostic = () => ({ label: "BULLISH MEDIUM", direction: "BULLISH" });
+    const aligned = strategy.evaluateGates(pair, candles, currentPrice);
+    assert.equal(aligned.direction, "LONG");
+    assert.equal(aligned.trigger.entry2, true);
+    assert.equal(aligned.trigger.signalType, "ENTRY_2");
+
+    // Flip only the diagnostic state; the exact same candles and price must be vetoed.
+    emaDiagnostic.get4HEmaDiagnostic = () => ({ label: "BEARISH MEDIUM", direction: "BEARISH" });
+    const opposed = strategy.evaluateGates(pair, candles, currentPrice);
+    assert.equal(opposed.trigger.entry2, false);
+    assert.equal(opposed.trigger.signalType, null);
+    assert.ok(opposed.missing.includes("4h_ema_opposed"));
+
     const narration = jarvis.narratePairState(
       "SOL",
       {
-        currentPrice: 109.84,
+        currentPrice,
         dailyDirection: "BULL",
         fourHDirection: "BEAR",
         fourH513: { label: "BEARISH MEDIUM" },
       },
-      trendlineCandles("ascending"),
+      candles,
       undefined,
     );
     assert.match(narration, /The 1D is bullish/);
@@ -171,6 +199,6 @@ test("Jarvis explains an opposed 4H EMA ENTRY_2 veto instead of generic position
     assert.match(narration, /ENTRY_2 blocked until the 4H turns bullish/);
     assert.doesNotMatch(narration, /watching for price to come into position/i);
   } finally {
-    strategy.evaluateGates = originalEvaluateGates;
+    emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
   }
 });
