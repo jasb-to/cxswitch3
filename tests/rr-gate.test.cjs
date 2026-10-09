@@ -18,114 +18,71 @@ loaded.require = (id) => id === "./ema-diagnostic"
   ? { get4HEmaDiagnostic: () => ({ turning: false, spread: 0, stage: "NEUTRAL", label: "NEUTRAL" }) }
   : originalRequire(id);
 loaded._compile(compiled, filename);
-const { evaluateTp2RewardRisk, calculateStop, structureTargets, calculateLiquidationBufferPct, passesLiquidationBuffer } = loaded.exports;
+const { calculateStop, calculateLiquidationBufferPct, structureTargets, CURRENT_SIGNAL_VERSION } = loaded.exports;
 
-function candle(index, { high = 0.0845, low = 0.0835, close = 0.084, open = close } = {}) {
+function candle(index, { high = 100.2, low = 99.8, close = 100, open = close } = {}) {
   return { timestamp: index * 14_400_000, open, high, low, close, volume: 1 };
 }
 
-test("TP2 RR 1.5 passes the minimum", () => {
-  const result = evaluateTp2RewardRisk("LONG", 100, 98, 103);
-  assert.equal(result.rr, 1.5);
-  assert.equal(result.passes, true);
+test("signal engine identifies itself as restored V28", () => {
+  assert.equal(CURRENT_SIGNAL_VERSION, 28);
 });
 
-test("TP2 RR below 1.5 is blocked", () => {
-  const result = evaluateTp2RewardRisk("LONG", 100, 98, 102.8);
-  assert.ok(Math.abs(result.rr - 1.4) < 1e-9);
-  assert.equal(result.passes, false);
+test("stop uses the highest high from the last 10 closed candles and ignores the open candle", () => {
+  const candles = Array.from({ length: 12 }, (_, i) => candle(i));
+  candles[10] = candle(10, { high: 108, low: 99.8, close: 100 });
+  candles[11] = candle(11, { high: 150, low: 99.8, close: 100 });
+  const result = calculateStop("SHORT", 100, 2, candles);
+  assert.equal(result.stop, 108);
+  assert.equal(result.calc.structuralAnchor, 108);
+  assert.equal(result.valid, true);
 });
 
-test("TP2 RR affected only by floating-point noise at 1.5 passes", () => {
-  const result = evaluateTp2RewardRisk("LONG", 100, 98, 102.99999999999999);
-  assert.ok(result.rr < 1.5);
-  assert.ok(result.rr > 1.5 - 1e-10);
-  assert.equal(result.passes, true);
-});
-
-test("TP2 RR meaningfully below 1.5 remains blocked despite tolerance", () => {
-  const result = evaluateTp2RewardRisk("LONG", 100, 98, 102.799999);
-  assert.equal(result.passes, false);
-});
-
-test("short stop uses the highest high from the last 10 closed candles, not the open candle", () => {
-  const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 0.085, low: 0.083, close: 0.084 }));
-  candles[10] = candle(10, { high: 0.08693, low: 0.083, close: 0.084 });
-  candles[11] = candle(11, { high: 0.2, low: 0.083, close: 0.084 });
-  const result = calculateStop("SHORT", 0.08431, 0.084, 0.0005, candles);
-  assert.equal(result.stop, 0.08693);
-  assert.equal(result.calc.structuralAnchor, 0.08693);
-});
-
-test("when recent swing is close, the stop respects the 1.5 ATR floor", () => {
-  const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 100.2, low: 99.8, close: 100 }));
-  const result = calculateStop("SHORT", 100, 100, 2, candles);
+test("when the recent swing is close, the stop respects the 1.5 ATR floor", () => {
+  const candles = Array.from({ length: 12 }, (_, i) => candle(i));
+  const result = calculateStop("SHORT", 100, 2, candles);
   assert.equal(result.stop, 103);
+  assert.equal(result.valid, true);
 });
 
-test("low ATR cannot reduce TP1 minimum below 3.5%", () => {
-  const entry = 100;
-  const candles = Array.from({ length: 24 }, (_, i) => candle(i, { high: 101, low: 99, close: 100 }));
-  const targets = structureTargets("LONG", entry, candles, 0.01, 98);
-  assert.equal(targets.tp1, 103.5);
-  assert.ok(targets.tp2 >= 107);
+test("TP1 is the nearest profit-side pivot and TP2 is the next pivot beyond it", () => {
+  const candles = Array.from({ length: 30 }, (_, i) => candle(i, { high: 101, low: 99, close: 100 }));
+  candles[8] = candle(8, { high: 110, low: 99, close: 100 });
+  candles[15] = candle(15, { high: 120, low: 99, close: 100 });
+  const targets = structureTargets("LONG", 100, candles);
+  assert.equal(targets.tp1, 110);
+  assert.equal(targets.tp2, 120);
+  assert.equal(targets.tp1Source, "nearest 4H swing pivot");
+  assert.equal(targets.tp2Source, "next 4H swing pivot");
 });
 
-test("DOGE-style short selects structural TP1 and TP2 at the required distances", () => {
-  const entry = 0.08431;
-  const candles = Array.from({ length: 25 }, (_, i) => candle(i));
-  candles[5] = candle(5, { high: 0.0845, low: 0.081, close: 0.083 });
-  candles[10] = candle(10, { high: 0.0845, low: 0.078, close: 0.083 });
-  candles[15] = candle(15, { high: 0.0845, low: 0.077, close: 0.083 });
-  const stop = 0.08693;
-  const targets = structureTargets("SHORT", entry, candles, 0.0005, stop);
-  assert.ok((entry - targets.tp1) / entry >= 0.035);
-  assert.ok((entry - targets.tp2) / entry >= 0.07);
-  assert.ok(targets.tp2 < targets.tp1);
-  assert.ok(evaluateTp2RewardRisk("SHORT", entry, stop, targets.tp2).rr >= 1.5);
+test("short targets choose the nearest lower pivot then the next lower pivot", () => {
+  const candles = Array.from({ length: 30 }, (_, i) => candle(i, { high: 101, low: 99, close: 100 }));
+  candles[8] = candle(8, { high: 101, low: 90, close: 100 });
+  candles[15] = candle(15, { high: 101, low: 80, close: 100 });
+  const targets = structureTargets("SHORT", 100, candles);
+  assert.equal(targets.tp1, 90);
+  assert.equal(targets.tp2, 80);
 });
 
-test("DOGE short at 15x remains blocked when buffer is below the 0.5% minimum", () => {
+test("20x liquidation distance is diagnostic and does not invalidate a V28 stop", () => {
   const entry = 0.08524;
   const stop = 0.08964;
-  const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 0.088, low: 0.084, close: 0.085 }));
+  const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 0.086, low: 0.084, close: entry }));
   candles[10] = candle(10, { high: stop, low: 0.084, close: entry });
-  const result = calculateStop("SHORT", entry, 0.085, 0.0005, candles);
-  const expectedLiq = entry * (1 + 1 / 15 - 0.01);
-  const expectedBuffer = (expectedLiq - stop) / expectedLiq * 100;
+  const result = calculateStop("SHORT", entry, 0.0005, candles);
+  const expectedLiq = entry * (1 + 1 / 20 - 0.01);
+  const expectedBuffer = (expectedLiq - result.stop) / expectedLiq * 100;
   assert.equal(result.stop, stop);
   assert.ok(Math.abs(result.calc.liquidationPrice - expectedLiq) < 0.00001);
   assert.ok(Math.abs(result.calc.liquidationBufferPct - expectedBuffer) < 0.01);
-  assert.ok(result.calc.liquidationBufferPct > 0);
-  assert.ok(result.calc.liquidationBufferPct < 0.5);
-  assert.equal(result.valid, false);
-  assert.equal(passesLiquidationBuffer(result.calc.liquidationBufferPct), false);
+  assert.ok(result.calc.liquidationBufferPct < 0);
+  assert.equal(result.valid, true);
 });
 
-test("15x short with entry 100 and stop 108 is blocked beyond modelled liquidation", () => {
-  const liq = 100 * (1 + 1 / 15 - 0.01);
-  const buffer = calculateLiquidationBufferPct("SHORT", 100, 108);
-  assert.ok(Math.abs(liq - 105.6666666667) < 1e-8);
-  assert.ok(buffer < 0);
-  assert.equal(passesLiquidationBuffer(buffer), false);
-});
-
-test("15x short with entry 100 and stop 105 passes the 0.5% liquidation buffer", () => {
-  const liq = 100 * (1 + 1 / 15 - 0.01);
+test("liquidation diagnostic defaults to 20x", () => {
+  const expectedLiq = 100 * (1 + 1 / 20 - 0.01);
   const buffer = calculateLiquidationBufferPct("SHORT", 100, 105);
-  assert.ok(Math.abs(liq - 105.6666666667) < 1e-8);
-  assert.ok(Math.abs(buffer - ((liq - 105) / liq * 100)) < 1e-9);
-  assert.ok(buffer >= 0.5);
-  assert.equal(passesLiquidationBuffer(buffer), true);
-});
-
-test("ETH-like short at 15x has a positive buffer for entry 2572 and stop 2585", () => {
-  const entry = 2572;
-  const stop = 2585;
-  const liq = entry * (1 + 1 / 15 - 0.01);
-  const buffer = calculateLiquidationBufferPct("SHORT", entry, stop);
-  assert.ok(Math.abs(liq - 2717.7466666667) < 1e-6);
-  assert.ok(Math.abs(buffer - ((liq - stop) / liq * 100)) < 1e-9);
-  assert.ok(buffer > 4.8 && buffer < 5.0);
-  assert.equal(passesLiquidationBuffer(buffer), true);
+  assert.ok(Math.abs(expectedLiq - 104) < 1e-9);
+  assert.ok(Math.abs(buffer - ((expectedLiq - 105) / expectedLiq * 100)) < 1e-9);
 });
