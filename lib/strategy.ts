@@ -89,6 +89,10 @@ function trendlineCandidateScore(
   const span=b.index-a.index;
   if(span<TRENDLINE_MIN_ANCHOR_GAP)return null;
   const slope=(b.price-a.price)/span;
+  // Draw the line against the current move: bearish-break setups use rising
+  // support (swing lows); bullish-break setups use falling resistance (swing highs).
+  // A flat or wrong-way line is not the structure this strategy is trying to break.
+  if((high&&slope>=0)||(!high&&slope<=0))return null;
   const intercept=a.price-slope*a.index;
   const currentPrice=candles.at(-1)?.close??b.price;
   const tolerance=Math.max(atrNow*0.28,currentPrice*0.0012);
@@ -142,7 +146,9 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
   const len=c.length,now=c.at(-1)?.timestamp;
   if(len<20||now===undefined)return null;
-  const high=direction==="SHORT";
+  // Expected break direction determines which side of price to draw:
+  // LONG = falling resistance line to break upward; SHORT = rising support line to break downward.
+  const high=direction==="LONG";
   const allPivots=trendlinePivots(c,high).filter(p=>p.index>=Math.max(0,len-TRENDLINE_LOOKBACK_BARS));
   if(allPivots.length<3)return null;
   const atrNow=atr(c);
@@ -256,7 +262,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const tl=direction?getTrendline(pair,c,direction):null;
   const trendlineSlope=tl?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
-  const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
+  const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_RESISTANCE":"TRENDLINE_SUPPORT",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
   if(!zoneValue)missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
