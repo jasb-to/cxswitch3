@@ -64,102 +64,30 @@ function trendlinePivots(c:Candle[],high:boolean):Swing[]{
   }
   return out;
 }
-export interface TrendlineState {
-  slope:number;
-  intercept:number;
-  pivots:Swing[];
-  anchors:[Swing,Swing];
-  touches:number;
-  violations:number;
-  lastUpdated:number;
-  direction:Direction;
-  r2:number;
-}
-
-/**
- * Select a real wick-anchored trendline, rather than regressing the pivots.
- * Resistance is fitted to swing highs and should not be materially exceeded
- * by subsequent highs; support is fitted to swing lows and should not be
- * materially undercut by subsequent lows. The line is recomputed against the
- * current candle indices on every scan, so a moving candle window cannot
- * leave stale slope/intercept coordinates in cache.
- */
+export interface TrendlineState{slope:number;intercept:number;pivots:Swing[];lastUpdated:number;direction:Direction;r2:number}
+const trendlineStore=new Map<string,TrendlineState>();
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
   const len=candles.length,now=candles.at(-1)?.timestamp;
   if(len<20||now===undefined)return null;
-
-  const isResistance=direction==="SHORT";
-  const allPivots=trendlinePivots(candles,isResistance);
-  const pivots=allPivots.slice(-18);
+  const pivots=trendlinePivots(candles,direction==="SHORT").slice(-5);
   if(pivots.length<3)return null;
-
-  const latestPivot=allPivots.at(-1);
-  if(!latestPivot)return null;
-  const currentAtr=atr(candles);
-  const tolerance=Math.max(currentAtr*0.3,Math.abs(candles.at(-1)!.close)*0.002);
-  // The line must terminate at the latest confirmed pivot. Choosing an older
-  // second anchor can produce a mathematically neat but visually irrelevant
-  // line (as happened with LINK support).
-  const earliestAnchor=Math.max(0,len-180);
-  let best:{slope:number;intercept:number;anchors:[Swing,Swing];middleTouch:Swing;touches:number;violations:number;score:number;span:number}|null=null;
-
-  for(const a of pivots){
-    if(a.index<earliestAnchor||a.index>=latestPivot.index)continue;
-    const b=latestPivot,dx=b.index-a.index;
-    if(dx<=0)continue;
-    const slope=(b.price-a.price)/dx;
-    const intercept=a.price-slope*a.index;
-    let wickTouches=0,violations=0,lastTouchIndex=-Infinity;
-    const touchesBetween:Swing[]=[];
-
-    // Count separated wick touches on the line, but explicitly require at
-    // least one touch between the two pivot anchors. Keep the best-supported
-    // middle wick available for the chart instead of returning every pivot.
-    for(let k=a.index;k<len-1;k++){
-      const candle=candles[k],wick=isResistance?candle.high:candle.low;
-      const projected=slope*k+intercept;
-      if(Math.abs(wick-projected)<=tolerance&&k-lastTouchIndex>=3){
-        wickTouches++;
-        lastTouchIndex=k;
-        if(k>a.index&&k<b.index)touchesBetween.push({index:k,price:wick,timestamp:candle.timestamp});
-      }
-      if(k>a.index&&(isResistance?candle.high>projected+tolerance:candle.low<projected-tolerance))violations++;
-    }
-
-    if(touchesBetween.length===0)continue;
-    const span=b.index-a.index;
-    const maxViolations=Math.max(3,Math.ceil(span*0.04));
-    if(violations>maxViolations)continue;
-
-    const midpoint=(a.index+b.index)/2;
-    const middleTouch=[...touchesBetween].sort((x,y)=>Math.abs(x.index-midpoint)-Math.abs(y.index-midpoint))[0];
-    const pivotTouches=pivots.filter(p=>p.index>=a.index&&p.index<=b.index&&Math.abs(p.price-(slope*p.index+intercept))<=tolerance).length;
-    const score=wickTouches*100+pivotTouches*30-violations*40+Math.min(span/len,1)*10;
-    if(!best||score>best.score||
-      (score===best.score&&wickTouches>best.touches)||
-      (score===best.score&&wickTouches===best.touches&&span>best.span)){
-      best={slope,intercept,anchors:[a,b],middleTouch,touches:wickTouches,violations,score,span};
-    }
+  const existing=trendlineStore.get(pair),maxAge=7*24*60*60*1000;
+  if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
+    const lastPivot=pivots[pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
+    const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
+    if(deviation<0.02)return{...existing,r2:0.85};
   }
-
-  if(!best)return null;
-
-  const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-pivots.reduce((s,q)=>s+q.price,0)/pivots.length,2),0);
-  const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(best!.slope*p.index+best!.intercept),2),0);
+  const n=pivots.length,sumX=pivots.reduce((sum,p)=>sum+p.index,0),sumY=pivots.reduce((sum,p)=>sum+p.price,0);
+  const sumXY=pivots.reduce((sum,p)=>sum+p.index*p.price,0),sumX2=pivots.reduce((sum,p)=>sum+p.index*p.index,0);
+  const denominator=n*sumX2-sumX*sumX;
+  if(!denominator)return null;
+  const slope=(n*sumXY-sumX*sumY)/denominator,intercept=(sumY-slope*sumX)/n,yMean=sumY/n;
+  const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-yMean,2),0);
+  const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(slope*p.index+intercept),2),0);
   const r2=ssTotal===0?0:1-ssResidual/ssTotal;
-  return{
-    slope:best.slope,
-    intercept:best.intercept,
-    // Only three meaningful points are exposed to the chart: first anchor,
-    // intermediate supporting wick touch, and latest confirmed pivot.
-    pivots:[best.anchors[0],best.middleTouch,best.anchors[1]],
-    anchors:best.anchors,
-    touches:best.touches,
-    violations:best.violations,
-    lastUpdated:now,
-    direction,
-    r2:r(r2,2)
-  };
+  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:r(r2,2)};
+  trendlineStore.set(pair,state);
+  return state;
 }
 function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
@@ -318,15 +246,13 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
+  const pivots=swings(c,direction==="SHORT").slice(-2);
   const state=getTrendline(pair,c,direction);
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
     pair,
     direction,
-    pivots:state?.pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??[],
-    anchors:state?.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??[],
-    touches:state?.touches??0,
-    violations:state?.violations??0,
+    pivots:pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
     slope:state?.slope??null,
     intercept:state?.intercept??null,
     priceAtCurrent
@@ -380,10 +306,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TRIGGER] 4H Stoch K ${st4.k.toFixed(1)} / D ${st4.d.toFixed(1)} | ${trendlineType} distance ${Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2):"—"}% | ENTRY_1=${evaluation.trigger.entry1} ENTRY_2=${evaluation.trigger.entry2}`);
   const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
   if(swingDebug){
-    // Operator-facing logs show only the two candle-wick anchors. All intervening
-    // candle wicks are still scored internally; there is no need to print every
-    // pivot and flood the dashboard with 15–18 points.
-    debug.push(`[TL POINTS] ${pair} | anchors: ${JSON.stringify(swingDebug.anchors)} | wick touches ${swingDebug.touches} | breaches ${swingDebug.violations}`);
+    debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
     debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
