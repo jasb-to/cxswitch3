@@ -323,10 +323,30 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
   const state=getTrendline(pair,c,direction);
+  // Research both geometries independently of the daily bias. A rising move
+  // should be tested against rising support (potential downside break); a
+  // falling move against falling resistance (potential upside break).
+  const support=getTrendline(pair,c,"LONG");
+  const resistance=getTrendline(pair,c,"SHORT");
+  const pack=(line:TrendlineState|null)=>line?({
+    anchors:line.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    middleTouch:{i:line.middleTouch.index,p:line.middleTouch.price,t:line.middleTouch.timestamp},
+    touchCount:line.touchCount,wickBreaches:line.wickBreaches,
+    closeBreaches:line.closeBreaches,score:line.score,
+    slope:line.slope,priceAtCurrent:line.slope*(c.length-1)+line.intercept
+  }):null;
+  const recent=c.slice(-12);
+  const first=recent[0]?.close??0,last=recent.at(-1)?.close??0;
+  const localMovePct=first?((last-first)/first)*100:0;
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
     pair,
     direction,
+    localMovePct,
+    expectedBreakLine:localMovePct>=0?"RISING_SUPPORT_BREAKDOWN":"FALLING_RESISTANCE_BREAKOUT",
+    selected:pack(state),
+    risingSupport:pack(support),
+    fallingResistance:pack(resistance),
     pivots:state?.pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??[],
     anchors:state?.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??null,
     middleTouch:state?{i:state.middleTouch.index,p:state.middleTouch.price,t:state.middleTouch.timestamp}:null,
@@ -389,7 +409,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   if(swingDebug){
     debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
     debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
-    debug.push(`[TL VALIDATION] ${pair} | anchors ${JSON.stringify(swingDebug.anchors)} | middle ${JSON.stringify(swingDebug.middleTouch)} | touches ${swingDebug.touchCount} | wickBreaches ${swingDebug.wickBreaches} | closeBreaches ${swingDebug.closeBreaches} | score ${swingDebug.score}`);
+    debug.push(`[TL VALIDATION] ${pair} | localMove12 ${swingDebug.localMovePct.toFixed(2)}% | expected ${swingDebug.expectedBreakLine} | selected ${JSON.stringify(swingDebug.selected)} | risingSupport ${JSON.stringify(swingDebug.risingSupport)} | fallingResistance ${JSON.stringify(swingDebug.fallingResistance)}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
