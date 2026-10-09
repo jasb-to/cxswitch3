@@ -236,7 +236,7 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
 
   const dir=evaluation.direction;
   const distancePct=evaluation.zone?.distancePct??Infinity;
-  const trendText=dir==="LONG"?"descending resistance":"ascending support";
+  const trendText=dir==="LONG"?"ascending support":"descending resistance";
   const st=evaluation.trigger;
   const q=c.map(x=>x.close);
   const rawStoch=stochState(q);
