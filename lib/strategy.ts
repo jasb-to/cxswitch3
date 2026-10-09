@@ -153,7 +153,7 @@ function trendlineCandidateScore(
   // A recent confirmed break should outweigh several extra touches on a stale line.
   const barsSinceBreak=broken?candles.length-1-breakoutIndex!:Infinity;
   const breakRecencyBonus=broken?Math.max(0,60-barsSinceBreak*3):0;
-  const score=touchIndices.size*10+pivotTouches.length*5+middleTouches.length*4+
+  const score=touchIndices.size*10+pivotTouches.length*5+4+
     recencyScore+spanScore+breakRecencyBonus-wickBreaches*12-closeBreaches*24-bodyIntersections*1.5;
   return {
     slope,intercept,pivots:distinctTouches,lastUpdated:candles.at(-1)!.timestamp,
