@@ -103,25 +103,31 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
       if(dx<=0)continue;
       const slope=(b.price-a.price)/dx;
       const intercept=a.price-slope*a.index;
-      let touches=0,violations=0;
+      let pivotTouches=0,wickTouches=0,violations=0,lastTouchIndex=-Infinity;
 
       for(const pivot of pivots){
         if(pivot.index<a.index)continue;
         const projected=slope*pivot.index+intercept;
-        if(Math.abs(pivot.price-projected)<=tolerance)touches++;
-        if(isResistance ? pivot.price>projected+tolerance : pivot.price<projected-tolerance)violations++;
+        if(Math.abs(pivot.price-projected)<=tolerance)pivotTouches++;
       }
 
-      // Count actual wick breaches between the first anchor and the latest
-      // completed candle. A small ATR-based tolerance accommodates wick noise.
-      for(let k=a.index+1;k<len-1;k++){
-        const candle=candles[k],projected=slope*k+intercept;
-        if(isResistance ? candle.high>projected+tolerance : candle.low<projected-tolerance)violations++;
+      // Score real candle wicks as the user does on TradingView. Count at most
+      // one touch every three candles so a cluster cannot inflate the score.
+      // A small ATR-based tolerance accommodates ordinary wick variation.
+      for(let k=a.index;k<len-1;k++){
+        const candle=candles[k],wick=isResistance?candle.high:candle.low;
+        const projected=slope*k+intercept;
+        if(Math.abs(wick-projected)<=tolerance&&k-lastTouchIndex>=3){
+          wickTouches++;
+          lastTouchIndex=k;
+        }
+        if(k>a.index&&(isResistance ? candle.high>projected+tolerance : candle.low<projected-tolerance))violations++;
       }
 
-      if(touches<3)continue;
+      if(pivotTouches<2||wickTouches<3)continue;
+      const touches=wickTouches;
       const span=b.index-a.index;
-      const score=touches*100-violations*2+Math.min(span/len,1)*10;
+      const score=touches*100+pivotTouches*30-violations*2+Math.min(span/len,1)*10;
       if(!best||score>best.score||
         (score===best.score&&touches>best.touches)||
         (score===best.score&&touches===best.touches&&span>best.span)){
