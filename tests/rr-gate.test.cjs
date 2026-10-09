@@ -32,7 +32,7 @@ test("stop uses the highest high from the last 10 closed candles and ignores the
   const candles = Array.from({ length: 12 }, (_, i) => candle(i));
   candles[10] = candle(10, { high: 108, low: 99.8, close: 100 });
   candles[11] = candle(11, { high: 150, low: 99.8, close: 100 });
-  const result = calculateStop("SHORT", 100, 100, 2, candles);
+  const result = calculateStop("SHORT", 100, 2, candles);
   assert.equal(result.stop, 108);
   assert.equal(result.calc.structuralAnchor, 108);
   assert.equal(result.valid, true);
@@ -40,7 +40,7 @@ test("stop uses the highest high from the last 10 closed candles and ignores the
 
 test("when the recent swing is close, the stop respects the 1.5 ATR floor", () => {
   const candles = Array.from({ length: 12 }, (_, i) => candle(i));
-  const result = calculateStop("SHORT", 100, 100, 2, candles);
+  const result = calculateStop("SHORT", 100, 2, candles);
   assert.equal(result.stop, 103);
   assert.equal(result.valid, true);
 });
@@ -70,7 +70,7 @@ test("20x liquidation distance is diagnostic and does not invalidate a V28 stop"
   const stop = 0.08964;
   const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 0.086, low: 0.084, close: entry }));
   candles[10] = candle(10, { high: stop, low: 0.084, close: entry });
-  const result = calculateStop("SHORT", entry, entry, 0.0005, candles);
+  const result = calculateStop("SHORT", entry, 0.0005, candles);
   const expectedLiq = entry * (1 + 1 / 20 - 0.01);
   const expectedBuffer = (expectedLiq - result.stop) / expectedLiq * 100;
   assert.equal(result.stop, stop);
