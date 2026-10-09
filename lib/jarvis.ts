@@ -251,22 +251,10 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   else if(dir==="LONG" && kNow>dNow) stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
   else if(dir==="SHORT" && kNow<dNow) stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
 
-  // Explain safety blockers explicitly; never narrate an opposing 4H trend or
-  // a descending LONG support line as if the setup were aligned.
-  const blockers:string[]=[];
-  if(evaluation.missing.includes("4h_trend_not_aligned"))
-    blockers.push("4H EMA direction conflicts with the daily bias; no entry until the timeframes align");
-  if(evaluation.missing.includes("trendline_slope_opposes_direction"))
-    blockers.push("trendline slope opposes the trade direction; this is not valid directional support/resistance");
-  if(evaluation.missing.includes("liquidation_buffer"))
-    blockers.push("modelled stop-to-liquidation buffer is below the required 0.50%; entry blocked");
-  if(blockers.length)
-    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the 4H is "+fourHText+". SAFETY BLOCK: "+blockers.join(". ")+". "+(stochSummary);
-
   if(signal){
     const stopCtx=signal.context?.stopCalc;
     const riskText=stopCtx?" Stop "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk).":"";
-    return "[JARVIS STATE] "+pair+" — V28 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+" and the 4H structure is aligned. "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
+    return "[JARVIS STATE] "+pair+" — V28 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+"; the 4H is "+fourHText+" (context, not an entry veto in pasted V28). "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
   }
   if(!evaluation.zone)
     return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and we are looking for a "+(dir==="LONG"?"long":"short")+" setup. The 4H is "+fourHText+". We still need a validated "+trendText+" and the right Stoch timing.";
