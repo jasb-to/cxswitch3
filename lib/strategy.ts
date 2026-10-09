@@ -249,8 +249,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // 4H EMA opposition vetoes ENTRY_2 only. ENTRY_1 remains eligible against
   // the 4H EMA because it is the deep-pullback entry.
   const entry2EmaOpposed=entry2Candidate&&!!direction&&(
-    (direction==="LONG"&&ema4h.direction==="BEARISH")||
-    (direction==="SHORT"&&ema4h.direction==="BULLISH")
+    (direction==="LONG"&&ema4h.label.includes("BEARISH"))||
+    (direction==="SHORT"&&ema4h.label.includes("BULLISH"))
   );
   if(entry2EmaOpposed)missing.push("4h_ema_opposed");
   const entry2=entry2Candidate&&!entry2EmaOpposed;
@@ -258,8 +258,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(!entry1&&!entry2Candidate&&direction&&!trendlineInvalid)missing.push("stoch_turn_or_extreme");
 
   const emaAdvisory:string[]=[];
-  if(signalType && direction==="SHORT" && ema4h.direction!=="BEARISH")emaAdvisory.push("4h_ema_not_bearish");
-  if(signalType==="ENTRY_1" && direction==="LONG" && ema4h.direction==="BEARISH")emaAdvisory.push("4h_ema_bearish_entry1_allowed");
+  if(signalType && direction==="SHORT" && !ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
+  if(signalType==="ENTRY_1" && direction==="LONG" && ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_bearish_entry1_allowed");
 
   const rv=rsi(c.map(x=>x.close));
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
