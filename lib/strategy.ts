@@ -186,10 +186,6 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const tl=direction?getTrendline(pair,c,direction):null;
   const trendlineSlope=tl?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
-  // Safety overlay added after the 2026-10-09 SOL long: a support/resistance
-  // line whose slope opposes the daily direction is not a valid directional setup.
-  if(direction && tl && ((direction==="LONG" && trendlineSlope<0) || (direction==="SHORT" && trendlineSlope>0)))
-    missing.push("trendline_slope_opposes_direction");
   const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
   if(!zoneValue)missing.push("zone");
 
@@ -209,12 +205,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!signalType&&direction)missing.push("stoch_turn_or_extreme");
 
-  // Keep the original V28 daily bias, but add a safety overlay: do not open
-  // a position against the 4H 5/13 EMA direction. This prevents a lagging 1D
-  // EMA cross from authorising a long into an established 4H bearish move.
+  // Exact pasted V28 behavior: 4H EMA is advisory context, not an entry veto.
   const ema4h=get4HEmaDiagnostic(c);
-  const aligned4h=direction==="LONG" ? ema4h.direction==="BULLISH" : direction==="SHORT" ? ema4h.direction==="BEARISH" : false;
-  if(signalType && !aligned4h) missing.push("4h_trend_not_aligned");
   const emaAdvisory:string[]=[];
   if(signalType && direction==="SHORT" && !ema4h.stage.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
   if(signalType==="ENTRY_2" && direction==="LONG" && ema4h.stage.includes("BEARISH"))emaAdvisory.push("4h_ema_bearish");
@@ -228,9 +220,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(direction&&tl&&a>0){
     const stopResult=calculateStop(direction,p,linePrice,a,c);
     stopCalc=stopResult.calc;
-    // Hard safety gate: reject new entries unless the modelled stop clears
-    // estimated liquidation by the configured minimum buffer (0.50%).
-    if(signalType && !stopResult.valid) missing.push("liquidation_buffer");
+    // Preserve V28 eligibility: liquidation-buffer diagnostics are informational,
+    // not an additional entry gate. Telegram must warn clearly when unsafe.
     const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
     const targets=structureTargets(direction,p,c);
     rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
