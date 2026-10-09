@@ -9,16 +9,10 @@ export interface BreakoutRecord { direction:Direction; price:number; timestamp:n
 export interface SignalResult { signal?:Signal; market?:any; debug:string[]; breakoutRecord?:BreakoutRecord }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
-export const CURRENT_SIGNAL_VERSION=40;
+export const CURRENT_SIGNAL_VERSION=28;
 type Direction="LONG"|"SHORT";
-const MIN_RR=1.5, TTL=24*60*60*1000, EPS=1e-12;
+const TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
-export function evaluateTp1RewardRisk(direction:Direction,entry:number,stop:number,tp1:number){
-  const riskTp1=direction==="LONG"?entry-stop:stop-entry;
-  const rewardTp1=direction==="LONG"?tp1-entry:entry-tp1;
-  const rrTp1=rewardTp1/Math.max(riskTp1,EPS);
-  return{rr:rrTp1,passes:rrTp1>=MIN_RR};
-}
 const priceRound=(n:number)=>{if(!Number.isFinite(n))return n;const d=Math.abs(n)>=1000?0:Math.abs(n)>=1?2:Math.abs(n)>=0.1?3:5;return r(n,d)};
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),o=[a[0]];for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}
 function rsiSeries(a:number[],p=14){if(a.length<=p)return[];let g=0,l=0;for(let i=1;i<=p;i++){const x=a[i]-a[i-1];if(x>=0)g+=x;else l-=x}let ag=g/p,al=l/p,o=[al===0?100:100-100/(1+ag/al)];for(let i=p+1;i<a.length;i++){const x=a[i]-a[i-1];ag=(ag*(p-1)+Math.max(x,0))/p;al=(al*(p-1)+Math.max(-x,0))/p;o.push(al===0?100:100-100/(1+ag/al))}return o}
@@ -102,13 +96,6 @@ function slopeMatchesDirection(direction:Direction,slope:number):boolean{
 
 // Fail loudly if an invalid line ever reaches a reuse/store path. Expected bad
 // market structure is handled by returning null before this assertion is reached.
-function assertTrendlineSlopeInvariant(direction:Direction,slope:number):void{
-  if(!slopeMatchesDirection(direction,slope)){
-    const required=direction==="LONG"?"positive":"negative";
-    throw new Error(`[TRENDLINE INVARIANT] ${direction} trendline slope must be ${required}; received ${slope}`);
-  }
-}
-
 function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):TrendlineResult{
   const len=candles.length,now=candles.at(-1)?.timestamp;
   const candidatePivots=len>=7?trendlinePivots(candles,direction==="SHORT").slice(-5):[];
@@ -125,17 +112,14 @@ function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):Tr
   let existing=trendlineStore.get(pair);
   const maxAge=7*24*60*60*1000;
   if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
-    assertTrendlineSlopeInvariant(direction,existing.slope);
     const lastPivot=fit.pivots[fit.pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
     const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
     if(deviation<0.02){
       const state={...existing,r2:0.85};
-      assertTrendlineSlopeInvariant(direction,state.slope);
       return{state,invalidSlope:false,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
     }
   }
   const state:TrendlineState={...fit,lastUpdated:now,direction};
-  assertTrendlineSlopeInvariant(direction,state.slope);
   trendlineStore.set(pair,state);
   return{state,invalidSlope:false,pivots:state.pivots,slope:state.slope,intercept:state.intercept,r2:state.r2};
 }
@@ -149,33 +133,18 @@ export function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:C
     .slice(-12)
     .filter(x=>direction==="LONG"?x.price>entry:x.price<entry)
     .sort((a,b)=>direction==="LONG"?a.price-b.price:b.price-a.price);
-  const minTp1Distance=Math.max(entry*0.035,0.5*atrValue);
-  const tp1Candidate=structuralTargets.find(x=>Math.abs(x.price-entry)>=minTp1Distance);
-  const tp1=tp1Candidate?.price??(direction==="LONG"?entry+minTp1Distance:entry-minTp1Distance);
-  const risk=Math.abs(entry-stop);
-  const minTp2Distance=Math.max(entry*0.07,1.5*risk);
-  const tp2Candidate=structuralTargets.find(x=>
-    direction==="LONG"
-      ? x.price>tp1&&x.price>=entry+minTp2Distance
-      : x.price<tp1&&x.price<=entry-minTp2Distance
-  );
-  const fallbackDistance=Math.max(entry*0.07,1.5*risk);
-  const tp2=tp2Candidate?.price??(direction==="LONG"?entry+fallbackDistance:entry-fallbackDistance);
+  // TP1 is the nearest confirmed pivot in the profit direction.
+  const tp1Candidate=structuralTargets[0];
+  const tp1=tp1Candidate?.price??(direction==="LONG"?entry*1.05:entry*0.95);
+  // TP2 is the next pivot beyond TP1, not a separately gated R-multiple.
+  const tp2Candidate=structuralTargets.find(x=>direction==="LONG"?x.price>tp1:x.price<tp1);
+  const tp2=tp2Candidate?.price??(direction==="LONG"?Math.max(entry*1.10,tp1*1.05):Math.min(entry*0.90,tp1*0.95));
   return {
     tp1,tp2,
-    tp1Source:tp1Candidate?"4H swing pivot":"3.5%/0.5 ATR fallback",
-    tp2Source:tp2Candidate?"next qualifying 4H swing pivot":"7%/1.5R fallback",
+    tp1Source:tp1Candidate?"nearest 4H swing pivot":"5% fallback",
+    tp2Source:tp2Candidate?"next 4H swing pivot":"10%/runner fallback",
     tp1Pivot:tp1Candidate?.price,tp2Pivot:tp2Candidate?.price
   };
-}
-export function evaluateTp2RewardRisk(direction:Direction,entry:number,stop:number,tp2:number){
-  void direction;
-  const risk=Math.abs(entry-stop);
-  const rewardTp2=Math.abs(tp2-entry);
-  const rrTp2=rewardTp2/Math.max(risk,EPS);
-  // Treat floating-point noise at the exact 1.5R boundary as equal, without relaxing the strategy threshold.
-  const rrTolerance=1e-10;
-  return{rr:rrTp2,passes:rrTp2>=MIN_RR-rrTolerance};
 }
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*0.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
@@ -202,9 +171,9 @@ export interface StopCalc {
   marginUsagePct: number;
 }
 
-const MAX_LEVERAGE = 15;
+const MAX_LEVERAGE = 20;
 const MAINTENANCE_MARGIN_RATE = 0.01;
-const MIN_LIQUIDATION_BUFFER_PCT = 0.5;
+const MIN_LIQUIDATION_BUFFER_PCT = 0.5; // Informational warning threshold only.
 
 export function calculateLiquidationBufferPct(direction:"LONG"|"SHORT",entry:number,stop:number,leverage=MAX_LEVERAGE):number {
   const liquidationPrice=direction==="LONG"
@@ -239,8 +208,8 @@ export function calculateStop(
   const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
   const liquidationPrice=direction==="LONG"?entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE):entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
   const liquidationBufferPct=calculateLiquidationBufferPct(direction,entry,stop,MAX_LEVERAGE);
-  const valid=passesLiquidationBuffer(liquidationBufferPct);
-  return {stop,calc:{structuralAnchor:priceRound(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid,invalidReason:valid?undefined:"stop_too_close_to_modelled_liquidation"};
+  // Liquidation distance is informational and never suppresses a V28 entry.
+  return {stop,calc:{structuralAnchor:priceRound(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid:true};
 }
 function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValue:number,structuralAnchor:number):StopCalc{
   const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100;
@@ -323,9 +292,6 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(direction&&tl&&a>0){
     const stopResult=calculateStop(direction,p,linePrice,a,c);
     stopCalc=stopResult.calc;
-    if(!passesLiquidationBuffer(stopCalc.liquidationBufferPct)){
-      missing.push("liquidation_buffer");
-    }
     const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
     const targets=structureTargets(direction,p,c,a,stopResult.stop);
     rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
@@ -385,9 +351,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       `first daily ts/close: ${new Date(auditDaily[0]?.timestamp??0).toISOString()} / ${auditDaily[0]?.close??0}`,
       `last daily ts/close: ${new Date(auditDaily.at(-1)?.timestamp??0).toISOString()} / ${auditDaily.at(-1)?.close??0}`,
       `last 5 daily closes: ${JSON.stringify(auditDaily.slice(-5).map(x=>({ts:new Date(x.timestamp).toISOString(),close:x.close}))) }`,
-      \`EMA5: ${ema(auditCloses,5).at(-1)??0}\`,
-      \`EMA13: ${ema(auditCloses,13).at(-1)??0}\`,
-      \`direction: ${auditCloses.length<25?"NULL (fewer than 25 daily candles)":((ema(auditCloses,5).at(-1)??0)>(ema(auditCloses,13).at(-1)??0)?"LONG":"SHORT")}\`
+      `EMA5: ${ema(auditCloses,5).at(-1)??0}`,
+      `EMA13: ${ema(auditCloses,13).at(-1)??0}`,
+      `direction: ${auditCloses.length<25?"NULL (fewer than 25 daily candles)":((ema(auditCloses,5).at(-1)??0)>(ema(auditCloses,13).at(-1)??0)?"LONG":"SHORT")}`
     ];
     console.log(auditLines.join(" | "));
   }
@@ -459,22 +425,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
   const stop=calculatedStop.stop;
-  if(!calculatedStop.valid||!passesLiquidationBuffer(calculatedStop.calc.liquidationBufferPct)){
-    debug.push(`[SIGNAL BLOCKED] ${pair} | liquidation buffer ${calculatedStop.calc.liquidationBufferPct}% < ${MIN_LIQUIDATION_BUFFER_PCT}%`);
-    debug.push("[SIGNAL] none — stop is too close to or beyond modelled liquidation");
+  if(!calculatedStop.valid){
+    debug.push(`[SIGNAL BLOCKED] ${pair} | invalid stop inputs`);
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   const targets=structureTargets(evaluation.direction!,entryBase,c,a,stop);
   const risk=Math.abs(entryBase-stop);
   const rrTp1=Math.abs(targets.tp1-entryBase)/Math.max(risk,EPS);
-  const rrTp2Result=evaluateTp2RewardRisk(evaluation.direction!,entryBase,stop,targets.tp2);
-  const rrTp2=rrTp2Result.rr;
-  debug.push(`[RR] ${pair} ${evaluation.direction} ${signalType} | TP1 RR ${rrTp1.toFixed(2)} | TP2 RR ${rrTp2.toFixed(2)} (minimum ${MIN_RR})`);
-  if(!rrTp2Result.passes){
-    debug.push(`[SIGNAL BLOCKED] ${pair} | TP2 RR ${rrTp2.toFixed(2)} < ${MIN_RR}`);
-    debug.push("[SIGNAL] none — RR(TP2) below minimum");
-    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
-  }
+  const rrTp2=Math.abs(targets.tp2-entryBase)/Math.max(risk,EPS);
+  debug.push(`[TARGETS] ${pair} ${evaluation.direction} ${signalType} | TP1 RR ${rrTp1.toFixed(2)} | TP2 RR ${rrTp2.toFixed(2)} | structural pivots; no extra R:R gate`);
   const actualRr=rrTp2;
   const s:Signal={
     id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:priceRound(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
