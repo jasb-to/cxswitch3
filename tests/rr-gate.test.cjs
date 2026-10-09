@@ -32,7 +32,7 @@ test("TP2 RR 1.5 passes the minimum", () => {
 
 test("TP2 RR below 1.5 is blocked", () => {
   const result = evaluateTp2RewardRisk("LONG", 100, 98, 102.8);
-  assert.equal(result.rr, 1.4);
+  assert.ok(Math.abs(result.rr - 1.4) < 1e-9);
   assert.equal(result.passes, false);
 });
 
