@@ -24,7 +24,7 @@ function candle(index, { high = 100.2, low = 99.8, close = 100, open = close } =
   return { timestamp: index * 14_400_000, open, high, low, close, volume: 1 };
 }
 
-test("signal engine identifies itself as the restored V28 strategy", () => {
+test("signal engine identifies itself as restored V28", () => {
   assert.equal(CURRENT_SIGNAL_VERSION, 28);
 });
 
@@ -65,7 +65,7 @@ test("short targets choose the nearest lower pivot then the next lower pivot", (
   assert.equal(targets.tp2, 80);
 });
 
-test("20x liquidation distance is reported but does not invalidate a V28 stop", () => {
+test("20x liquidation distance is diagnostic and does not invalidate a V28 stop", () => {
   const entry = 0.08524;
   const stop = 0.08964;
   const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 0.086, low: 0.084, close: entry }));
