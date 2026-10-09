@@ -228,6 +228,7 @@ function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValu
 }
 
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,lastBreakout?:BreakoutRecord):GateEvaluation{
+  console.log(`[EVAL CALL] pair=${pair} candles4h=${candles4h.length} at ${new Date().toISOString()}`);
   void lastBreakout;
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
