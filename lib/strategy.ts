@@ -174,7 +174,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const tl=direction?getTrendline(pair,c,direction):null;
   const trendlineSlope=tl?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
-  const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_RESISTANCE":"TRENDLINE_SUPPORT",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
+  const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
   if(!zoneValue)missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
@@ -283,7 +283,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       ? (d.strength==="LOW"&&d.spreadContracting
         ? `[1D TRANSITION] ${d.direction==="LONG"?"BULLISH":"BEARISH"} weakening/turning | WATCH — no new direction until the 1D transition confirms`
         : `[DIRECTION] V28 1D ${d.direction} | 4H is timing/context only`)
-      : "[1D] NEUTRAL | spread < 0.5%");
+      : "[1D] NEUTRAL | insufficient daily history or EMA5/EMA13 equal");
     debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
@@ -305,7 +305,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
   if(!evaluation.allPassed){
-    debug.push(`[REVERSAL] none — V28 waits for the normal 4H breakout/early-entry conditions`);
+    debug.push(`[REVERSAL] none — V28 waits for trendline proximity and directional Stoch timing`);
     debug.push(`[SIGNAL] none — missing ${evaluation.missing.join(", ")}`);
     debug.push("[JARVIS] observation only — no trade");
     debug.push("[ALERT] none");
@@ -323,7 +323,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const s:Signal={
     id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:priceRound(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
     stop:priceRound(stop),tp1:priceRound(targets.tp1),tp2:priceRound(targets.tp2),rr:r(actualRr,2),expectedMove:r(Math.abs(targets.tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
-    reason:`${evaluation.direction} ${signalType} | V28 4H trendline breakout lifecycle | 4H Stoch ${st4.k}/${st4.d}`,
+    reason:`${evaluation.direction} ${signalType} | V28 trendline proximity + 4H Stoch | 4H Stoch ${st4.k}/${st4.d}`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
     context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema5_1d:d.e5,ema13_1d:d.e13,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
