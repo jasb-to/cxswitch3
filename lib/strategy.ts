@@ -89,10 +89,6 @@ function fitTrendline(candles:Candle[],direction:Direction):TrendlineFit|null{
   return{pivots,slope,intercept,r2:r(r2,2)};
 }
 
-function slopeMatchesDirection(direction:Direction,slope:number):boolean{
-  return direction==="LONG"?slope>0:slope<0;
-}
-
 // Fail loudly if an invalid line ever reaches a reuse/store path. Expected bad
 // market structure is handled by returning null before this assertion is reached.
 function getTrendlineResult(pair:string,candles:Candle[],direction:Direction):TrendlineResult{
