@@ -71,18 +71,12 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   trendlineStore.set(pair,state);
   return state;
 }
-function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
-  const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="LONG").slice(-12).map(x=>({price:x.price,index:x.index}));
-  const above=direction==="LONG" ? pivots.filter(x=>x.price>entry) : pivots.filter(x=>x.price<entry);
-  const minReward=direction==="LONG" ? entry*1.03 : entry*0.97;
-  const tp1Pivot=above.find(x=>direction==="LONG" ? x.price>=minReward : x.price<=minReward);
-  const tp1=tp1Pivot?.price ?? (direction==="LONG" ? entry*1.05 : entry*0.95);
-  const minNext=direction==="LONG" ? tp1*1.015 : tp1*0.985;
-  const tp2Pivot=above.find(x=>direction==="LONG" ? x.price>=minNext : x.price<=minNext);
-  const fallbackTp2=direction==="LONG" ? Math.max(entry*1.10,tp1*1.05) : Math.min(entry*0.90,tp1*0.95);
-  const tp2=tp2Pivot?.price ?? fallbackTp2;
-  return {tp1,tp2,tp1Source:tp1Pivot?"4H swing pivot":"5% fallback",tp2Source:tp2Pivot?"next 4H swing pivot":"10%/runner fallback",tp1Pivot:tp1Pivot?.price,tp2Pivot:tp2Pivot?.price};
+function structureTargets(direction:"LONG"|"SHORT",entry:number,stop:number):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
+  // V28 target geometry: fixed R-multiples from the actual structural/ATR stop.
+  // Keep the app's TP1/TP2 contract: TP1 = 1R, TP2 = 1.5R.
+  const risk=Math.abs(entry-stop);
+  const sign=direction==="LONG"?1:-1;
+  return {tp1:entry+sign*risk,tp2:entry+sign*risk*1.5,tp1Source:"1R",tp2Source:"1.5R"};
 }
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
@@ -210,7 +204,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     // Liquidation distance is informational for manual alerts; it must not
     // suppress a valid V28 setup. The signal carries the buffer diagnostics.
     const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
-    const targets=structureTargets(direction,p,c);
+    const targets=structureTargets(direction,p,stopResult.stop);
     rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
     // R:R is informational only and is calculated from the actual TP2 target.
   }
@@ -310,7 +304,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,trendlinePrice,a,c);
   const stop=calculatedStop.stop;
-  const targets=structureTargets(evaluation.direction!,entryBase,c);
+  const targets=structureTargets(evaluation.direction!,entryBase,stop);
   const risk=Math.abs(entryBase-stop);
   const actualRr=Math.abs(targets.tp2-entryBase)/Math.max(risk,EPS);
   const s:Signal={
