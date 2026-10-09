@@ -324,13 +324,11 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
   const state=getTrendline(pair,c,direction);
-  // Research both geometries independently of the daily bias. A rising move
-  // should be tested against rising support (potential downside break); a
-  // falling move against falling resistance (potential upside break).
-  // The direction argument is the prevailing move: LONG selects rising
-  // swing-low support; SHORT selects falling swing-high resistance.
-  const support=getTrendline(pair,c,"LONG");
-  const resistance=getTrendline(pair,c,"SHORT");
+  // Direction is the expected breakout, not the existing trend:
+  // SHORT => rising swing-low support to break downward;
+  // LONG => falling swing-high resistance to break upward.
+  const support=getTrendline(pair,c,"SHORT");
+  const resistance=getTrendline(pair,c,"LONG");
   const pack=(line:TrendlineState|null)=>line?({
     anchors:line.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
     middleTouch:{i:line.middleTouch.index,p:line.middleTouch.price,t:line.middleTouch.timestamp},
