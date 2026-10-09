@@ -236,7 +236,10 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
 
   const dir=evaluation.direction;
   const distancePct=evaluation.zone?.distancePct??Infinity;
-  const trendText=dir==="LONG"?"ascending support":"descending resistance";
+  const slope=Number(evaluation.trendlineSlope??0);
+  const trendText=dir==="LONG"
+    ? (slope>0?"ascending support":slope<0?"descending support":"flat support")
+    : (slope<0?"descending resistance":slope>0?"ascending resistance":"flat resistance");
   const st=evaluation.trigger;
   const q=c.map(x=>x.close);
   const rawStoch=stochState(q);
@@ -247,6 +250,18 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   else if(st.entry2) stochSummary="Stoch timing is supporting ENTRY_2.";
   else if(dir==="LONG" && kNow>dNow) stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
   else if(dir==="SHORT" && kNow<dNow) stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
+
+  // Explain safety blockers explicitly; never narrate an opposing 4H trend or
+  // a descending LONG support line as if the setup were aligned.
+  const blockers:string[]=[];
+  if(evaluation.missing.includes("4h_trend_not_aligned"))
+    blockers.push("4H EMA direction conflicts with the daily bias; no entry until the timeframes align");
+  if(evaluation.missing.includes("trendline_slope_opposes_direction"))
+    blockers.push("trendline slope opposes the trade direction; this is not valid directional support/resistance");
+  if(evaluation.missing.includes("liquidation_buffer"))
+    blockers.push("modelled stop-to-liquidation buffer is below the required 0.50%; entry blocked");
+  if(blockers.length)
+    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the 4H is "+fourHText+". SAFETY BLOCK: "+blockers.join(". ")+". "+(stochSummary);
 
   if(signal){
     const stopCtx=signal.context?.stopCalc;
