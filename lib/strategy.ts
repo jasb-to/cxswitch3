@@ -187,7 +187,9 @@ export function evaluateTp2RewardRisk(direction:Direction,entry:number,stop:numb
   const risk=Math.abs(entry-stop);
   const rewardTp2=Math.abs(tp2-entry);
   const rrTp2=rewardTp2/Math.max(risk,EPS);
-  return{rr:rrTp2,passes:rrTp2>=MIN_RR};
+  // Treat floating-point noise at the exact 1.5R boundary as equal, without relaxing the strategy threshold.
+  const rrTolerance=1e-10;
+  return{rr:rrTp2,passes:rrTp2>=MIN_RR-rrTolerance};
 }
 function exhaust(dir:Direction,k:number,rv:number,p:number,e21:number,label="4H"){if(dir==="LONG"&&k>=95)return`LONG blocked: ${label} Stoch K ${r(k,1)} >= 95`;if(dir==="SHORT"&&k<=5)return`SHORT blocked: ${label} Stoch K ${r(k,1)} <= 5`;if(dir==="LONG"&&rv>=78)return`LONG blocked: 4H RSI ${r(rv,1)} >= 78`;if(dir==="SHORT"&&rv<=22)return`SHORT blocked: 4H RSI ${r(rv,1)} <= 22`;if(dir==="LONG"&&p>e21*1.03)return"LONG blocked: 4H close is more than 3% above 4H EMA(21)";if(dir==="SHORT"&&p<e21*0.97)return"SHORT blocked: 4H close is more than 3% below 4H EMA(21)";return null}
 export interface GateEvaluation {
