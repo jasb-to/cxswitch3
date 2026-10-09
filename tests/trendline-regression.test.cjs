@@ -48,7 +48,7 @@ function dailyBullishWithDescendingRecentLows() {
   const pivotLows = [108, 106, 104, 102, 100];
   const start = Date.UTC(2026, 0, 1);
   return Array.from({ length: count }, (_, i) => {
-    const close = 100 + i * 0.1;
+    const close = 100 + i * 0.1 + Math.sin(i * Math.PI / 4) * 0.35;
     const pivotIndex = pivotIndexes.indexOf(i);
     const low = pivotIndex >= 0 ? pivotLows[pivotIndex] : close - 2;
     return {
