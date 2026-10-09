@@ -155,6 +155,7 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
     }
   }
 
+  if(!best)return null;
 
   const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-pivots.reduce((s,q)=>s+q.price,0)/pivots.length,2),0);
   const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(best!.slope*p.index+best!.intercept),2),0);
