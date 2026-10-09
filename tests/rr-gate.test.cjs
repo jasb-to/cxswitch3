@@ -37,7 +37,7 @@ test("TP2 RR below 1.5 is blocked", () => {
 });
 
 test("TP2 RR affected only by floating-point noise at 1.5 passes", () => {
-  const result = evaluateTp2RewardRisk("SHORT", 0.08490791686390503, 0.08964, 0.077804);
+  const result = evaluateTp2RewardRisk("LONG", 100, 98, 102.99999999999999);
   assert.ok(result.rr < 1.5);
   assert.ok(result.rr > 1.5 - 1e-10);
   assert.equal(result.passes, true);
