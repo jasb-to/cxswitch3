@@ -150,6 +150,7 @@ function fixedStopCalc(direction:"LONG"|"SHORT",entry:number,stop:number,atrValu
 }
 
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,lastBreakout?:BreakoutRecord):GateEvaluation{
+  void lastBreakout;
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
   const d=dailyTrend(c);
@@ -174,7 +175,6 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // Pasted V28 entry geometry: within 1.2% of the trendline is "near".
   // Do not add the newer ATR/price proximity gate on top of this threshold.
   const near=!!zoneValue && zoneValue.distancePct<1.2;
-  const last=c.at(-1);
   const breakoutRecord:BreakoutRecord|undefined=undefined;
 
   const extreme=!!direction&&(direction==="LONG"?st4.k<20:st4.k>80);
@@ -196,13 +196,12 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(direction&&tl&&a>0){
     const stopResult=calculateStop(direction,p,linePrice,a,c);
     stopCalc=stopResult.calc;
-    if(!stopResult.valid)missing.push(stopResult.invalidReason??"stop_width");
-    else{
-      const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
-      const targets=structureTargets(direction,p,c);
-      rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
-      // R:R is informational only and is calculated from the actual TP2 target.
-    }
+    // Liquidation distance is informational for manual alerts; it must not
+    // suppress a valid V28 setup. The signal carries the buffer diagnostics.
+    const risk=direction==="LONG"?p-stopResult.stop:stopResult.stop-p;
+    const targets=structureTargets(direction,p,c);
+    rr=Math.abs(targets.tp2-p)/Math.max(risk,EPS);
+    // R:R is informational only and is calculated from the actual TP2 target.
   }
 
   const deduped=[...new Set(missing.filter(Boolean))];
@@ -222,7 +221,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="SHORT").slice(-5);
+  const pivots=swings(c,direction==="LONG").slice(-2);
   const state=getTrendline(pair,c,direction);
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
