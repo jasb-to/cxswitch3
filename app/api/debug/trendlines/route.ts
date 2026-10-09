@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
       results[pair] = {
         candleCount: candles.length,
         latestCandle: candles.at(-1) ?? null,
-        recentCandles: candles.slice(-12),
+        recentCandles: candles.slice(-80),
         ...debug
       };
     } catch (error) {
