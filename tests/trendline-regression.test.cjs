@@ -50,7 +50,7 @@ function dailyBullishWithDescendingRecentLows() {
   return Array.from({ length: count }, (_, i) => {
     const close = 100 + i * 0.1 + Math.sin(i * Math.PI / 4) * 0.35;
     const pivotIndex = pivotIndexes.indexOf(i);
-    const low = pivotIndex >= 0 ? pivotLows[pivotIndex] : close - 2;
+    const low = pivotIndex >= 0 ? pivotLows[pivotIndex] : 100 + i * 0.1 - 2;
     return {
       timestamp: start + i * FOUR_HOURS,
       open: close - 0.25,
