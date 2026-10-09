@@ -241,6 +241,12 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
       :"swing highs are ascending, not descending resistance for a SHORT.";
     return "[JARVIS STATE] "+pair+" — Trendline invalid — "+explanation+" Waiting for the structure to turn.";
   }
+  if(evaluation.missing.includes("4h_ema_opposed")){
+    const explanation=dir==="LONG"
+      ?"the 4H EMA is bearish against this LONG"
+      :"the 4H EMA is bullish against this SHORT";
+    return "[JARVIS STATE] "+pair+" — ENTRY_2 blocked — "+explanation+". Waiting for 4H EMA alignment.";
+  }
   const distancePct=evaluation.zone?.distancePct??Infinity;
   const slope=Number(evaluation.trendlineSlope??0);
   const trendText=dir==="LONG"
