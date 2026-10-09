@@ -93,65 +93,52 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   const pivots=allPivots.slice(-18);
   if(pivots.length<3)return null;
 
+  const latestPivot=allPivots.at(-1);
+  if(!latestPivot)return null;
   const currentAtr=atr(candles);
-  const tolerance=Math.max(currentAtr*0.2,Math.abs(candles.at(-1)!.close)*0.0015);
-  // A trendline must describe the *current* structure, not an old line that
-  // price crossed weeks ago. Candidate anchors are therefore limited to the
-  // last ~30 days, with the second anchor inside the last 15 days (4H bars).
-  // This is a recency constraint on geometry, not a new trade-entry gate.
-  const earliestAnchor = Math.max(0, len - 180);
-  const latestAnchor = Math.max(earliestAnchor, len - 90);
-  let best:{slope:number;intercept:number;anchors:[Swing,Swing];touches:number;violations:number;score:number;span:number}|null=null;
+  const tolerance=Math.max(currentAtr*0.3,Math.abs(candles.at(-1)!.close)*0.002);
+  // The line must terminate at the latest confirmed pivot. Choosing an older
+  // second anchor can produce a mathematically neat but visually irrelevant
+  // line (as happened with LINK support).
+  const earliestAnchor=Math.max(0,len-180);
+  let best:{slope:number;intercept:number;anchors:[Swing,Swing];middleTouch:Swing;touches:number;violations:number;score:number;span:number}|null=null;
 
-  for(let i=0;i<pivots.length-1;i++){
-    const a=pivots[i];
-    if(a.index<earliestAnchor)continue;
-    for(let j=i+1;j<pivots.length;j++){
-      const b=pivots[j],dx=b.index-a.index;
-      if(b.index<latestAnchor||dx<=0)continue;
-      const slope=(b.price-a.price)/dx;
-      const intercept=a.price-slope*a.index;
-      let pivotTouches=0,wickTouches=0,violations=0,lastTouchIndex=-Infinity;
+  for(const a of pivots){
+    if(a.index<earliestAnchor||a.index>=latestPivot.index)continue;
+    const b=latestPivot,dx=b.index-a.index;
+    if(dx<=0)continue;
+    const slope=(b.price-a.price)/dx;
+    const intercept=a.price-slope*a.index;
+    let wickTouches=0,violations=0,lastTouchIndex=-Infinity;
+    const touchesBetween:Swing[]=[];
 
-      // The two anchor pivots are exact by construction. Count additional
-      // confirmed pivots that genuinely sit on the same line.
-      for(const pivot of pivots){
-        if(pivot.index<a.index)continue;
-        const projected=slope*pivot.index+intercept;
-        if(Math.abs(pivot.price-projected)<=tolerance)pivotTouches++;
+    // Count separated wick touches on the line, but explicitly require at
+    // least one touch between the two pivot anchors. Keep the best-supported
+    // middle wick available for the chart instead of returning every pivot.
+    for(let k=a.index;k<len-1;k++){
+      const candle=candles[k],wick=isResistance?candle.high:candle.low;
+      const projected=slope*k+intercept;
+      if(Math.abs(wick-projected)<=tolerance&&k-lastTouchIndex>=3){
+        wickTouches++;
+        lastTouchIndex=k;
+        if(k>a.index&&k<b.index)touchesBetween.push({index:k,price:wick,timestamp:candle.timestamp});
       }
+      if(k>a.index&&(isResistance?candle.high>projected+tolerance:candle.low<projected-tolerance))violations++;
+    }
 
-      // Validate against closed candle wicks from the first anchor forward.
-      // Resistance cannot repeatedly sit below candle highs; support cannot
-      // repeatedly sit above candle lows. The previous selector merely gave
-      // breaches a tiny score penalty, so a stale/broken line could still win.
-      for(let k=a.index;k<len-1;k++){
-        const candle=candles[k],wick=isResistance?candle.high:candle.low;
-        const projected=slope*k+intercept;
-        if(Math.abs(wick-projected)<=tolerance&&k-lastTouchIndex>=3){
-          wickTouches++;
-          lastTouchIndex=k;
-        }
-        if(k>a.index&&(isResistance ? candle.high>projected+tolerance : candle.low<projected-tolerance))violations++;
-      }
+    if(touchesBetween.length===0)continue;
+    const span=b.index-a.index;
+    const maxViolations=Math.max(3,Math.ceil(span*0.04));
+    if(violations>maxViolations)continue;
 
-      if(pivotTouches<2||wickTouches<3)continue;
-      const span=b.index-a.index;
-      // A line with too many breaches is broken, not a valid support/resistance
-      // line. Permit a few noisy wicks, but reject repeated closes/wick breaks.
-      const maxViolations=Math.max(3,Math.ceil(span*0.04));
-      if(violations>maxViolations)continue;
-
-      const touches=wickTouches;
-      // Touches matter, but fewer breaches and a recent second anchor matter
-      // more than collecting touches on an old, obsolete line.
-      const recency=(b.index-latestAnchor)/Math.max(1,len-latestAnchor);
-      const score=touches*100+pivotTouches*30-violations*40+Math.min(span/len,1)*10+recency*5;
-      if(!best||score>best.score||
-        (score===best.score&&touches>best.touches)||
-        (score===best.score&&touches===best.touches&&span>best.span)){
-        best={slope,intercept,anchors:[a,b],touches,violations,score,span};
-      }
+    const midpoint=(a.index+b.index)/2;
+    const middleTouch=[...touchesBetween].sort((x,y)=>Math.abs(x.index-midpoint)-Math.abs(y.index-midpoint))[0];
+    const pivotTouches=pivots.filter(p=>p.index>=a.index&&p.index<=b.index&&Math.abs(p.price-(slope*p.index+intercept))<=tolerance).length;
+    const score=wickTouches*100+pivotTouches*30-violations*40+Math.min(span/len,1)*10;
+    if(!best||score>best.score||
+      (score===best.score&&wickTouches>best.touches)||
+      (score===best.score&&wickTouches===best.touches&&span>best.span)){
+      best={slope,intercept,anchors:[a,b],middleTouch,touches:wickTouches,violations,score,span};
     }
   }
 
@@ -163,7 +150,9 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   return{
     slope:best.slope,
     intercept:best.intercept,
-    pivots,
+    // Only three meaningful points are exposed to the chart: first anchor,
+    // intermediate supporting wick touch, and latest confirmed pivot.
+    pivots:[best.anchors[0],best.middleTouch,best.anchors[1]],
     anchors:best.anchors,
     touches:best.touches,
     violations:best.violations,
