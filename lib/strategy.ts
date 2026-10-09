@@ -57,17 +57,16 @@ const trendlineStore=new Map<string,TrendlineState>();
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
   const now=candles.at(-1)?.timestamp;
   if(now===undefined)return null;
-  // V28 geometry: the two most recent confirmed swing highs define LONG
-  // descending resistance; the two most recent confirmed swing lows define
-  // SHORT ascending support. Do not fit/regress five pivots or reuse a stale line.
-  const pivots=swings(candles,direction==="LONG").slice(-2);
+  // Pasted V28 geometry: two most recent confirmed pivot lows for LONG,
+  // or pivot highs for SHORT. No five-pivot regression or stale cached line.
+  const pivots=swings(candles,direction==="SHORT").slice(-2);
   if(pivots.length<2)return null;
   const first=pivots[0],last=pivots[1];
   const span=last.index-first.index;
   if(span<=0)return null;
   const slope=(last.price-first.price)/span;
-  if(direction==="LONG"&&slope>=0)return null;
-  if(direction==="SHORT"&&slope<=0)return null;
+  if(direction==="LONG"&&slope<=0)return null;
+  if(direction==="SHORT"&&slope>=0)return null;
   const state:TrendlineState={slope,intercept:first.price-slope*first.index,pivots,lastUpdated:now,direction,r2:0};
   trendlineStore.set(pair,state);
   return state;
@@ -184,8 +183,20 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // ENTRY_2: trendline proximity + StochRSI turning with the daily bias,
   // provided it is not already at the extreme. No breakout/retest lifecycle.
   const entry2=!!direction&&near&&turn&&!extreme;
-  const signalType=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
+  let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!signalType&&direction)missing.push("stoch_turn_or_extreme");
+
+  // Restore the original 4H EMA diagnostic checks: they are a small directional
+  // confirmation on selected entry types, not a breakout/retest lifecycle.
+  const ema4h=get4HEmaDiagnostic(c);
+  if(signalType && direction==="SHORT" && !ema4h.stage.includes("BEARISH")){
+    missing.push("4h_ema_not_bearish");
+    signalType=null;
+  }
+  if(signalType==="ENTRY_2" && direction==="LONG" && ema4h.stage.includes("BEARISH")){
+    missing.push("4h_ema_bearish");
+    signalType=null;
+  }
 
   const rv=rsi(c.map(x=>x.close));
   const exhaustion=direction?exhaust(direction,st4.k,rv,p,e21,"4H"):null;
@@ -221,7 +232,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="LONG").slice(-2);
+  const pivots=swings(c,direction==="SHORT").slice(-2);
   const state=getTrendline(pair,c,direction);
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
