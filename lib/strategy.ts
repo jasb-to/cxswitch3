@@ -65,9 +65,16 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   const span=last.index-first.index;
   if(span<=0)return null;
   const slope=(last.price-first.price)/span;
-  if(direction==="LONG"&&slope<=0)return null;
-  if(direction==="SHORT"&&slope>=0)return null;
-  const state:TrendlineState={slope,intercept:first.price-slope*first.index,pivots,lastUpdated:now,direction,r2:0};
+  const intercept=first.price-slope*first.index;
+  const lineAtLast=slope*(candles.length-1)+intercept;
+  const lastCandle=candles.at(-1);
+  const atrValue=atr(candles);
+  const breakBuffer=Math.max(Math.abs(lastCandle?.close??0)*0.005,atrValue*0.35);
+  // V28 invalidates a support/resistance line only after a meaningful close
+  // through it; do not reject a line merely because its slope is not textbook.
+  if(lastCandle && direction==="LONG" && lastCandle.close<lineAtLast-breakBuffer)return null;
+  if(lastCandle && direction==="SHORT" && lastCandle.close>lineAtLast+breakBuffer)return null;
+  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:0};
   trendlineStore.set(pair,state);
   return state;
 }
