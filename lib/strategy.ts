@@ -77,6 +77,11 @@ export interface TrendlineState {
   wickBreaches:number;
   closeBreaches:number;
   score:number;
+  status:"INTACT"|"BROKEN";
+  breakoutIndex:number|null;
+  breakoutPrice:number|null;
+  breakoutDirection:Direction|null;
+  validationEndIndex:number;
 }
 interface TrendlineCandidate extends TrendlineState {}
 const TRENDLINE_LOOKBACK_BARS=180;
@@ -89,9 +94,7 @@ function trendlineCandidateScore(
   const span=b.index-a.index;
   if(span<TRENDLINE_MIN_ANCHOR_GAP)return null;
   const slope=(b.price-a.price)/span;
-  // Draw the line against the current move: bearish-break setups use rising
-  // support (swing lows); bullish-break setups use falling resistance (swing highs).
-  // A flat or wrong-way line is not the structure this strategy is trying to break.
+  // Falling resistance can break upward; rising support can break downward.
   if((high&&slope>=0)||(!high&&slope<=0))return null;
   const intercept=a.price-slope*a.index;
   const currentPrice=candles.at(-1)?.close??b.price;
@@ -100,45 +103,54 @@ function trendlineCandidateScore(
   const closeBreachTolerance=Math.max(atrNow*0.35,currentPrice*0.0015);
   const touches:Swing[]=[];
   let wickBreaches=0,closeBreaches=0,bodyIntersections=0;
+  let breakoutIndex:number|null=null,breakoutPrice:number|null=null;
   for(let i=a.index;i<candles.length;i++){
     const candle=candles[i],line=lineAt(slope,intercept,i);
     const edge=high?candle.high:candle.low;
     const gap=high?edge-line:line-edge;
-    if(Math.abs(gap)<=tolerance)touches.push({index:i,price:edge,timestamp:candle.timestamp});
-    if(gap>wickBreachTolerance)wickBreaches++;
     const closeGap=high?candle.close-line:line-candle.close;
-    if(closeGap>closeBreachTolerance)closeBreaches++;
     const bodyEdge=high?Math.max(candle.open,candle.close):Math.min(candle.open,candle.close);
     const bodyGap=high?bodyEdge-line:line-bodyEdge;
+    // Assess the line through its first close-break after anchor B. Retain it
+    // as a BROKEN candidate instead of losing the structure we want to detect.
+    if(i>b.index&&closeGap>closeBreachTolerance){
+      breakoutIndex=i;breakoutPrice=candle.close;break;
+    }
+    if(Math.abs(gap)<=tolerance)touches.push({index:i,price:edge,timestamp:candle.timestamp});
+    if(gap>wickBreachTolerance)wickBreaches++;
+    if(closeGap>closeBreachTolerance)closeBreaches++;
     if(bodyGap>closeBreachTolerance)bodyIntersections++;
   }
-  // A human-drawn line should have a real reaction between its two anchors.
-  const middleTouches=touches.filter(t=>t.index>a.index+1&&t.index<b.index-1);
+  const validationEndIndex=breakoutIndex??candles.length-1;
+  const validTouches=touches.filter(t=>t.index<=validationEndIndex);
+  const middleTouches=validTouches.filter(t=>t.index>a.index+1&&t.index<b.index-1);
   if(!middleTouches.length)return null;
-  // Keep small wick noise, but reject a line that price repeatedly traded through.
   if(wickBreaches>Math.max(2,Math.floor(span*0.035)))return null;
   if(closeBreaches>Math.max(1,Math.floor(span*0.015)))return null;
-  // Require three separated reactions; adjacent candles around one swing count once.
   const distinctTouches:Swing[]=[];
-  for(const touch of touches){
+  for(const touch of validTouches){
     const last=distinctTouches.at(-1);
     if(!last||touch.index-last.index>=3)distinctTouches.push(touch);
     else if(Math.abs(touch.price-lineAt(slope,intercept,touch.index))<
       Math.abs(last.price-lineAt(slope,intercept,last.index)))distinctTouches[distinctTouches.length-1]=touch;
   }
   if(distinctTouches.length<3)return null;
-  const pivotList=trendlinePivots(candles,high).filter(p=>p.index>=a.index&&p.index<=candles.length-1);
+  const pivotList=trendlinePivots(candles,high).filter(p=>p.index>=a.index&&p.index<=validationEndIndex);
   const pivotTouches=pivotList.filter(p=>Math.abs(p.price-lineAt(slope,intercept,p.index))<=tolerance);
   const latestAge=candles.length-1-b.index;
   const recencyScore=Math.max(0,12-latestAge/5);
   const spanScore=Math.min(10,Math.log2(span+1)*1.5);
+  const broken=breakoutIndex!==null;
+  const breakRecencyBonus=broken?Math.max(0,8-(candles.length-1-breakoutIndex!)/4):0;
   const score=distinctTouches.length*10+pivotTouches.length*5+middleTouches.length*4+
-    recencyScore+spanScore-wickBreaches*12-closeBreaches*24-bodyIntersections*1.5;
+    recencyScore+spanScore+breakRecencyBonus-wickBreaches*12-closeBreaches*24-bodyIntersections*1.5;
   return {
     slope,intercept,pivots:distinctTouches,lastUpdated:candles.at(-1)!.timestamp,
-    direction:high?"SHORT":"LONG",r2:0,anchors:[a,b],middleTouch:middleTouches
+    direction:high?"LONG":"SHORT",r2:0,anchors:[a,b],middleTouch:middleTouches
       .sort((x,y)=>Math.abs(x.price-lineAt(slope,intercept,x.index))-Math.abs(y.price-lineAt(slope,intercept,y.index)))[0],
-    touchCount:distinctTouches.length,wickBreaches,closeBreaches,score
+    touchCount:distinctTouches.length,wickBreaches,closeBreaches,score,
+    status:broken?"BROKEN":"INTACT",breakoutIndex,breakoutPrice,
+    breakoutDirection:broken?(high?"LONG":"SHORT"):null,validationEndIndex
   };
 }
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
@@ -153,16 +165,15 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   if(allPivots.length<3)return null;
   const atrNow=atr(c);
   if(!Number.isFinite(atrNow)||atrNow<=0)return null;
-  // Anchor B is the latest confirmed pivot of the required type. Older
-  // second anchors can make a mathematically neat but visually stale line;
-  // if the latest pivot cannot form a clean line, return no line instead.
-  const b=allPivots.at(-1)!;
-  if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)return null;
   let best:TrendlineCandidate|null=null;
-  for(let ai=0;ai<allPivots.length-1;ai++){
-    const a=allPivots[ai];
-    const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
-    if(candidate&&(!best||candidate.score>best.score))best=candidate;
+  for(let bi=1;bi<allPivots.length;bi++){
+    const b=allPivots[bi];
+    if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)continue;
+    for(let ai=0;ai<bi;ai++){
+      const a=allPivots[ai];
+      const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
+      if(candidate&&(!best||candidate.score>best.score))best=candidate;
+    }
   }
   return best;
 }
@@ -262,10 +273,11 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const e21=ema(c.map(x=>x.close),21).at(-1)??0;
   // Entry-zone geometry follows the daily move (LONG uses rising support,
   // SHORT uses falling resistance); getTrendline's argument is break direction.
-  const tl=direction?getTrendline(pair,c,direction==="LONG"?"SHORT":"LONG"):null;
+  const candidateTl=direction?getTrendline(pair,c,direction==="LONG"?"SHORT":"LONG"):null;
+  const tl=candidateTl?.status==="INTACT"?candidateTl:null;
   const trendlineSlope=tl?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
-  const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_RESISTANCE":"TRENDLINE_SUPPORT",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
+  const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
   if(!zoneValue)missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
@@ -337,7 +349,9 @@ export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|
     anchors:line.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
     middleTouch:{i:line.middleTouch.index,p:line.middleTouch.price,t:line.middleTouch.timestamp},
     touchCount:line.touchCount,wickBreaches:line.wickBreaches,
-    closeBreaches:line.closeBreaches,score:line.score,
+    closeBreaches:line.closeBreaches,score:line.score,status:line.status,
+    breakoutIndex:line.breakoutIndex,breakoutPrice:line.breakoutPrice,
+    breakoutDirection:line.breakoutDirection,validationEndIndex:line.validationEndIndex,
     slope:line.slope,priceAtCurrent:line.slope*(c.length-1)+line.intercept
   }):null;
   const recent=c.slice(-12);
