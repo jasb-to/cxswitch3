@@ -383,6 +383,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   if(swingDebug){
     debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
     debug.push(`[TL] ${pair} | slope ${swingDebug.slope??"—"} | intercept ${swingDebug.intercept??"—"} | price at current index ${swingDebug.priceAtCurrent??"—"}`);
+    debug.push(`[TL VALIDATION] ${pair} | anchors ${JSON.stringify(swingDebug.anchors)} | middle ${JSON.stringify(swingDebug.middleTouch)} | touches ${swingDebug.touchCount} | wickBreaches ${swingDebug.wickBreaches} | closeBreaches ${swingDebug.closeBreaches} | score ${swingDebug.score}`);
   }
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
