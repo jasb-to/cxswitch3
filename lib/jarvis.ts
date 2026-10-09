@@ -251,12 +251,12 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
     const stopCtx=signal.context?.stopCalc;
     const riskText=stopCtx?" Stop "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk).":"";
     const fourHContext=signal.type==="ENTRY_2"
-      ?"the 4H is "+fourHText+" and its EMA state is not directly opposing ENTRY_2."
+      ?"the 4H is "+fourHText+"; its EMA is context only, not an ENTRY_2 veto."
       :"the 4H is "+fourHText+" (ENTRY_1 does not use the 4H EMA as a veto).";
     return "[JARVIS STATE] "+pair+" — V28 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+"; "+fourHContext+" "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
   }
   if(!evaluation.zone)
-    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and we are looking for a "+(dir==="LONG"?"long":"short")+" setup. The 4H is "+fourHText+". We still need a validated "+trendText+" and the right Stoch timing.";
+    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and we are looking for a "+(dir==="LONG"?"long":"short")+" setup. The 4H is "+fourHText+". We still need a trendline and the right Stoch timing.";
   if(distancePct>1.2)
     return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the V28 direction is "+(dir==="LONG"?"LONG":"SHORT")+". The 4H is "+fourHText+", but price is "+distancePct.toFixed(1)+"% from the "+trendText+". We are watching for price to come into position; "+stochSummary.toLowerCase();
   return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the V28 direction is "+(dir==="LONG"?"LONG":"SHORT")+". The 4H is "+fourHText+" and price is "+distancePct.toFixed(1)+"% from the "+trendText+". "+stochSummary;
