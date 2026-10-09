@@ -158,7 +158,7 @@ test("SOL-style inverted trendline is diagnostic and does not create a slope-inv
 
   const trendline = result.debug.find((line) => line.startsWith("[TL]"));
   assert.ok(trendline);
-  assert.match(trendline, /slope diagnostic only, not an entry gate/);
+  assert.match(trendline, /slope is diagnostic only, not an entry gate/);
   assert.match(trendline, /r2 /);
 });
 
