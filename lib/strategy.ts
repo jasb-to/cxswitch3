@@ -64,30 +64,100 @@ function trendlinePivots(c:Candle[],high:boolean):Swing[]{
   }
   return out;
 }
-export interface TrendlineState{slope:number;intercept:number;pivots:Swing[];lastUpdated:number;direction:Direction;r2:number}
-const trendlineStore=new Map<string,TrendlineState>();
-export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
-  const len=candles.length,now=candles.at(-1)?.timestamp;
-  if(len<20||now===undefined)return null;
-  const pivots=trendlinePivots(candles,direction==="SHORT").slice(-5);
-  if(pivots.length<3)return null;
-  const existing=trendlineStore.get(pair),maxAge=7*24*60*60*1000;
-  if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
-    const lastPivot=pivots[pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
-    const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
-    if(deviation<0.02)return{...existing,r2:0.85};
+export interface TrendlineState {
+  slope:number;
+  intercept:number;
+  pivots:Swing[];
+  lastUpdated:number;
+  direction:Direction;
+  r2:number;
+  anchors:[Swing,Swing];
+  middleTouch:Swing;
+  touchCount:number;
+  wickBreaches:number;
+  closeBreaches:number;
+  score:number;
+}
+interface TrendlineCandidate extends TrendlineState {}
+const TRENDLINE_LOOKBACK_BARS=180;
+const TRENDLINE_MAX_LATEST_ANCHOR_AGE=60;
+const TRENDLINE_MIN_ANCHOR_GAP=8;
+function lineAt(slope:number,intercept:number,index:number){return slope*index+intercept}
+function trendlineCandidateScore(
+  candles:Candle[],a:Swing,b:Swing,high:boolean,atrNow:number
+):TrendlineCandidate|null{
+  const span=b.index-a.index;
+  if(span<TRENDLINE_MIN_ANCHOR_GAP)return null;
+  const slope=(b.price-a.price)/span;
+  const intercept=a.price-slope*a.index;
+  const currentPrice=candles.at(-1)?.close??b.price;
+  const tolerance=Math.max(atrNow*0.28,currentPrice*0.0012);
+  const wickBreachTolerance=Math.max(atrNow*0.65,currentPrice*0.0025);
+  const closeBreachTolerance=Math.max(atrNow*0.35,currentPrice*0.0015);
+  const touches:Swing[]=[];
+  let wickBreaches=0,closeBreaches=0,bodyIntersections=0;
+  for(let i=a.index;i<candles.length;i++){
+    const candle=candles[i],line=lineAt(slope,intercept,i);
+    const edge=high?candle.high:candle.low;
+    const gap=high?edge-line:line-edge;
+    if(Math.abs(gap)<=tolerance)touches.push({index:i,price:edge,timestamp:candle.timestamp});
+    if(gap>wickBreachTolerance)wickBreaches++;
+    const closeGap=high?candle.close-line:line-candle.close;
+    if(closeGap>closeBreachTolerance)closeBreaches++;
+    const bodyEdge=high?Math.max(candle.open,candle.close):Math.min(candle.open,candle.close);
+    const bodyGap=high?bodyEdge-line:line-bodyEdge;
+    if(bodyGap>closeBreachTolerance)bodyIntersections++;
   }
-  const n=pivots.length,sumX=pivots.reduce((sum,p)=>sum+p.index,0),sumY=pivots.reduce((sum,p)=>sum+p.price,0);
-  const sumXY=pivots.reduce((sum,p)=>sum+p.index*p.price,0),sumX2=pivots.reduce((sum,p)=>sum+p.index*p.index,0);
-  const denominator=n*sumX2-sumX*sumX;
-  if(!denominator)return null;
-  const slope=(n*sumXY-sumX*sumY)/denominator,intercept=(sumY-slope*sumX)/n,yMean=sumY/n;
-  const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-yMean,2),0);
-  const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(slope*p.index+intercept),2),0);
-  const r2=ssTotal===0?0:1-ssResidual/ssTotal;
-  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:r(r2,2)};
-  trendlineStore.set(pair,state);
-  return state;
+  // A human-drawn line should have a real reaction between its two anchors.
+  const middleTouches=touches.filter(t=>t.index>a.index+1&&t.index<b.index-1);
+  if(!middleTouches.length)return null;
+  // Keep small wick noise, but reject a line that price repeatedly traded through.
+  if(wickBreaches>Math.max(2,Math.floor(span*0.035)))return null;
+  if(closeBreaches>Math.max(1,Math.floor(span*0.015)))return null;
+  // Require three separated reactions; adjacent candles around one swing count once.
+  const distinctTouches:Swing[]=[];
+  for(const touch of touches){
+    const last=distinctTouches.at(-1);
+    if(!last||touch.index-last.index>=3)distinctTouches.push(touch);
+    else if(Math.abs(touch.price-lineAt(slope,intercept,touch.index))<
+      Math.abs(last.price-lineAt(slope,intercept,last.index)))distinctTouches[distinctTouches.length-1]=touch;
+  }
+  if(distinctTouches.length<3)return null;
+  const pivotList=trendlinePivots(candles,high).filter(p=>p.index>=a.index&&p.index<=candles.length-1);
+  const pivotTouches=pivotList.filter(p=>Math.abs(p.price-lineAt(slope,intercept,p.index))<=tolerance);
+  const latestAge=candles.length-1-b.index;
+  const recencyScore=Math.max(0,12-latestAge/5);
+  const spanScore=Math.min(10,Math.log2(span+1)*1.5);
+  const score=distinctTouches.length*10+pivotTouches.length*5+middleTouches.length*4+
+    recencyScore+spanScore-wickBreaches*12-closeBreaches*24-bodyIntersections*1.5;
+  return {
+    slope,intercept,pivots:distinctTouches,lastUpdated:candles.at(-1)!.timestamp,
+    direction:high?"SHORT":"LONG",r2:0,anchors:[a,b],middleTouch:middleTouches
+      .sort((x,y)=>Math.abs(x.price-lineAt(slope,intercept,x.index))-Math.abs(y.price-lineAt(slope,intercept,y.index)))[0],
+    touchCount:distinctTouches.length,wickBreaches,closeBreaches,score
+  };
+}
+export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
+  void pair;
+  const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
+  const len=c.length,now=c.at(-1)?.timestamp;
+  if(len<20||now===undefined)return null;
+  const high=direction==="SHORT";
+  const allPivots=trendlinePivots(c,high).filter(p=>p.index>=Math.max(0,len-TRENDLINE_LOOKBACK_BARS));
+  if(allPivots.length<3)return null;
+  const atrNow=atr(c);
+  if(!Number.isFinite(atrNow)||atrNow<=0)return null;
+  let best:TrendlineCandidate|null=null;
+  for(let bi=1;bi<allPivots.length;bi++){
+    const b=allPivots[bi];
+    if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)continue;
+    for(let ai=0;ai<bi;ai++){
+      const a=allPivots[ai];
+      const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
+      if(candidate&&(!best||candidate.score>best.score))best=candidate;
+    }
+  }
+  return best;
 }
 function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
@@ -246,13 +316,18 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="SHORT").slice(-2);
   const state=getTrendline(pair,c,direction);
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
     pair,
     direction,
-    pivots:pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    pivots:state?.pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??[],
+    anchors:state?.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??null,
+    middleTouch:state?{i:state.middleTouch.index,p:state.middleTouch.price,t:state.middleTouch.timestamp}:null,
+    touchCount:state?.touchCount??0,
+    wickBreaches:state?.wickBreaches??null,
+    closeBreaches:state?.closeBreaches??null,
+    score:state?.score??null,
     slope:state?.slope??null,
     intercept:state?.intercept??null,
     priceAtCurrent
