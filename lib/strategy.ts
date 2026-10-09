@@ -174,7 +174,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const st4=stoch(c.map(x=>x.close));
   // Pasted V28 entry geometry: within 1.2% of the trendline is "near".
   // Do not add the newer ATR/price proximity gate on top of this threshold.
-  const near=!!zoneValue && zoneValue.distancePct<1.2;
+  const near=!!zoneValue && Math.abs(p-linePrice)/Math.max(Math.abs(linePrice),EPS)<0.012;
   const breakoutRecord:BreakoutRecord|undefined=undefined;
 
   const extreme=!!direction&&(direction==="LONG"?st4.k<20:st4.k>80);
