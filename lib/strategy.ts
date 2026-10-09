@@ -64,30 +64,87 @@ function trendlinePivots(c:Candle[],high:boolean):Swing[]{
   }
   return out;
 }
-export interface TrendlineState{slope:number;intercept:number;pivots:Swing[];lastUpdated:number;direction:Direction;r2:number}
-const trendlineStore=new Map<string,TrendlineState>();
+export interface TrendlineState {
+  slope:number;
+  intercept:number;
+  pivots:Swing[];
+  anchors:[Swing,Swing];
+  touches:number;
+  violations:number;
+  lastUpdated:number;
+  direction:Direction;
+  r2:number;
+}
+
+/**
+ * Select a real wick-anchored trendline, rather than regressing the pivots.
+ * Resistance is fitted to swing highs and should not be materially exceeded
+ * by subsequent highs; support is fitted to swing lows and should not be
+ * materially undercut by subsequent lows. The line is recomputed against the
+ * current candle indices on every scan, so a moving candle window cannot
+ * leave stale slope/intercept coordinates in cache.
+ */
 export function getTrendline(pair:string,candles:Candle[],direction:Direction):TrendlineState|null{
   const len=candles.length,now=candles.at(-1)?.timestamp;
   if(len<20||now===undefined)return null;
-  const pivots=trendlinePivots(candles,direction==="SHORT").slice(-5);
+
+  const isResistance=direction==="SHORT";
+  const allPivots=trendlinePivots(candles,isResistance);
+  const pivots=allPivots.slice(-18);
   if(pivots.length<3)return null;
-  const existing=trendlineStore.get(pair),maxAge=7*24*60*60*1000;
-  if(existing&&existing.direction===direction&&(now-existing.lastUpdated)<maxAge){
-    const lastPivot=pivots[pivots.length-1],projectedPrice=existing.slope*lastPivot.index+existing.intercept;
-    const deviation=Math.abs(lastPivot.price-projectedPrice)/Math.max(Math.abs(projectedPrice),EPS);
-    if(deviation<0.02)return{...existing,r2:0.85};
+
+  const currentAtr=atr(candles);
+  const tolerance=Math.max(currentAtr*0.2,Math.abs(candles.at(-1)!.close)*0.0015);
+  let best:{slope:number;intercept:number;anchors:[Swing,Swing];touches:number;violations:number;score:number;span:number}|null=null;
+
+  for(let i=0;i<pivots.length-1;i++){
+    for(let j=i+1;j<pivots.length;j++){
+      const a=pivots[i],b=pivots[j],dx=b.index-a.index;
+      if(dx<=0)continue;
+      const slope=(b.price-a.price)/dx;
+      const intercept=a.price-slope*a.index;
+      let touches=0,violations=0;
+
+      for(const pivot of pivots){
+        if(pivot.index<a.index)continue;
+        const projected=slope*pivot.index+intercept;
+        if(Math.abs(pivot.price-projected)<=tolerance)touches++;
+        if(isResistance ? pivot.price>projected+tolerance : pivot.price<projected-tolerance)violations++;
+      }
+
+      // Count actual wick breaches between the first anchor and the latest
+      // completed candle. A small ATR-based tolerance accommodates wick noise.
+      for(let k=a.index+1;k<len-1;k++){
+        const candle=candles[k],projected=slope*k+intercept;
+        if(isResistance ? candle.high>projected+tolerance : candle.low<projected-tolerance)violations++;
+      }
+
+      if(touches<3)continue;
+      const span=b.index-a.index;
+      const score=touches*100-violations*2+Math.min(span/len,1)*10;
+      if(!best||score>best.score||
+        (score===best.score&&touches>best.touches)||
+        (score===best.score&&touches===best.touches&&span>best.span)){
+        best={slope,intercept,anchors:[a,b],touches,violations,score,span};
+      }
+    }
   }
-  const n=pivots.length,sumX=pivots.reduce((sum,p)=>sum+p.index,0),sumY=pivots.reduce((sum,p)=>sum+p.price,0);
-  const sumXY=pivots.reduce((sum,p)=>sum+p.index*p.price,0),sumX2=pivots.reduce((sum,p)=>sum+p.index*p.index,0);
-  const denominator=n*sumX2-sumX*sumX;
-  if(!denominator)return null;
-  const slope=(n*sumXY-sumX*sumY)/denominator,intercept=(sumY-slope*sumX)/n,yMean=sumY/n;
-  const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-yMean,2),0);
-  const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(slope*p.index+intercept),2),0);
+  if(!best)return null;
+
+  const ssTotal=pivots.reduce((sum,p)=>sum+Math.pow(p.price-pivots.reduce((s,q)=>s+q.price,0)/pivots.length,2),0);
+  const ssResidual=pivots.reduce((sum,p)=>sum+Math.pow(p.price-(best!.slope*p.index+best!.intercept),2),0);
   const r2=ssTotal===0?0:1-ssResidual/ssTotal;
-  const state:TrendlineState={slope,intercept,pivots,lastUpdated:now,direction,r2:r(r2,2)};
-  trendlineStore.set(pair,state);
-  return state;
+  return{
+    slope:best.slope,
+    intercept:best.intercept,
+    pivots,
+    anchors:best.anchors,
+    touches:best.touches,
+    violations:best.violations,
+    lastUpdated:now,
+    direction,
+    r2:r(r2,2)
+  };
 }
 function structureTargets(direction:"LONG"|"SHORT",entry:number,candles:Candle[]):{tp1:number;tp2:number;tp1Source:string;tp2Source:string;tp1Pivot?:number;tp2Pivot?:number}{
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
@@ -246,13 +303,15 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 }
 export function getTrendlineDebug(pair:string,candles:Candle[],direction:"LONG"|"SHORT"){
   const c=[...candles].sort((a,b)=>a.timestamp-b.timestamp);
-  const pivots=swings(c,direction==="SHORT").slice(-2);
   const state=getTrendline(pair,c,direction);
   const priceAtCurrent=state?state.slope*(c.length-1)+state.intercept:null;
   return {
     pair,
     direction,
-    pivots:pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp})),
+    pivots:state?.pivots.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??[],
+    anchors:state?.anchors.map(x=>({i:x.index,p:x.price,t:x.timestamp}))??[],
+    touches:state?.touches??0,
+    violations:state?.violations??0,
     slope:state?.slope??null,
     intercept:state?.intercept??null,
     priceAtCurrent
