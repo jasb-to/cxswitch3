@@ -214,7 +214,7 @@ export interface StopCalc {
   marginUsagePct: number;
 }
 
-const MAX_LEVERAGE = 20;
+const MAX_LEVERAGE = 15;
 const MAINTENANCE_MARGIN_RATE = 0.01;
 const MIN_LIQUIDATION_BUFFER_PCT = 0.5;
 

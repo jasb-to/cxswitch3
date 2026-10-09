@@ -73,26 +73,47 @@ test("DOGE-style short selects structural TP1 and TP2 at the required distances"
   assert.ok(evaluateTp2RewardRisk("SHORT", entry, stop, targets.tp2).rr >= 1.5);
 });
 
-test("20x short with stop beyond modelled liquidation is invalid and blocked", () => {
+test("DOGE short at 15x remains blocked when buffer is below the 0.5% minimum", () => {
   const entry = 0.08524;
   const stop = 0.08964;
   const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 0.088, low: 0.084, close: 0.085 }));
   candles[10] = candle(10, { high: stop, low: 0.084, close: entry });
   const result = calculateStop("SHORT", entry, 0.085, 0.0005, candles);
+  const expectedLiq = entry * (1 + 1 / 15 - 0.01);
+  const expectedBuffer = (expectedLiq - stop) / expectedLiq * 100;
   assert.equal(result.stop, stop);
-  assert.ok(Math.abs(result.calc.liquidationPrice - 0.08865) < 0.00001);
-  assert.ok(result.calc.liquidationBufferPct < 0);
+  assert.ok(Math.abs(result.calc.liquidationPrice - expectedLiq) < 0.00001);
+  assert.ok(Math.abs(result.calc.liquidationBufferPct - expectedBuffer) < 0.01);
+  assert.ok(result.calc.liquidationBufferPct > 0);
+  assert.ok(result.calc.liquidationBufferPct < 0.5);
   assert.equal(result.valid, false);
   assert.equal(passesLiquidationBuffer(result.calc.liquidationBufferPct), false);
 });
 
-test("same short stop has a safe modelled liquidation buffer at 10x", () => {
-  const entry = 0.08524;
-  const stop = 0.08964;
-  const liq10x = entry * (1 + 1 / 10 - 0.01);
-  const buffer10x = calculateLiquidationBufferPct("SHORT", entry, stop, 10);
-  assert.ok(Math.abs(liq10x - 0.09291) < 0.00001);
-  assert.ok(Math.abs(buffer10x - ((liq10x - stop) / liq10x * 100)) < 1e-9);
-  assert.ok(buffer10x > 3.5 && buffer10x < 3.6);
-  assert.equal(passesLiquidationBuffer(buffer10x), true);
+test("15x short with entry 100 and stop 108 is blocked beyond modelled liquidation", () => {
+  const liq = 100 * (1 + 1 / 15 - 0.01);
+  const buffer = calculateLiquidationBufferPct("SHORT", 100, 108);
+  assert.ok(Math.abs(liq - 105.6666666667) < 1e-8);
+  assert.ok(buffer < 0);
+  assert.equal(passesLiquidationBuffer(buffer), false);
+});
+
+test("15x short with entry 100 and stop 105 passes the 0.5% liquidation buffer", () => {
+  const liq = 100 * (1 + 1 / 15 - 0.01);
+  const buffer = calculateLiquidationBufferPct("SHORT", 100, 105);
+  assert.ok(Math.abs(liq - 105.6666666667) < 1e-8);
+  assert.ok(Math.abs(buffer - ((liq - 105) / liq * 100)) < 1e-9);
+  assert.ok(buffer >= 0.5);
+  assert.equal(passesLiquidationBuffer(buffer), true);
+});
+
+test("ETH-like short at 15x has a positive buffer for entry 2572 and stop 2585", () => {
+  const entry = 2572;
+  const stop = 2585;
+  const liq = entry * (1 + 1 / 15 - 0.01);
+  const buffer = calculateLiquidationBufferPct("SHORT", entry, stop);
+  assert.ok(Math.abs(liq - 2717.7466666667) < 1e-6);
+  assert.ok(Math.abs(buffer - ((liq - stop) / liq * 100)) < 1e-9);
+  assert.ok(buffer > 4.8 && buffer < 5.0);
+  assert.equal(passesLiquidationBuffer(buffer), true);
 });
