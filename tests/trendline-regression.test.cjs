@@ -41,6 +41,22 @@ function trendlineCandles(direction, count = 40) {
   });
 }
 
+function highTrendlineCandles(direction, count = 40) {
+  const indexes = [5, 12, 19, 26, 33];
+  const ascending = [128, 131, 134, 137, 140];
+  const descending = [140, 137, 134, 131, 128];
+  const levels = direction === "ascending" ? ascending : descending;
+  const start = Date.UTC(2026, 0, 1);
+  return Array.from({ length: count }, (_, i) => ({
+    timestamp: start + i * FOUR_HOURS,
+    open: 114,
+    high: indexes.includes(i) ? levels[indexes.indexOf(i)] : 120,
+    low: 110,
+    close: 116,
+    volume: 1,
+  }));
+}
+
 function dailyBullishWithDescendingRecentLows() {
   // 28 full UTC days of 4H candles gives the daily direction logic enough history.
   const count = 28 * 6;
@@ -70,6 +86,17 @@ test("LONG trendline rejects descending swing lows", () => {
   assert.equal(debug.invalidSlope, true);
   assert.equal(debug.validForDirection, false);
   assert.ok(debug.slope < 0);
+  assert.equal(debug.pivots.length, 5);
+});
+
+test("SHORT trendline rejects ascending swing highs", () => {
+  const candles = highTrendlineCandles("ascending");
+  assert.equal(strategy.getTrendline("TEST-ASCENDING-SHORT", candles, "SHORT"), null);
+
+  const debug = strategy.getTrendlineDebug("TEST-ASCENDING-SHORT-DEBUG", candles, "SHORT");
+  assert.equal(debug.invalidSlope, true);
+  assert.equal(debug.validForDirection, false);
+  assert.ok(debug.slope > 0);
   assert.equal(debug.pivots.length, 5);
 });
 
