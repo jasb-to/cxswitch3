@@ -232,6 +232,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
   const d=dailyTrend(c);
+  if(pair==="BTC"){
+    const dailyCandles=daily(c);
+    console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
+  }
   // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
   // During a 1D transition we deliberately watch rather than flip direction early.
   const dailyTransition = d.direction && d.strength === "LOW" && d.spreadContracting;
@@ -345,7 +349,21 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{debug};
   }
 
-  const d=dailyTrend(c),dailyCloses=daily(c).map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
+  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
+  if(pair==="BTC"){
+    const last5Daily=dailyCandles.slice(-5).map(x=>({ts:new Date(x.timestamp).toISOString(),close:x.close}));
+    debug.push(`[1D AUDIT] ${pair}`);
+    debug.push(`  input 4H candles:        ${c.length}`);
+    debug.push(`  first 4H ts:             ${new Date(c[0]?.timestamp??0).toISOString()}`);
+    debug.push(`  last  4H ts:             ${new Date(c.at(-1)?.timestamp??0).toISOString()}`);
+    debug.push(`  aggregated daily candles: ${dailyCandles.length}`);
+    debug.push(`  first daily ts/close:    ${new Date(dailyCandles[0]?.timestamp??0).toISOString()} / ${dailyCandles[0]?.close??0}`);
+    debug.push(`  last  daily ts/close:    ${new Date(dailyCandles.at(-1)?.timestamp??0).toISOString()} / ${dailyCandles.at(-1)?.close??0}`);
+    debug.push(`  last 5 daily closes:     ${JSON.stringify(last5Daily)}`);
+    debug.push(`  EMA8:                    ${ema(dailyCloses,8).at(-1)??0}`);
+    debug.push(`  EMA21:                   ${ema(dailyCloses,21).at(-1)??0}`);
+    debug.push(`  direction:               ${d.direction??"NULL"}`);
+  }
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
