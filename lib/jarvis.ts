@@ -235,13 +235,13 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   }
 
   const dir=evaluation.direction;
-  if(evaluation.missing.includes("trendline_invalid")){
+  if(!signal&&evaluation.missing.includes("trendline_invalid")){
     const explanation=dir==="LONG"
       ?"swing lows are descending, not ascending support for a LONG."
       :"swing highs are ascending, not descending resistance for a SHORT.";
     return "[JARVIS STATE] "+pair+" — Trendline invalid — "+explanation+" Waiting for the structure to turn.";
   }
-  if(evaluation.missing.includes("4h_ema_opposed")){
+  if(!signal&&evaluation.missing.includes("4h_ema_opposed")){
     const explanation=dir==="LONG"
       ?"the 4H EMA is bearish against this LONG"
       :"the 4H EMA is bullish against this SHORT";
