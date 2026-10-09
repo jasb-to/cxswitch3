@@ -30,7 +30,7 @@ function dailyTrend(c:Candle[]):DailyRegime{
   const d=daily(c);
   if(d.length<25)return{direction:null,strength:"NEUTRAL",e5:0,e13:0,spread:0,spreadContracting:false,e5Slope:0,e13Slope:0};
   const closes=d.map(x=>x.close),ema5=ema(closes,5),ema13=ema(closes,13);
-  const e5=ema5.at(-1)!,e13=ema13.at(-1)!,e5Prev=ema5.at(-2)!,e13Prev=ema13.at(-2)!;
+  const e5=ema5.at(-1)!,e13=ema13.at(-1)!,e5Prev=ema5.at(-2)!,e13Prev=ema13.at(-2)!,price=closes.at(-1)!;
   const spread=Math.abs(e5-e13)/Math.max(price,EPS)*100;
   const spreadContracting=Math.abs(e5-e13)<Math.abs(e5Prev-e13Prev);
   const e5Slope=e5-e5Prev,e13Slope=e13-e13Prev;
