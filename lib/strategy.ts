@@ -153,15 +153,16 @@ export function getTrendline(pair:string,candles:Candle[],direction:Direction):T
   if(allPivots.length<3)return null;
   const atrNow=atr(c);
   if(!Number.isFinite(atrNow)||atrNow<=0)return null;
+  // Anchor B is the latest confirmed pivot of the required type. Older
+  // second anchors can make a mathematically neat but visually stale line;
+  // if the latest pivot cannot form a clean line, return no line instead.
+  const b=allPivots.at(-1)!;
+  if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)return null;
   let best:TrendlineCandidate|null=null;
-  for(let bi=1;bi<allPivots.length;bi++){
-    const b=allPivots[bi];
-    if(len-1-b.index>TRENDLINE_MAX_LATEST_ANCHOR_AGE)continue;
-    for(let ai=0;ai<bi;ai++){
-      const a=allPivots[ai];
-      const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
-      if(candidate&&(!best||candidate.score>best.score))best=candidate;
-    }
+  for(let ai=0;ai<allPivots.length-1;ai++){
+    const a=allPivots[ai];
+    const candidate=trendlineCandidateScore(c,a,b,high,atrNow);
+    if(candidate&&(!best||candidate.score>best.score))best=candidate;
   }
   return best;
 }
