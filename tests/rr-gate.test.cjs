@@ -28,14 +28,15 @@ test("signal engine identifies itself as restored V28", () => {
   assert.equal(CURRENT_SIGNAL_VERSION, 28);
 });
 
-test("stop uses the highest high from the last 10 closed candles and ignores the open candle", () => {
+test("stop uses the highest high from the last 10 closed candles and rejects a stop beyond liquidation", () => {
   const candles = Array.from({ length: 12 }, (_, i) => candle(i));
   candles[10] = candle(10, { high: 108, low: 99.8, close: 100 });
   candles[11] = candle(11, { high: 150, low: 99.8, close: 100 });
   const result = calculateStop("SHORT", 100, 2, candles);
   assert.equal(result.stop, 108);
   assert.equal(result.calc.structuralAnchor, 108);
-  assert.equal(result.valid, true);
+  assert.equal(result.valid, false);
+  assert.equal(result.invalidReason, "stop_at_or_beyond_liquidation");
 });
 
 test("when the recent swing is close, the stop respects the 1.5 ATR floor", () => {
@@ -65,7 +66,7 @@ test("short targets choose the nearest lower pivot then the next lower pivot", (
   assert.equal(targets.tp2, 80);
 });
 
-test("20x liquidation distance is diagnostic and does not invalidate a V28 stop", () => {
+test("20x stop at or beyond liquidation is invalid even when the structural stop is correct", () => {
   const entry = 0.08524;
   const stop = 0.08964;
   const candles = Array.from({ length: 12 }, (_, i) => candle(i, { high: 0.086, low: 0.084, close: entry }));
@@ -77,7 +78,8 @@ test("20x liquidation distance is diagnostic and does not invalidate a V28 stop"
   assert.ok(Math.abs(result.calc.liquidationPrice - expectedLiq) < 0.00001);
   assert.ok(Math.abs(result.calc.liquidationBufferPct - expectedBuffer) < 0.01);
   assert.ok(result.calc.liquidationBufferPct < 0);
-  assert.equal(result.valid, true);
+  assert.equal(result.valid, false);
+  assert.equal(result.invalidReason, "stop_at_or_beyond_liquidation");
 });
 
 test("liquidation diagnostic defaults to 20x", () => {
