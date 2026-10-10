@@ -11,6 +11,7 @@ import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
 export const CURRENT_SIGNAL_VERSION=28;
 type Direction="LONG"|"SHORT";
+const VERBOSE_CRON_LOGS=process.env.CRON_VERBOSE_LOGS==="true";
 const TTL=24*60*60*1000, EPS=1e-12;
 const r=(n:number,d=2)=>{const m=10**d;return Math.round(n*m)/m};
 const priceRound=(n:number)=>{if(!Number.isFinite(n))return n;const d=Math.abs(n)>=1000?0:Math.abs(n)>=1?2:Math.abs(n)>=0.1?3:5;return r(n,d)};
@@ -206,14 +207,14 @@ export function calculateStop(
   return {stop,calc:{structuralAnchor:priceRound(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid:true};
 }
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,lastBreakout?:BreakoutRecord):GateEvaluation{
-  console.log(`[EVAL CALL] pair=${pair} candles4h=${candles4h.length} at ${new Date().toISOString()}`);
+  if(VERBOSE_CRON_LOGS)console.log(`[EVAL CALL] pair=${pair} candles4h=${candles4h.length} at ${new Date().toISOString()}`);
   void lastBreakout;
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
   const p=currentPrice??c.at(-1)?.close??0;
   const d=dailyTrend(c);
   if(pair==="BTC"){
     const dailyCandles=daily(c);
-    console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
+    if(VERBOSE_CRON_LOGS)console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
   // The daily EMA5/13 owns direction. If 4H points the other way, wait;
   // a neutral 4H preserves the daily bias.
@@ -224,10 +225,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const tactical=tacticalDirection(c);
   const fourHDirection=tactical.direction;
   if(d.direction && fourHDirection && d.direction!==fourHDirection){
-    console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H=${fourHDirection} | WAIT`);
+    if(VERBOSE_CRON_LOGS)console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H=${fourHDirection} | WAIT`);
   }
   if(dailyHistoryReady&&!d.direction){
-    console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
+    if(VERBOSE_CRON_LOGS)console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
   }
   const missing:string[]=[];
   if(!direction)missing.push("direction");
@@ -341,7 +342,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
       `EMA13: ${ema(auditCloses,13).at(-1)??0}`,
       `direction: ${auditCloses.length<25?"NULL (fewer than 25 daily candles)":((ema(auditCloses,5).at(-1)??0)>(ema(auditCloses,13).at(-1)??0)?"LONG":"SHORT")}`
     ];
-    console.log(auditLines.join(" | "));
+    if(VERBOSE_CRON_LOGS)console.log(auditLines.join(" | "));
   }
   const p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
   if(daily(c).length<25){

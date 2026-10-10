@@ -255,7 +255,7 @@ export async function GET(request:Request){
   ]);stateCandles4h=c4||[];stateCandles15m=c15||[];
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});return;}
   const ema513=get4HEmaDiagnostic(c4);
-  console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
+
   const price=c1.at(-1)!.close;
   const existing=active.find(x=>x.pair===pair);
   const result=generateSignal(pair,c1,c4,c15,price);
@@ -271,12 +271,27 @@ export async function GET(request:Request){
   snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"?"LONG":canonicalDailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
-  if(gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
-  dbg.filter(x=>x.startsWith("[SWINGS]")||x.startsWith("[TL]")||x.startsWith("[TL POINTS]")).forEach(x=>console.log(x));
+  if(VERBOSE_CRON_LOGS&&gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
+  if(VERBOSE_CRON_LOGS)dbg.filter(x=>x.startsWith("[SWINGS]")||x.startsWith("[TL]")||x.startsWith("[TL POINTS]")).forEach(x=>console.log(x));
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
   const signal=result.signal;
-  if(!signal){if(!existing)console.log(`[PAIR] ${pair} | 1D=${snapshot.dailyDirection||"—"} | 4H=${ema513.label} | WAIT`);return;}
+  if(!signal){
+    if(!existing){
+      const dailySide=snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":null;
+      const conflict=!!dailySide&&!!ema513.direction&&dailySide!==ema513.direction;
+      let waitReason=conflict?"1D/4H conflict":"setup incomplete";
+      if(!conflict&&gateDebug){
+        try{
+          const gateState=JSON.parse(gateDebug.slice(8));
+          const missing=Array.isArray(gateState.missing)?gateState.missing.filter((x:string)=>x!=="direction"):[];
+          if(missing.length)waitReason=`need ${missing.join(", ")}`;
+        }catch{}
+      }
+      console.log(`[PAIR] ${pair} | 1D=${snapshot.dailyDirection||"—"} | 4H=${ema513.label} | WAIT — ${waitReason}`);
+    }
+    return;
+  }
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2} | RR ${signal.rr}`);
   if(existing){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);return;}
   const history=await getSignalHistory();
@@ -313,7 +328,7 @@ export async function GET(request:Request){
   } finally {
     const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);
     if(stateMarket)stateMarket.jarvisState=jarvisState;
-    console.log(jarvisState);
+    if(VERBOSE_CRON_LOGS)console.log(jarvisState);
   }
  })); }
  await setMarketData(marketData);
