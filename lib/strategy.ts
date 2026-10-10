@@ -51,12 +51,18 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
   return{direction:null,turning:false,label:x.label};
 }
 
-// The 1D EMA5/13 owns direction. The 4H EMA5/13 confirms alignment and
-// identifies early turns; a turn never flips the daily bias or bypasses conflict protection.
+// The 1D EMA5/13 owns direction. The 4H EMA8/21 is the directional alignment check;
+// the faster 4H EMA5/13 is tactical entry timing and must not veto a trend-aligned setup by itself.
+function fourHTrendDirection(c:Candle[]):Direction|null{
+  const closes=c.map(x=>x.close);
+  const e8=ema(closes,8).at(-1)??0;
+  const e21=ema(closes,21).at(-1)??0;
+  return e8>e21?"LONG":e8<e21?"SHORT":null;
+}
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
   if(!dailyDirection)return null;
-  const tactical=tacticalDirection(c);
-  return tactical.direction && tactical.direction!==dailyDirection ? null : dailyDirection;
+  const fourHDirection=fourHTrendDirection(c);
+  return fourHDirection && fourHDirection!==dailyDirection ? null : dailyDirection;
 }
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
@@ -223,7 +229,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const direction=resolveSignalDirection(c,d.direction);
   const ema4h=get4HEmaDiagnostic(c);
   const tactical=tacticalDirection(c);
-  const fourHDirection=tactical.direction;
+  const fourHDirection=fourHTrendDirection(c);
   if(d.direction && fourHDirection && d.direction!==fourHDirection){
     if(VERBOSE_CRON_LOGS)console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H=${fourHDirection} | WAIT`);
   }
@@ -365,7 +371,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
-  debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength} | disagreement means WAIT`);
+  debug.push(`[4H CONTEXT] EMA8/21 ${fourHTrendDirection(c)??"NEUTRAL"} | EMA5/13 ${tactical.direction??"NEUTRAL"} — ${tactical.label} | 1D owns direction; 8/21 disagreement means WAIT, 5/13 is tactical timing`);
 
   if(!evaluation.direction){
     debug.push(d.direction
