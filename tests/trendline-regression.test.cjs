@@ -145,7 +145,7 @@ test("SOL-style inverted trendline is diagnostic and does not create a slope-inv
     Date.UTC(2026, 2, 1),
   );
 
-  assert.equal(result.signal, undefined, "an inverted LONG support line must never produce a signal");
+  assert.equal(result.signal?.type, "ENTRY_1", "an inverted trendline must not veto the existing ENTRY_1 Stoch extreme trigger");
   const gates = result.debug.find((line) => line.startsWith("[GATES]"));
   assert.ok(gates);
   assert.doesNotMatch(gates, /trendline_invalid/);
