@@ -49,6 +49,13 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
   if(x.stage.includes("BULLISH"))return{direction:"LONG",turning:false,label:x.label};
   return{direction:null,turning:false,label:x.label};
 }
+
+// A detected 4H EMA turn changes the signal direction; it is not an additional entry gate.
+// Outside an active turn, retain the established 1D EMA5/13 direction.
+function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
+  const tactical=tacticalDirection(c);
+  return tactical.turning&&tactical.direction?tactical.direction:dailyDirection;
+}
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
 function trendlinePivots(c:Candle[],high:boolean):Swing[]{
@@ -207,11 +214,11 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     const dailyCandles=daily(c);
     console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
-  // V28 hierarchy: the 1D trend owns direction. The 4H is timing/structure only.
-  // With enough history, only an exact EMA5/EMA13 tie leaves the daily direction neutral.
+  // The 1D EMA5/13 remains the baseline; an existing 4H EMA turning state can take direction over.
+  // This reuses the current diagnostic instead of adding another entry gate.
   const dailyHistoryReady=daily(c).length>=25;
   const dailyTransition = dailyHistoryReady&&!d.direction;
-  const direction=d.direction;
+  const direction=resolveSignalDirection(c,d.direction);
   if(dailyHistoryReady&&!d.direction){
     console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
   }
@@ -337,18 +344,20 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
-  // Hard V28 direction lock: no signal may ever differ from the confirmed 1D direction.
-  if(evaluation.direction && evaluation.direction!==d.direction){
-    debug.push(`[LOCK] V28 direction mismatch blocked: gate=${evaluation.direction} 1D=${d.direction??"NEUTRAL"}`);
-    debug.push("[SIGNAL] none — V28 direction lock");
+  // Keep the consistency check, but compare against the resolved signal direction:
+  // a live 4H EMA turn is allowed to override the slower 1D baseline.
+  const resolvedDirection=resolveSignalDirection(c,d.direction);
+  if(evaluation.direction && evaluation.direction!==resolvedDirection){
+    debug.push(`[LOCK] V28 direction mismatch blocked: gate=${evaluation.direction} resolved=${resolvedDirection??"NEUTRAL"}`);
+    debug.push("[SIGNAL] none — V28 direction consistency check");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
-  debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength}`);
+  debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D baseline: ${d.direction??"NEUTRAL"} ${d.strength} | 4H turning state may override signal direction`);
 
   if(!evaluation.direction){
     debug.push(d.direction
-      ? `[DIRECTION] V28 1D ${d.direction} | 4H is timing/context only`
+      ? `[DIRECTION] V28 resolved signal direction ${evaluation.direction} | 1D baseline ${d.direction}`
       : (dailyCandles.length>=25
         ? `[1D TRANSITION] ${pair} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} equal — no direction`
         : "[1D] NEUTRAL | insufficient daily history"));
