@@ -204,3 +204,31 @@ test("opposed 4H EMA does not veto ENTRY_2; Jarvis keeps it contextual", () => {
     emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
   }
 });
+
+
+test("a live 4H EMA turn resolves signal direction instead of fighting the reversal", () => {
+  const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
+  const candles = dailyBullishWithDescendingRecentLows();
+  const pair = "DIRECTION-TURN-OVERRIDE";
+  try {
+    emaDiagnostic.get4HEmaDiagnostic = () => ({
+      turning: false, spread: -1, stage: "BULLISH_MEDIUM", label: "BULLISH MEDIUM",
+    });
+    const baseline = strategy.evaluateGates(pair, candles, candles.at(-1).close);
+    assert.equal(baseline.direction, "LONG", "without a turn, the daily baseline remains in control");
+
+    emaDiagnostic.get4HEmaDiagnostic = () => ({
+      turning: true, spread: 1, stage: "EARLY_BEARISH_L1", label: "BEARISH TREND TURNING",
+    });
+    const turningBearish = strategy.evaluateGates(pair, candles, candles.at(-1).close);
+    assert.equal(turningBearish.direction, "SHORT", "a detected bearish 4H turn must change the signal direction");
+
+    emaDiagnostic.get4HEmaDiagnostic = () => ({
+      turning: true, spread: -1, stage: "EARLY_BULLISH_L1", label: "BULLISH TREND TURNING",
+    });
+    const turningBullish = strategy.evaluateGates(pair, candles, candles.at(-1).close);
+    assert.equal(turningBullish.direction, "LONG", "a detected bullish 4H turn must change the signal direction");
+  } finally {
+    emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
+  }
+});
