@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "lib", "strategy.ts"), "utf8");
+const cronSource = fs.readFileSync(path.join(__dirname, "..", "app", "api", "cron", "route.ts"), "utf8");
 
 test("direction conflict uses 1D EMA5/13 plus 4H EMA8/21, not the tactical EMA5/13 turn", () => {
   const helper = source.match(/function fourHTrendDirection\(c:Candle\[\]\):Direction\|null\{[\s\S]*?\n\}/);
@@ -22,4 +23,9 @@ test("direction conflict uses 1D EMA5/13 plus 4H EMA8/21, not the tactical EMA5/
 test("the 4H EMA5/13 remains a tactical early-entry signal, not the direction conflict gate", () => {
   assert.match(source, /const earlyTurnEntry=!!direction&&tactical\.turning&&tactical\.direction===direction&&stochCross/);
   assert.match(source, /const entry2Candidate=!!direction&&near&&turn&&!extreme/);
+});
+
+test("cron wait reason uses the same 4H EMA 8/21 direction as the strategy and dashboard", () => {
+  assert.match(cronSource, /const fourHSide=normalizeSide\(snapshot\.fourHDirection\)/);
+  assert.doesNotMatch(cronSource, /const fourHSide=ema513\.turning/);
 });
