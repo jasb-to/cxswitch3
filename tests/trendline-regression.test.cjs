@@ -206,13 +206,12 @@ test("20x stop at or beyond modelled liquidation is invalid", () => {
   assert.ok(result.calc.liquidationBufferPct <= 0);
 });
 
-test("tactical 4H EMA 5/13 does not veto ENTRY_2 when 4H EMA 8/21 agrees", () => {
+test("opposing 4H EMA 5/13 blocks ENTRY_2 even if EMA 8/21 agrees", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = entry2VetoCandles();
   const pair = "SOL-ENTRY2-EMA-REGRESSION";
   const line = strategy.getTrendline(pair, candles, "LONG");
   assert.ok(line);
-  assert.ok(line.slope > 0);
   const currentPrice = line.slope * (candles.length - 1) + line.intercept;
 
   try {
@@ -222,28 +221,26 @@ test("tactical 4H EMA 5/13 does not veto ENTRY_2 when 4H EMA 8/21 agrees", () =>
     assert.equal(aligned.trigger.entry2, true);
     assert.equal(aligned.trigger.signalType, "ENTRY_2");
 
-    // Flip only the fast tactical diagnostic; 4H EMA 8/21 remains bullish.
+    // The same price/line cannot fire while the 4H EMA 5/13 is bearish against a daily LONG.
     emaDiagnostic.get4HEmaDiagnostic = () => ({ label:"BEARISH MEDIUM", direction:"BEARISH", stage:"BEARISH_MEDIUM", turning:false, spread:-1 });
     const opposed = strategy.evaluateGates(pair, candles, currentPrice);
-    assert.equal(opposed.direction, "LONG");
-    assert.equal(opposed.trigger.entry2, true);
-    assert.equal(opposed.trigger.signalType, "ENTRY_2");
-    assert.equal(opposed.missing.includes("direction"), false);
+    assert.equal(opposed.direction, null);
+    assert.equal(opposed.trigger.entry2, false);
+    assert.equal(opposed.missing.includes("direction"), true);
 
     const narration = jarvis.narratePairState(
       "SOL",
       {
         currentPrice,
         dailyDirection: "BULL",
-        fourHDirection: "BEAR",
-        fourH513: { label: "BEARISH MEDIUM" },
+        fourHDirection: "BULL",
+        fourHTacticalDirection: "BEAR",
+        fourHTacticalLabel: "BEARISH MEDIUM",
       },
       candles,
       undefined,
     );
-    assert.match(narration, /The 4H is bearish/);
-    assert.match(narration, /Stoch timing is supporting ENTRY_2/i);
-    assert.doesNotMatch(narration, /ENTRY_2 blocked/i);
+    assert.match(narration, /4H EMA 5\/13 is bearish against the daily direction/i);
   } finally {
     emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
   }
@@ -270,7 +267,7 @@ test("aligned 4H bullish turn plus fresh StochRSI crossover can fire early ENTRY
   }
 });
 
-test("1D LONG follows 4H EMA 8/21; fast EMA 5/13 disagreement is only tactical", () => {
+test("1D LONG waits on opposing EMA 5/13 but 4H EMA 8/21 does not gate entry", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
   const pair = "DIRECTION-AGREEMENT-LONG";
@@ -279,23 +276,23 @@ test("1D LONG follows 4H EMA 8/21; fast EMA 5/13 disagreement is only tactical",
     assert.equal(strategy.evaluateGates(pair, candles, candles.at(-1).close).direction, "LONG");
 
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:-1, stage:"BEARISH_MEDIUM", label:"BEARISH MEDIUM" });
-    const tacticalDisagreement = strategy.evaluateGates(pair, candles, candles.at(-1).close);
-    assert.equal(tacticalDisagreement.direction, "LONG");
-    assert.equal(tacticalDisagreement.missing.includes("direction"), false);
+    const tacticalConflict = strategy.evaluateGates(pair, candles, candles.at(-1).close);
+    assert.equal(tacticalConflict.direction, null);
+    assert.equal(tacticalConflict.missing.includes("direction"), true);
 
+    // A genuinely bearish 4H EMA 8/21 trend does not veto the daily + EMA5/13 entry alignment.
     const conflictingCandles = withRecent4HTrend(candles, "bearish");
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:1, stage:"BULLISH_MEDIUM", label:"BULLISH MEDIUM" });
-    const conflict = strategy.evaluateGates(pair + "-REAL-CONFLICT", conflictingCandles, conflictingCandles.at(-1).close);
-    assert.equal(conflict.direction, null);
-    assert.ok(conflict.missing.includes("direction"));
-    assert.equal(conflict.allPassed, false);
+    const managementDisagreement = strategy.evaluateGates(pair + "-8-21", conflictingCandles, conflictingCandles.at(-1).close);
+    assert.equal(managementDisagreement.direction, "LONG");
+    assert.equal(managementDisagreement.missing.includes("direction"), false);
 
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:0, stage:"NEUTRAL", label:"NEUTRAL" });
     assert.equal(strategy.evaluateGates(pair, candles, candles.at(-1).close).direction, "LONG");
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });
 
-test("1D SHORT follows 4H EMA 8/21; fast EMA 5/13 disagreement is only tactical", () => {
+test("1D SHORT waits on opposing EMA 5/13 but 4H EMA 8/21 does not gate entry", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const bullish = dailyBullishWithDescendingRecentLows();
   const bearish = bullish.map(c => ({ ...c, open:300-c.open, close:300-c.close, high:300-c.low, low:300-c.high }));
@@ -303,14 +300,18 @@ test("1D SHORT follows 4H EMA 8/21; fast EMA 5/13 disagreement is only tactical"
   try {
     assert.equal(strategy.evaluateGates(pair, bearish, bearish.at(-1).close).direction, "SHORT");
 
+    // A bullish fast 5/13 state against a daily SHORT must wait.
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:1, stage:"BULLISH_MEDIUM", label:"BULLISH MEDIUM" });
-    assert.equal(strategy.evaluateGates(pair, bearish, bearish.at(-1).close).direction, "SHORT");
+    const tacticalConflict = strategy.evaluateGates(pair, bearish, bearish.at(-1).close);
+    assert.equal(tacticalConflict.direction, null);
+    assert.ok(tacticalConflict.missing.includes("direction"));
 
+    // A bullish 4H EMA 8/21 alone is not an entry gate when 1D and EMA5/13 align SHORT.
     const conflictingCandles = withRecent4HTrend(bearish, "bullish");
-    const conflict = strategy.evaluateGates(pair + "-REAL-CONFLICT", conflictingCandles, conflictingCandles.at(-1).close);
-    assert.equal(conflict.direction, null);
-    assert.ok(conflict.missing.includes("direction"));
-    assert.equal(conflict.allPassed, false);
+    emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:-1, stage:"BEARISH_MEDIUM", label:"BEARISH MEDIUM" });
+    const managementDisagreement = strategy.evaluateGates(pair + "-8-21", conflictingCandles, conflictingCandles.at(-1).close);
+    assert.equal(managementDisagreement.direction, "SHORT");
+    assert.equal(managementDisagreement.missing.includes("direction"), false);
 
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:-1, stage:"BEARISH_MEDIUM", label:"BEARISH MEDIUM" });
     assert.equal(strategy.evaluateGates(pair, bearish, bearish.at(-1).close).direction, "SHORT");
@@ -319,13 +320,13 @@ test("1D SHORT follows 4H EMA 8/21; fast EMA 5/13 disagreement is only tactical"
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });
 
-test("4H EMA 5/13 turning state is tactical and does not override 1D + 4H EMA 8/21 bias", () => {
+test("4H EMA 5/13 turn must point with the daily bias", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
   try {
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:true, spread:-1, stage:"NEUTRAL", label:"BULLISH TREND TURNING" });
     assert.equal(strategy.evaluateGates("TURN-BULL", candles, candles.at(-1).close).direction, "LONG");
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:true, spread:1, stage:"NEUTRAL", label:"BEARISH TREND TURNING" });
-    assert.equal(strategy.evaluateGates("TURN-BEAR", candles, candles.at(-1).close).direction, "LONG");
+    assert.equal(strategy.evaluateGates("TURN-BEAR", candles, candles.at(-1).close).direction, null);
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });
