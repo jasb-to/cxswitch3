@@ -280,7 +280,8 @@ export async function GET(request:Request){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      const fourHSide=normalizeSide(ema513.direction);
+      // A turning diagnostic can have direction=NEUTRAL while its label and spread already identify the turn. Resolve it the same way as get4HEmaDiagnostic() does for its turning label.
+      const fourHSide=ema513.turning?(ema513.spread<0?"LONG":ema513.spread>0?"SHORT":null):normalizeSide(ema513.direction);
       const conflict=!!dailySide&&!!fourHSide&&dailySide!==fourHSide;
       let waitReason=conflict?"1D/4H conflict":"setup incomplete";
       if(!conflict&&gateDebug){
