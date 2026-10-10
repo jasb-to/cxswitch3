@@ -197,8 +197,8 @@ test("opposed 4H EMA does not veto ENTRY_2; Jarvis keeps it contextual", () => {
       candles,
       undefined,
     );
-    assert.match(narration, /The 1D is bullish/);
-    assert.match(narration, /4H is bearish/);
+    assert.match(narration, /4H is bearish context/);
+    assert.match(narration, /trendline \+ StochRSI entry setup/i);
     assert.doesNotMatch(narration, /ENTRY_2 blocked/i);
   } finally {
     emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
