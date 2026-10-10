@@ -209,8 +209,10 @@ export function calculateStop(
   const atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
   const liquidationPrice=direction==="LONG"?entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE):entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
   const liquidationBufferPct=calculateLiquidationBufferPct(direction,entry,stop,MAX_LEVERAGE);
-  // Liquidation distance is informational and never suppresses a V28 entry.
-  return {stop,calc:{structuralAnchor:priceRound(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)},valid:true};
+  const calc={structuralAnchor:priceRound(structuralAnchor),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)};
+  // Never emit a setup whose stop is at or beyond modelled liquidation at 20x.
+  if(liquidationBufferPct<=0)return{stop,calc,valid:false,invalidReason:"stop_at_or_beyond_liquidation"};
+  return {stop,calc,valid:true};
 }
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,lastBreakout?:BreakoutRecord):GateEvaluation{
   if(VERBOSE_CRON_LOGS)console.log(`[EVAL CALL] pair=${pair} candles4h=${candles4h.length} at ${new Date().toISOString()}`);
@@ -255,21 +257,21 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const extreme=!!direction&&(direction==="LONG"?st4.k<20:st4.k>80);
   const turn=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
-  // ENTRY_1 keeps the original extreme-Stoch trigger and adds the early-turn setup:
-  // 4H EMA5/13 turning toward the 1D bias + a fresh directional StochRSI crossover.
-  // The 4H EMA5/13 does not need to complete its crossover before this early entry.
+  // ENTRY_1 requires both a 4H EMA5/13 turn toward the 1D bias and a fresh
+  // directional StochRSI crossover. An extreme Stoch reading alone is NOT an entry.
+  // Do not wait for a completed EMA5/13 crossover; the early-turn diagnostic is sufficient.
   const bullishStochCross=st4.pk<=st4.pd&&st4.k>st4.d;
   const bearishStochCross=st4.pk>=st4.pd&&st4.k<st4.d;
   const stochCross=direction==="LONG"?bullishStochCross:bearishStochCross;
   const earlyTurnEntry=!!direction&&tactical.turning&&tactical.direction===direction&&stochCross;
-  const entry1=!!direction&&(extreme||earlyTurnEntry);
+  const entry1=earlyTurnEntry;
   // ENTRY_2 remains the existing trendline proximity + directional StochRSI turn,
   // provided it is not already at the extreme. No extra EMA or indicator gate.
   const entry2Candidate=!!direction&&near&&turn&&!extreme;
   // The 4H diagnostic is contextual for entries after direction agreement is resolved.
   const entry2=entry2Candidate;
   let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
-  if(!entry1&&!entry2Candidate&&direction)missing.push("stoch_turn_or_extreme");
+  if(!entry1&&!entry2Candidate&&direction)missing.push("entry1_ema_turn_and_stoch_cross_or_entry2");
 
   const emaAdvisory:string[]=[];
   if(signalType && direction==="SHORT" && !ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
@@ -416,7 +418,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,a,c);
   const stop=calculatedStop.stop;
   if(!calculatedStop.valid){
-    debug.push(`[SIGNAL BLOCKED] ${pair} | invalid stop inputs`);
+    debug.push(`[SIGNAL BLOCKED] ${pair} | ${calculatedStop.invalidReason??"invalid stop inputs"}`);
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   const targets=structureTargets(evaluation.direction!,entryBase,c);
