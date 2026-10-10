@@ -216,7 +216,7 @@ test("tactical 4H EMA 5/13 does not veto ENTRY_2 when 4H EMA 8/21 agrees", () =>
       candles,
       undefined,
     );
-    assert.match(narration, /4H is bearish context/);
+    assert.match(narration, /The 4H is bearish/);
     assert.match(narration, /trendline \+ StochRSI entry setup/i);
     assert.doesNotMatch(narration, /ENTRY_2 blocked/i);
   } finally {
