@@ -50,10 +50,8 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
   return{direction:null,turning:false,label:x.label};
 }
 
-// A detected 4H EMA turn changes the signal direction; it is not an additional entry gate.
-// Outside an active turn, retain the established 1D EMA5/13 direction.
-// The 1D EMA5/13 owns baseline direction. The 4H confirms it, pauses entries
-// when it clearly disagrees, and never flips the daily direction.
+// The 1D EMA5/13 owns direction. The 4H EMA5/13 confirms alignment and
+// identifies early turns; a turn never flips the daily bias or bypasses conflict protection.
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
   if(!dailyDirection)return null;
   const tactical=tacticalDirection(c);
@@ -223,7 +221,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const dailyTransition = dailyHistoryReady&&!d.direction;
   const direction=resolveSignalDirection(c,d.direction);
   const ema4h=get4HEmaDiagnostic(c);
-  const fourHDirection=tacticalDirection(c).direction;
+  const tactical=tacticalDirection(c);
+  const fourHDirection=tactical.direction;
   if(d.direction && fourHDirection && d.direction!==fourHDirection){
     console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H=${fourHDirection} | WAIT`);
   }
@@ -250,10 +249,16 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
   const extreme=!!direction&&(direction==="LONG"?st4.k<20:st4.k>80);
   const turn=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
-  // ENTRY_1: trendline proximity + directional extreme StochRSI.
-  const entry1=!!direction&&near&&extreme;
-  // ENTRY_2: trendline proximity + StochRSI turning with the daily bias,
-  // provided it is not already at the extreme. No breakout/retest lifecycle.
+  // ENTRY_1 keeps the original extreme-Stoch trigger and adds the early-turn setup:
+  // 4H EMA5/13 turning toward the 1D bias + a fresh directional StochRSI crossover.
+  // The 4H EMA5/13 does not need to complete its crossover before this early entry.
+  const bullishStochCross=st4.pk<=st4.pd&&st4.k>st4.d;
+  const bearishStochCross=st4.pk>=st4.pd&&st4.k<st4.d;
+  const stochCross=direction==="LONG"?bullishStochCross:bearishStochCross;
+  const earlyTurnEntry=!!direction&&tactical.turning&&tactical.direction===direction&&stochCross;
+  const entry1=!!direction&&near&&(extreme||earlyTurnEntry);
+  // ENTRY_2 remains the existing trendline proximity + directional StochRSI turn,
+  // provided it is not already at the extreme. No extra EMA or indicator gate.
   const entry2Candidate=!!direction&&near&&turn&&!extreme;
   // The 4H diagnostic is contextual for entries after direction agreement is resolved.
   const entry2=entry2Candidate;

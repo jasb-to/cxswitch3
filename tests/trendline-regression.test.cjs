@@ -206,6 +206,26 @@ test("opposed 4H EMA does not veto ENTRY_2; Jarvis keeps it contextual", () => {
 });
 
 
+test("aligned 4H bullish turn plus fresh StochRSI crossover can fire early ENTRY_1", () => {
+  const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
+  const candles = entry2VetoCandles();
+  const pair = "EARLY-TURN-ENTRY1";
+  const line = strategy.getTrendline(pair, candles, "LONG");
+  assert.ok(line);
+  const currentPrice = line.slope * (candles.length - 1) + line.intercept;
+  try {
+    emaDiagnostic.get4HEmaDiagnostic = () => ({
+      turning: true, spread: -1, stage: "EARLY_BULLISH_L1", label: "BULLISH TREND TURNING",
+    });
+    const result = strategy.evaluateGates(pair, candles, currentPrice);
+    assert.equal(result.direction, "LONG");
+    assert.equal(result.trigger.entry1, true, "early aligned EMA turn + StochRSI crossover should qualify as ENTRY_1");
+    assert.equal(result.trigger.signalType, "ENTRY_1");
+  } finally {
+    emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
+  }
+});
+
 test("1D/4H agreement keeps daily LONG, waits on bearish 4H, and permits neutral 4H", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
