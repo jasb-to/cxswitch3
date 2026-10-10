@@ -177,15 +177,12 @@ test("an inverted trendline stays diagnostic, but extreme Stoch alone cannot fir
     assert.doesNotMatch(gates, /trendline_invalid/);
     assert.doesNotMatch(gates, /4h_ema_opposed/);
 
-    const swings = result.debug.find((line) => line.startsWith("[SWINGS]"));
-    assert.ok(swings);
-    assert.match(swings, /"i":130/);
-    assert.match(swings, /"i":162/);
-
-    const trendline = result.debug.find((line) => line.startsWith("[TL]"));
-    assert.ok(trendline);
-    assert.match(trendline, /slope is diagnostic only, not an entry gate/);
-    assert.match(trendline, /r2 /);
+    const trendline = strategy.getTrendlineDebug("SOL-REGRESSION-TL", candles, "LONG");
+    assert.equal(trendline.trendlineAvailable, true);
+    assert.ok(trendline.slope < 0, "the inverted line remains available as context");
+    assert.ok(trendline.pivots.some((pivot) => pivot.i === 130));
+    assert.ok(trendline.pivots.some((pivot) => pivot.i === 162));
+    assert.ok(trendline.r2 !== null);
   } finally {
     emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
   }
