@@ -53,8 +53,12 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
 // A detected 4H EMA turn changes the signal direction; it is not an additional entry gate.
 // Outside an active turn, retain the established 1D EMA5/13 direction.
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
-  const tactical=tacticalDirection(c);
-  return tactical.turning&&tactical.direction?tactical.direction:dailyDirection;
+  const diagnostic=get4HEmaDiagnostic(c);
+  if(diagnostic.turning){
+    const turningDirection:Direction|null=diagnostic.spread>0?"SHORT":diagnostic.spread<0?"LONG":null;
+    if(turningDirection)return turningDirection;
+  }
+  return dailyDirection;
 }
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
