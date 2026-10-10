@@ -278,7 +278,7 @@ export async function GET(request:Request){
   const signal=result.signal;
   if(!signal){
     if(!existing){
-      const dailySide=snapshot.dailyDirection==="BULL"?"LONG":snapshot.dailyDirection==="BEAR"?"SHORT":null;
+      const dailySide=snapshot.dailyDirection==="BULLISH"?"LONG":snapshot.dailyDirection==="BEARISH"?"SHORT":null;
       const conflict=!!dailySide&&!!ema513.direction&&dailySide!==ema513.direction;
       let waitReason=conflict?"1D/4H conflict":"setup incomplete";
       if(!conflict&&gateDebug){
