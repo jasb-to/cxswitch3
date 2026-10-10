@@ -240,11 +240,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const trendlineSlope=tl?.slope??trendlineResult?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
   const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
-  if(!zoneValue)missing.push("zone");
 
   const st4=stoch(c.map(x=>x.close));
-  // Pasted V28 entry geometry: within 1.2% of the trendline is "near".
-  // Do not add the newer ATR/price proximity gate on top of this threshold.
+  // ENTRY_1 uses daily direction and Stoch timing; trendline proximity is not required.
+  // Keep the existing 1.2% fitted-line proximity test exclusively for ENTRY_2.
   const near=!!zoneValue && Math.abs(p-linePrice)/Math.max(Math.abs(linePrice),EPS)<0.012;
   const breakoutRecord:BreakoutRecord|undefined=undefined;
 
@@ -257,7 +256,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const bearishStochCross=st4.pk>=st4.pd&&st4.k<st4.d;
   const stochCross=direction==="LONG"?bullishStochCross:bearishStochCross;
   const earlyTurnEntry=!!direction&&tactical.turning&&tactical.direction===direction&&stochCross;
-  const entry1=!!direction&&near&&(extreme||earlyTurnEntry);
+  const entry1=!!direction&&(extreme||earlyTurnEntry);
   // ENTRY_2 remains the existing trendline proximity + directional StochRSI turn,
   // provided it is not already at the extreme. No extra EMA or indicator gate.
   const entry2Candidate=!!direction&&near&&turn&&!extreme;
@@ -386,7 +385,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(evaluation.zone
     ? `[ZONE] ${trendlineType} @ ${r(trendlinePrice)} | distance ${trendlineDistancePct.toFixed(2)}% | ${zoneDistanceAtr.toFixed(2)} ATR`
     : "[ZONE] none | validated 4H trendline unavailable");
-  debug.push(`[TRIGGER] 4H Stoch K ${st4.k.toFixed(1)} / D ${st4.d.toFixed(1)} | ${trendlineType} distance ${Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2):"—"}% | ENTRY_1=${evaluation.trigger.entry1} ENTRY_2=${evaluation.trigger.entry2}`);
+  debug.push(`[TRIGGER] 4H Stoch K ${st4.k.toFixed(1)} / D ${st4.d.toFixed(1)} | ENTRY_1=${evaluation.trigger.entry1} (daily direction + Stoch) | ENTRY_2=${evaluation.trigger.entry2} (trendline ${Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2)+"%":"unavailable"})`);
   const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
   if(swingDebug){
     debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
@@ -398,7 +397,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
   if(!evaluation.allPassed){
-    debug.push(`[REVERSAL] none — V28 waits for trendline proximity and directional Stoch timing`);
+    debug.push(`[REVERSAL] none — V28 waits for 1D/4H direction agreement and directional Stoch timing; ENTRY_2 also requires trendline proximity`);
     debug.push(`[SIGNAL] none — missing ${evaluation.missing.join(", ")}`);
     debug.push("[JARVIS] observation only — no trade");
     debug.push("[ALERT] none");
@@ -407,7 +406,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const signalType=evaluation.trigger.signalType!;
   const entryBase=p;
-  debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | trendline distance ${trendlineDistancePct.toFixed(2)}%`);
+  debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | ${signalType==="ENTRY_1"?"daily direction + Stoch confirmation":"trendline distance "+(Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2)+"%":"unavailable")}`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,a,c);
   const stop=calculatedStop.stop;
   if(!calculatedStop.valid){
@@ -423,12 +422,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const s:Signal={
     id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:priceRound(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
     stop:priceRound(stop),tp1:priceRound(targets.tp1),tp2:priceRound(targets.tp2),rr:r(actualRr,2),expectedMove:r(Math.abs(targets.tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
-    reason:`${evaluation.direction} ${signalType} | V28 trendline proximity + 4H Stoch | 4H Stoch ${st4.k}/${st4.d}`,
+    reason:signalType==="ENTRY_1"?`${evaluation.direction} ENTRY_1 | 1D direction + existing Stoch trigger; trendline proximity not required | 4H Stoch ${st4.k}/${st4.d}`:`${evaluation.direction} ENTRY_2 | trendline proximity + directional 4H Stoch RSI | 4H Stoch ${st4.k}/${st4.d}`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{zone:trendlineType,zonePrice:r(trendlinePrice),zoneDistancePct:trendlineDistancePct,zoneDistanceAtr,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema8_1d:e8_1d,ema21_1d:e21_1d,ema5_1d:e5_1d,ema13_1d:e13_1d,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
+    context:{zone:evaluation.zone?trendlineType:"NOT_REQUIRED_FOR_ENTRY_1",zonePrice:evaluation.zone?r(trendlinePrice):null,zoneDistancePct:Number.isFinite(trendlineDistancePct)?trendlineDistancePct:null,zoneDistanceAtr:Number.isFinite(zoneDistanceAtr)?zoneDistanceAtr:null,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema8_1d:e8_1d,ema21_1d:e21_1d,ema5_1d:e5_1d,ema13_1d:e13_1d,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
-  debug.push(`[SIGNAL] ${s.direction} ${s.type} | entry ${s.entry} | trendline ${r(trendlinePrice)} | SL ${s.stop} | TP1 ${s.tp1} (${targets.tp1Source}) | TP2 ${s.tp2} (${targets.tp2Source}) | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
+  debug.push(`[SIGNAL] ${s.direction} ${s.type} | entry ${s.entry} | ${evaluation.zone?`${trendlineType} ${r(trendlinePrice)}`:"4H swing pivots for targets"} | SL ${s.stop} | TP1 ${s.tp1} (${targets.tp1Source}) | TP2 ${s.tp2} (${targets.tp2Source}) | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
   debug.push("[JARVIS] trade conditions passed — execution remains separate from opportunity guidance");
   debug.push("[ALERT] SURFACE");
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
