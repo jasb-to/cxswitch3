@@ -20,6 +20,30 @@ const SIGNAL_DEDUP_MS=45*60*1000;
 const SIGNAL_DEDUP_ENTRY_PCT=0.004;
 const VERBOSE_CRON_LOGS=process.env.CRON_VERBOSE_LOGS==="true";
 const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=100?Math.round(n*100)/100:Math.round(n*1000)/1000;
+
+// Compact 4H market-structure context for every asset in each cron run.
+// Pivots use the same confirmed two-candle swing shape as the strategy; Fib
+// retracements use the high/low of the last 50 closed 4H candles.
+function marketStructureLog(pair:string,candles:any[],price:number):string {
+  const c=candles.slice(0,-1).filter(x=>Number.isFinite(x.high)&&Number.isFinite(x.low));
+  if(c.length<10||!Number.isFinite(price)||price<=0)return `[STRUCTURE] ${pair} | insufficient 4H candles`;
+  const swings:{price:number;index:number;kind:"H"|"L"}[]=[];
+  for(let i=2;i<c.length-2;i++){
+    if(c[i].high>c[i-1].high&&c[i].high>c[i-2].high&&c[i].high>c[i+1].high&&c[i].high>c[i+2].high)swings.push({price:c[i].high,index:i,kind:"H"});
+    if(c[i].low<c[i-1].low&&c[i].low<c[i-2].low&&c[i].low<c[i+1].low&&c[i].low<c[i+2].low)swings.push({price:c[i].low,index:i,kind:"L"});
+  }
+  const supports=swings.filter(x=>x.kind==="L"&&x.price<price).sort((a,b)=>b.price-a.price);
+  const resistances=swings.filter(x=>x.kind==="H"&&x.price>price).sort((a,b)=>a.price-b.price);
+  const fmt=(level:number|undefined)=>level===undefined?"—":`${round(level)} (${round(Math.abs(price-level)/price*100)}%)`;
+  const window=c.slice(-50);
+  const hi=Math.max(...window.map(x=>x.high)),lo=Math.min(...window.map(x=>x.low)),range=hi-lo;
+  if(!Number.isFinite(range)||range<=0)return `[STRUCTURE] ${pair} @ ${round(price)} | Pivot S ${fmt(supports[0]?.price)} / R ${fmt(resistances[0]?.price)} | Fib unavailable`;
+  const fibs=[{label:"38.2",price:hi-range*0.382},{label:"50",price:hi-range*0.5},{label:"61.8",price:hi-range*0.618}]
+    .map(x=>({...x,distance:Math.abs(price-x.price)/price*100}))
+    .sort((a,b)=>a.distance-b.distance);
+  const nearestFib=fibs.slice(0,2).map(x=>`${x.label}%=${round(x.price)} (${round(x.distance)}%)`).join(", ");
+  return `[STRUCTURE] ${pair} @ ${round(price)} | Pivot S ${fmt(supports[0]?.price)} / R ${fmt(resistances[0]?.price)} | Fib50-bar range ${round(lo)}–${round(hi)} nearest ${nearestFib}`;
+}
 function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&h.exitReason!=="manual_symbol_reset"&&now-h.timestamp<SIGNAL_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<SIGNAL_DEDUP_ENTRY_PCT);}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 function telegramAlertKey(signal:Signal,resetAt?:number):string{
@@ -257,6 +281,7 @@ export async function GET(request:Request){
   const ema513=get4HEmaDiagnostic(c4);
 
   const price=c1.at(-1)!.close;
+  console.log(marketStructureLog(pair,c4,price));
   const existing=active.find(x=>x.pair===pair);
   const result=generateSignal(pair,c1,c4,c15,price);
   const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.currentPrice=price;snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
