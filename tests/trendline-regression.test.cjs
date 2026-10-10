@@ -153,32 +153,57 @@ test("a cached LONG line is refreshed when fresh swing lows descend", () => {
   assert.ok(inverted.slope < 0, "fresh pivots replace the cache when the anchors no longer fit");
 });
 
-test("SOL-style inverted trendline is diagnostic and does not create a slope-invalid gate", () => {
+test("an inverted trendline stays diagnostic, but extreme Stoch alone cannot fire ENTRY_1", () => {
+  const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
-  const result = strategy.generateSignal(
-    "SOL-REGRESSION",
-    candles,
-    candles,
-    candles,
-    candles.at(-1).close,
-    Date.UTC(2026, 2, 1),
-  );
+  try {
+    // The fast EMA is turning bearish, against the bullish daily bias. Even if
+    // Stoch is extreme, that is not the required aligned ENTRY_1 setup.
+    emaDiagnostic.get4HEmaDiagnostic = () => ({
+      turning: true, spread: 1, stage: "NEUTRAL", label: "BEARISH TREND TURNING",
+    });
+    const result = strategy.generateSignal(
+      "SOL-REGRESSION",
+      candles,
+      candles,
+      candles,
+      candles.at(-1).close,
+      Date.UTC(2026, 2, 1),
+    );
 
-  assert.equal(result.signal?.type, "ENTRY_1", "an inverted trendline must not veto the existing ENTRY_1 Stoch extreme trigger");
-  const gates = result.debug.find((line) => line.startsWith("[GATES]"));
-  assert.ok(gates);
-  assert.doesNotMatch(gates, /trendline_invalid/);
-  assert.doesNotMatch(gates, /4h_ema_opposed/);
+    assert.equal(result.signal, undefined, "ENTRY_1 must require the EMA5/13 turn and directional Stoch crossover");
+    const gates = result.debug.find((line) => line.startsWith("[GATES]"));
+    assert.ok(gates);
+    assert.doesNotMatch(gates, /trendline_invalid/);
+    assert.doesNotMatch(gates, /4h_ema_opposed/);
 
-  const swings = result.debug.find((line) => line.startsWith("[SWINGS]"));
-  assert.ok(swings);
-  assert.match(swings, /"i":130/);
-  assert.match(swings, /"i":162/);
+    const swings = result.debug.find((line) => line.startsWith("[SWINGS]"));
+    assert.ok(swings);
+    assert.match(swings, /"i":130/);
+    assert.match(swings, /"i":162/);
 
-  const trendline = result.debug.find((line) => line.startsWith("[TL]"));
-  assert.ok(trendline);
-  assert.match(trendline, /slope is diagnostic only, not an entry gate/);
-  assert.match(trendline, /r2 /);
+    const trendline = result.debug.find((line) => line.startsWith("[TL]"));
+    assert.ok(trendline);
+    assert.match(trendline, /slope is diagnostic only, not an entry gate/);
+    assert.match(trendline, /r2 /);
+  } finally {
+    emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
+  }
+});
+
+test("20x stop at or beyond modelled liquidation is invalid", () => {
+  const candles = Array.from({ length: 12 }, (_, i) => ({
+    timestamp: Date.UTC(2026, 0, 1) + i * FOUR_HOURS,
+    open: 100,
+    high: 104,
+    low: 98,
+    close: 100,
+    volume: 1,
+  }));
+  const result = strategy.calculateStop("SHORT", 100, 6, candles);
+  assert.equal(result.valid, false);
+  assert.equal(result.invalidReason, "stop_at_or_beyond_liquidation");
+  assert.ok(result.calc.liquidationBufferPct <= 0);
 });
 
 test("tactical 4H EMA 5/13 does not veto ENTRY_2 when 4H EMA 8/21 agrees", () => {
