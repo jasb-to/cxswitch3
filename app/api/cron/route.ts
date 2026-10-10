@@ -278,8 +278,9 @@ export async function GET(request:Request){
   const signal=result.signal;
   if(!signal){
     if(!existing){
-      const dailySide=snapshot.dailyDirection==="BULLISH"?"LONG":snapshot.dailyDirection==="BEARISH"?"SHORT":null;
-      const fourHSide=ema513.direction==="BULLISH"?"LONG":ema513.direction==="BEARISH"?"SHORT":null;
+      const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
+      const dailySide=normalizeSide(snapshot.dailyDirection);
+      const fourHSide=normalizeSide(ema513.direction);
       const conflict=!!dailySide&&!!fourHSide&&dailySide!==fourHSide;
       let waitReason=conflict?"1D/4H conflict":"setup incomplete";
       if(!conflict&&gateDebug){
