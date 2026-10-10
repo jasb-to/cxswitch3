@@ -5,7 +5,8 @@ import { runJarvis } from "@/lib/jarvis";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const PAIRS = new Set(["BTC", "ETH", "SOL", "HYPE", "LINK", "AVAX", "DOGE", "ZEC"]);
+// Keep this allowlist aligned with the symbol cards rendered by app/page.tsx.
+const PAIRS = new Set(["BTC", "ETH", "SOL", "HYPE", "LINK", "VIRTUAL", "AVAX", "DOGE", "ZEC"]);
 
 export async function POST(request: Request) {
   try {
