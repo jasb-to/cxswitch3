@@ -20,7 +20,7 @@ const ago=(ts?:number)=>{if(!ts)return"—";const m=Math.max(0,Math.floor((Date.
 async function price(pair:string){try{const r=await fetch(`https://api.kraken.com/0/public/Ticker?pair=${KRAKEN[pair]}`,{cache:"no-store"});const d=await r.json();if(d.error?.length)return null;return parseFloat(d.result[Object.keys(d.result)[0]].c[0])}catch{return null}}
 
 function directionClass(d:string){return d==="LONG"||d.includes("BULLISH")||d.startsWith("BULL")?"text-green-400":d==="SHORT"||d.includes("BEARISH")||d.startsWith("BEAR")?"text-red-400":"text-white/45"}
-function strengthFrom4H(e?:Market["fourH513"]){if(!e)return"—";if(e.direction==="NEUTRAL")return"NEUTRAL";const d=e.direction==="BULLISH"?"LONG":"SHORT";if(e.label.includes("TREND TURNING"))return d+" TURNING";if(e.label.includes("CROSS"))return d+" CROSS";if(e.stage.includes("HIGH"))return d+" HIGH";if(e.stage.includes("MEDIUM"))return d+" MEDIUM";return d+" LOW"}
+function strengthFrom4H(e?:Market["fourH513"]){return e?.label??"—"}
 function stoch4hStatus(m?:Market){if(typeof m?.stochK4h!=="number"||typeof m?.stochD4h!=="number")return"—";const bull=m.stochK4hPrev!=null&&m.stochD4hPrev!=null&&m.stochK4hPrev<=m.stochD4hPrev&&m.stochK4h>m.stochD4h;const bear=m.stochK4hPrev!=null&&m.stochD4hPrev!=null&&m.stochK4hPrev>=m.stochD4hPrev&&m.stochK4h<m.stochD4h;return m.stochK4h.toFixed(1)+" / "+m.stochD4h.toFixed(1)+" — "+(bull?"BULLISH CROSS":bear?"BEARISH CROSS":"WAITING")}
 
 function copyText(text:string){if(typeof navigator!=="undefined"&&navigator.clipboard?.writeText)return navigator.clipboard.writeText(text);const t=document.createElement("textarea");t.value=text;document.body.appendChild(t);t.select();document.execCommand("copy");t.remove();return Promise.resolve()}
@@ -61,7 +61,7 @@ export default function Dashboard(){
         <KV l="4H Direction (8/21)" v={m?.fourHDirection??"—"} tone={m?.fourHDirection==="BULL"?"green":m?.fourHDirection==="BEAR"?"red":undefined}/>
       </div>
       <div className="mt-2 grid grid-cols-2 gap-3">
-        <div><KV l="4H State (5/13)" v={m?.fourH513?.label??"—"}/>{typeof m?.fourH513?.ema5==="number"&&typeof m?.fourH513?.ema13==="number"&&<div className="mt-0.5 text-[7px] text-white/25">EMA5 {m.fourH513.ema5.toLocaleString("en-US",{maximumSignificantDigits:7})} · EMA13 {m.fourH513.ema13.toLocaleString("en-US",{maximumSignificantDigits:7})}</div>}</div>
+        <KV l="4H State (5/13)" v={m?.fourH513?.label??"—"}/>
         <KV l="4H Stoch" v={stoch4hStatus(m)}/>
       </div>
     </div>
