@@ -222,8 +222,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     const dailyCandles=daily(c);
     if(VERBOSE_CRON_LOGS)console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
-  // The daily EMA5/13 owns direction. If 4H points the other way, wait;
-  // a neutral 4H preserves the daily bias.
+  // The daily EMA5/13 owns direction. The 4H EMA8/21 must agree;
+  // a neutral 4H EMA8/21 preserves the daily bias. EMA5/13 is tactical only.
   const dailyHistoryReady=daily(c).length>=25;
   const dailyTransition = dailyHistoryReady&&!d.direction;
   const direction=resolveSignalDirection(c,d.direction);
@@ -362,8 +362,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
-  // Keep the consistency check, but compare against the resolved signal direction:
-  // a live 4H EMA turn is allowed to override the slower 1D baseline.
+  // Keep the consistency check tied to the same 1D EMA5/13 + 4H EMA8/21 resolver as evaluateGates.
+  // The faster 4H EMA5/13 is tactical timing and never flips the resolved direction.
   const resolvedDirection=resolveSignalDirection(c,d.direction);
   if(evaluation.direction && evaluation.direction!==resolvedDirection){
     debug.push(`[LOCK] V28 direction mismatch blocked: gate=${evaluation.direction} resolved=${resolvedDirection??"NEUTRAL"}`);
