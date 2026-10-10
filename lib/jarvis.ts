@@ -224,10 +224,14 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   // Jarvis explains the relationship between timeframes rather than repeating indicator labels.
   if(!evaluation.direction){
     const dailyCloses=dailyState(c).map(x=>x.close);
-    const dailyPrice=dailyCloses.at(-1)??p;
     const e5d=Number(market?.ema5_1d??emaState(dailyCloses,5).at(-1)??0);
     const e13d=Number(market?.ema13_1d??emaState(dailyCloses,13).at(-1)??0);
-    return "[JARVIS STATE] "+pair+" — No daily direction yet. 1D EMA5 "+Math.round(e5d).toLocaleString("en-US")+" / EMA13 "+Math.round(e13d).toLocaleString("en-US")+". The 4H is "+fourHText+" context; V28 is waiting for a trendline + StochRSI entry setup, not an extra 4H confirmation.";
+    const tacticalSide=String(market?.fourHTacticalDirection??"NEUTRAL").toUpperCase();
+    const expectedSide=dailyDir==="BULL"?"BULL":dailyDir==="BEAR"?"BEAR":"NEUTRAL";
+    if(dailyDir&&tacticalSide!=="NEUTRAL"&&tacticalSide!==expectedSide){
+      return "[JARVIS STATE] "+pair+" — 1D is "+dailyText+"; 4H EMA 5/13 is "+(tacticalSide==="BULL"?"bullish":"bearish")+" against the daily direction. Waiting for the 4H EMA 5/13 to turn toward the daily bias and a fresh directional StochRSI cross.";
+    }
+    return "[JARVIS STATE] "+pair+" — No valid entry direction yet. 1D EMA5 "+Math.round(e5d).toLocaleString("en-US")+" / EMA13 "+Math.round(e13d).toLocaleString("en-US")+". The 4H is "+fourHText+" context; V28 is waiting for the required entry setup.";
   }
 
   const dir=evaluation.direction;
