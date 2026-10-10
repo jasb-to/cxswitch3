@@ -50,10 +50,8 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
   return{direction:null,turning:false,label:x.label};
 }
 
-// A detected 4H EMA turn changes the signal direction; it is not an additional entry gate.
-// Outside an active turn, retain the established 1D EMA5/13 direction.
-// The 1D EMA5/13 owns baseline direction. The 4H confirms it, pauses entries
-// when it clearly disagrees, and never flips the daily direction.
+// The 1D EMA5/13 owns direction. The 4H EMA5/13 confirms alignment and
+// identifies early turns; a turn never flips the daily bias or bypasses conflict protection.
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
   if(!dailyDirection)return null;
   const tactical=tacticalDirection(c);
