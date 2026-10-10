@@ -51,12 +51,18 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
   return{direction:null,turning:false,label:x.label};
 }
 
-// The 1D EMA5/13 owns direction. The 4H EMA5/13 confirms alignment and
-// identifies early turns; a turn never flips the daily bias or bypasses conflict protection.
+// The 1D EMA5/13 owns direction. The 4H EMA8/21 is the directional alignment check;
+// the faster 4H EMA5/13 is tactical entry timing and must not veto a trend-aligned setup by itself.
+function fourHTrendDirection(c:Candle[]):Direction|null{
+  const closes=c.map(x=>x.close);
+  const e8=ema(closes,8).at(-1)??0;
+  const e21=ema(closes,21).at(-1)??0;
+  return e8>e21?"LONG":e8<e21?"SHORT":null;
+}
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
   if(!dailyDirection)return null;
-  const tactical=tacticalDirection(c);
-  return tactical.direction && tactical.direction!==dailyDirection ? null : dailyDirection;
+  const fourHDirection=fourHTrendDirection(c);
+  return fourHDirection && fourHDirection!==dailyDirection ? null : dailyDirection;
 }
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
@@ -216,14 +222,14 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     const dailyCandles=daily(c);
     if(VERBOSE_CRON_LOGS)console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
-  // The daily EMA5/13 owns direction. If 4H points the other way, wait;
-  // a neutral 4H preserves the daily bias.
+  // The daily EMA5/13 owns direction. The 4H EMA8/21 must agree;
+  // a neutral 4H EMA8/21 preserves the daily bias. EMA5/13 is tactical only.
   const dailyHistoryReady=daily(c).length>=25;
   const dailyTransition = dailyHistoryReady&&!d.direction;
   const direction=resolveSignalDirection(c,d.direction);
   const ema4h=get4HEmaDiagnostic(c);
   const tactical=tacticalDirection(c);
-  const fourHDirection=tactical.direction;
+  const fourHDirection=fourHTrendDirection(c);
   if(d.direction && fourHDirection && d.direction!==fourHDirection){
     if(VERBOSE_CRON_LOGS)console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H=${fourHDirection} | WAIT`);
   }
@@ -356,8 +362,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
-  // Keep the consistency check, but compare against the resolved signal direction:
-  // a live 4H EMA turn is allowed to override the slower 1D baseline.
+  // Keep the consistency check tied to the same 1D EMA5/13 + 4H EMA8/21 resolver as evaluateGates.
+  // The faster 4H EMA5/13 is tactical timing and never flips the resolved direction.
   const resolvedDirection=resolveSignalDirection(c,d.direction);
   if(evaluation.direction && evaluation.direction!==resolvedDirection){
     debug.push(`[LOCK] V28 direction mismatch blocked: gate=${evaluation.direction} resolved=${resolvedDirection??"NEUTRAL"}`);
@@ -365,7 +371,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
-  debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength} | disagreement means WAIT`);
+  debug.push(`[4H CONTEXT] EMA8/21 ${fourHTrendDirection(c)??"NEUTRAL"} | EMA5/13 ${tactical.direction??"NEUTRAL"} — ${tactical.label} | 1D owns direction; 8/21 disagreement means WAIT, 5/13 is tactical timing`);
 
   if(!evaluation.direction){
     debug.push(d.direction
@@ -486,4 +492,4 @@ export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.ti
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now=Date.now()){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason})}return{active,exited}}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return"TP_HIT";return"ACTIVE"}
-export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),d=dailyTrend(c),e5d=ema(dailyCloses,5).at(-1)??0,e13d=ema(dailyCloses,13).at(-1)??0,e8d=ema(dailyCloses,8).at(-1)??0,e21d=ema(dailyCloses,21).at(-1)??0,st=stoch(q),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":"BEAR";const tactical=tacticalDirection(c);return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:e8d,ema21_1d:e21d,ema5_1d:e5d,ema13_1d:e13d,dailyDirection:d.direction==="LONG"?"BULL":d.direction==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:d.strength,fourHDirection:e8>e21?"BULL":"BEAR",fourHTacticalDirection:tactical.direction==="LONG"?"BULL":tactical.direction==="SHORT"?"BEAR":"NEUTRAL",fourHTacticalLabel:tactical.label,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd}}
+export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){void candles1h;void candles15m;const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),d=dailyTrend(c),e5d=ema(dailyCloses,5).at(-1)??0,e13d=ema(dailyCloses,13).at(-1)??0,e8d=ema(dailyCloses,8).at(-1)??0,e21d=ema(dailyCloses,21).at(-1)??0,st=stoch(q),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;const fourHDirection=e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL";const tactical=tacticalDirection(c);return{pair,price:c.at(-1)?.close??0,trend:d.direction??"NEUTRAL",adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:e8d,ema21_1d:e21d,ema5_1d:e5d,ema13_1d:e13d,dailyDirection:d.direction==="LONG"?"BULL":d.direction==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:d.strength,fourHDirection,fourHTacticalDirection:tactical.direction==="LONG"?"BULL":tactical.direction==="SHORT"?"BEAR":"NEUTRAL",fourHTacticalLabel:tactical.label,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd}}

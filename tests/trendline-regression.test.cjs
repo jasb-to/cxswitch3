@@ -99,6 +99,25 @@ function dailyBullishWithDescendingRecentLows() {
   });
 }
 
+function withRecent4HTrend(candles, direction, count = 10) {
+  const out = candles.map((c) => ({ ...c }));
+  const start = out.length - count;
+  const base = out[start - 1].close;
+  const sign = direction === "bullish" ? 1 : -1;
+  for (let i = 0; i < count; i++) {
+    const close = base + sign * 0.25 * (i + 1);
+    const open = close - sign * 0.05;
+    out[start + i] = {
+      ...out[start + i],
+      open,
+      high: Math.max(open, close) + 0.4,
+      low: Math.min(open, close) - 0.4,
+      close,
+    };
+  }
+  return out;
+}
+
 test("LONG trendline accepts descending swing lows; slope is diagnostic, not a veto", () => {
   const candles = trendlineCandles("descending");
   const line = strategy.getTrendline("TEST-DESCENDING-LONG", candles, "LONG");
@@ -162,7 +181,7 @@ test("SOL-style inverted trendline is diagnostic and does not create a slope-inv
   assert.match(trendline, /r2 /);
 });
 
-test("opposed 4H EMA does not veto ENTRY_2; Jarvis keeps it contextual", () => {
+test("tactical 4H EMA 5/13 does not veto ENTRY_2 when 4H EMA 8/21 agrees", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = entry2VetoCandles();
   const pair = "SOL-ENTRY2-EMA-REGRESSION";
@@ -172,19 +191,19 @@ test("opposed 4H EMA does not veto ENTRY_2; Jarvis keeps it contextual", () => {
   const currentPrice = line.slope * (candles.length - 1) + line.intercept;
 
   try {
-    // Prove the fixture would otherwise qualify as ENTRY_2 at the same price.
     emaDiagnostic.get4HEmaDiagnostic = () => ({ label:"BULLISH MEDIUM", direction:"BULLISH", stage:"BULLISH_MEDIUM", turning:false, spread:1 });
     const aligned = strategy.evaluateGates(pair, candles, currentPrice);
     assert.equal(aligned.direction, "LONG");
     assert.equal(aligned.trigger.entry2, true);
     assert.equal(aligned.trigger.signalType, "ENTRY_2");
 
-    // Flip only the diagnostic state; the exact same candles and price remain eligible.
+    // Flip only the fast tactical diagnostic; 4H EMA 8/21 remains bullish.
     emaDiagnostic.get4HEmaDiagnostic = () => ({ label:"BEARISH MEDIUM", direction:"BEARISH", stage:"BEARISH_MEDIUM", turning:false, spread:-1 });
     const opposed = strategy.evaluateGates(pair, candles, currentPrice);
-    assert.equal(opposed.direction, null, "opposed 4H direction must pause a daily LONG setup");
-    assert.equal(opposed.missing.includes("direction"), true);
-    assert.equal(opposed.allPassed, false);
+    assert.equal(opposed.direction, "LONG");
+    assert.equal(opposed.trigger.entry2, true);
+    assert.equal(opposed.trigger.signalType, "ENTRY_2");
+    assert.equal(opposed.missing.includes("direction"), false);
 
     const narration = jarvis.narratePairState(
       "SOL",
@@ -197,8 +216,8 @@ test("opposed 4H EMA does not veto ENTRY_2; Jarvis keeps it contextual", () => {
       candles,
       undefined,
     );
-    assert.match(narration, /4H is bearish context/);
-    assert.match(narration, /trendline \+ StochRSI entry setup/i);
+    assert.match(narration, /The 4H is bearish/);
+    assert.match(narration, /Stoch timing is supporting ENTRY_2/i);
     assert.doesNotMatch(narration, /ENTRY_2 blocked/i);
   } finally {
     emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
@@ -226,39 +245,48 @@ test("aligned 4H bullish turn plus fresh StochRSI crossover can fire early ENTRY
   }
 });
 
-test("1D/4H agreement keeps daily LONG, waits on bearish 4H, and permits neutral 4H", () => {
+test("1D LONG follows 4H EMA 8/21; fast EMA 5/13 disagreement is only tactical", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
   const pair = "DIRECTION-AGREEMENT-LONG";
   try {
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:1, stage:"BULLISH_MEDIUM", label:"BULLISH MEDIUM" });
     assert.equal(strategy.evaluateGates(pair, candles, candles.at(-1).close).direction, "LONG");
+
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:-1, stage:"BEARISH_MEDIUM", label:"BEARISH MEDIUM" });
-    const conflict = strategy.evaluateGates(pair, candles, candles.at(-1).close);
+    const tacticalDisagreement = strategy.evaluateGates(pair, candles, candles.at(-1).close);
+    assert.equal(tacticalDisagreement.direction, "LONG");
+    assert.equal(tacticalDisagreement.missing.includes("direction"), false);
+
+    const conflictingCandles = withRecent4HTrend(candles, "bearish");
+    emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:1, stage:"BULLISH_MEDIUM", label:"BULLISH MEDIUM" });
+    const conflict = strategy.evaluateGates(pair + "-REAL-CONFLICT", conflictingCandles, conflictingCandles.at(-1).close);
     assert.equal(conflict.direction, null);
     assert.ok(conflict.missing.includes("direction"));
     assert.equal(conflict.allPassed, false);
-    const generated = strategy.generateSignal(pair, candles, candles, candles, candles.at(-1).close, Date.UTC(2026, 2, 1));
-    assert.equal(generated.signal, undefined, "conflicting timeframes must not emit a signal");
+
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:0, stage:"NEUTRAL", label:"NEUTRAL" });
     assert.equal(strategy.evaluateGates(pair, candles, candles.at(-1).close).direction, "LONG");
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });
 
-test("1D SHORT waits on bullish 4H and remains SHORT when 4H agrees or is neutral", () => {
+test("1D SHORT follows 4H EMA 8/21; fast EMA 5/13 disagreement is only tactical", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const bullish = dailyBullishWithDescendingRecentLows();
   const bearish = bullish.map(c => ({ ...c, open:300-c.open, close:300-c.close, high:300-c.low, low:300-c.high }));
   const pair = "DIRECTION-AGREEMENT-SHORT";
   try {
     assert.equal(strategy.evaluateGates(pair, bearish, bearish.at(-1).close).direction, "SHORT");
+
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:1, stage:"BULLISH_MEDIUM", label:"BULLISH MEDIUM" });
-    const conflict = strategy.evaluateGates(pair, bearish, bearish.at(-1).close);
+    assert.equal(strategy.evaluateGates(pair, bearish, bearish.at(-1).close).direction, "SHORT");
+
+    const conflictingCandles = withRecent4HTrend(bearish, "bullish");
+    const conflict = strategy.evaluateGates(pair + "-REAL-CONFLICT", conflictingCandles, conflictingCandles.at(-1).close);
     assert.equal(conflict.direction, null);
     assert.ok(conflict.missing.includes("direction"));
     assert.equal(conflict.allPassed, false);
-    const generated = strategy.generateSignal(pair, bearish, bearish, bearish, bearish.at(-1).close, Date.UTC(2026, 2, 1));
-    assert.equal(generated.signal, undefined, "conflicting timeframes must not emit a signal");
+
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:-1, stage:"BEARISH_MEDIUM", label:"BEARISH MEDIUM" });
     assert.equal(strategy.evaluateGates(pair, bearish, bearish.at(-1).close).direction, "SHORT");
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:0, stage:"NEUTRAL", label:"NEUTRAL" });
@@ -266,13 +294,13 @@ test("1D SHORT waits on bullish 4H and remains SHORT when 4H agrees or is neutra
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });
 
-test("4H turning state is mapped by spread and never overrides daily bias", () => {
+test("4H EMA 5/13 turning state is tactical and does not override 1D + 4H EMA 8/21 bias", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
   try {
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:true, spread:-1, stage:"NEUTRAL", label:"BULLISH TREND TURNING" });
     assert.equal(strategy.evaluateGates("TURN-BULL", candles, candles.at(-1).close).direction, "LONG");
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:true, spread:1, stage:"NEUTRAL", label:"BEARISH TREND TURNING" });
-    assert.equal(strategy.evaluateGates("TURN-BEAR", candles, candles.at(-1).close).direction, null);
+    assert.equal(strategy.evaluateGates("TURN-BEAR", candles, candles.at(-1).close).direction, "LONG");
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });
