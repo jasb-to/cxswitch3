@@ -280,8 +280,8 @@ export async function GET(request:Request){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      // Conflict reporting must use the dashboard's 4H EMA8/21 trend; EMA5/13 is tactical entry timing only.
-      const fourHSide=normalizeSide(snapshot.fourHDirection);
+      // Entry conflict reporting uses the 4H EMA5/13 diagnostic; EMA8/21 manages an open trade.
+      const fourHSide=normalizeSide(snapshot.fourHTacticalDirection);
       const conflict=!!dailySide&&!!fourHSide&&dailySide!==fourHSide;
       let waitReason=conflict?"1D/4H conflict":"setup incomplete";
       if(!conflict&&gateDebug){
