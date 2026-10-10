@@ -51,8 +51,8 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
   return{direction:null,turning:false,label:x.label};
 }
 
-// The 1D EMA5/13 owns direction. The 4H EMA8/21 is the directional alignment check;
-// the faster 4H EMA5/13 is tactical entry timing and must not veto a trend-aligned setup by itself.
+// The 1D EMA5/13 owns the bias. The 4H EMA5/13 diagnostic must not be
+// pointing the other way at entry; 4H EMA8/21 is reserved for trade management.
 function fourHTrendDirection(c:Candle[]):Direction|null{
   const closes=c.map(x=>x.close);
   const e8=ema(closes,8).at(-1)??0;
@@ -61,8 +61,8 @@ function fourHTrendDirection(c:Candle[]):Direction|null{
 }
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
   if(!dailyDirection)return null;
-  const fourHDirection=fourHTrendDirection(c);
-  return fourHDirection && fourHDirection!==dailyDirection ? null : dailyDirection;
+  const fourHTacticalDirection=tacticalDirection(c).direction;
+  return fourHTacticalDirection && fourHTacticalDirection!==dailyDirection ? null : dailyDirection;
 }
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
@@ -232,8 +232,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const ema4h=get4HEmaDiagnostic(c);
   const tactical=tacticalDirection(c);
   const fourHDirection=fourHTrendDirection(c);
-  if(d.direction && fourHDirection && d.direction!==fourHDirection){
-    if(VERBOSE_CRON_LOGS)console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H=${fourHDirection} | WAIT`);
+  if(d.direction && tactical.direction && d.direction!==tactical.direction){
+    if(VERBOSE_CRON_LOGS)console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H EMA5/13=${tactical.direction} (${tactical.label}) | WAIT`);
   }
   if(dailyHistoryReady&&!d.direction){
     if(VERBOSE_CRON_LOGS)console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
@@ -373,7 +373,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
-  debug.push(`[4H CONTEXT] EMA8/21 ${fourHTrendDirection(c)??"NEUTRAL"} | EMA5/13 ${tactical.direction??"NEUTRAL"} — ${tactical.label} | 1D owns direction; 8/21 disagreement means WAIT, 5/13 is tactical timing`);
+  debug.push(`[4H CONTEXT] EMA8/21 ${fourHTrendDirection(c)??"NEUTRAL"} | EMA5/13 ${tactical.direction??"NEUTRAL"} — ${tactical.label} | 1D owns bias; opposing EMA5/13 means WAIT; 8/21 manages the trade after entry`);
 
   if(!evaluation.direction){
     debug.push(d.direction
