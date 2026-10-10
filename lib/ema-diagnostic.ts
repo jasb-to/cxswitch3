@@ -1,6 +1,5 @@
-// CXSwitch 4H 5/13 EMA diagnostic — dashboard/cron observation only.
-// IMPORTANT: This module does not participate in V28 signal generation, gating,
-// stops, targets, entries, ADD logic, or execution state.
+// CXSwitch 4H EMA 5/13 diagnostic — used for early-turn ENTRY_1 confirmation
+// and dashboard/cron observation. It does not manage stops, targets, or execution state.
 
 import type { Candle } from "./strategy";
 
