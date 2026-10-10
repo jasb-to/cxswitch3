@@ -52,13 +52,12 @@ function tacticalDirection(c:Candle[]):{direction:Direction|null;turning:boolean
 
 // A detected 4H EMA turn changes the signal direction; it is not an additional entry gate.
 // Outside an active turn, retain the established 1D EMA5/13 direction.
+// The 1D EMA5/13 owns baseline direction. The 4H confirms it, pauses entries
+// when it clearly disagrees, and never flips the daily direction.
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
-  const diagnostic=get4HEmaDiagnostic(c);
-  if(diagnostic.turning){
-    const turningDirection:Direction|null=diagnostic.spread>0?"SHORT":diagnostic.spread<0?"LONG":null;
-    if(turningDirection)return turningDirection;
-  }
-  return dailyDirection;
+  if(!dailyDirection)return null;
+  const tactical=tacticalDirection(c);
+  return tactical.direction && tactical.direction!==dailyDirection ? null : dailyDirection;
 }
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
@@ -218,11 +217,16 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     const dailyCandles=daily(c);
     console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
-  // The 1D EMA5/13 remains the baseline; an existing 4H EMA turning state can take direction over.
-  // This reuses the current diagnostic instead of adding another entry gate.
+  // The daily EMA5/13 owns direction. If 4H points the other way, wait;
+  // a neutral 4H preserves the daily bias.
   const dailyHistoryReady=daily(c).length>=25;
   const dailyTransition = dailyHistoryReady&&!d.direction;
   const direction=resolveSignalDirection(c,d.direction);
+  const ema4h=get4HEmaDiagnostic(c);
+  const fourHDirection=tacticalDirection(c).direction;
+  if(d.direction && fourHDirection && d.direction!==fourHDirection){
+    console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H=${fourHDirection} | WAIT`);
+  }
   if(dailyHistoryReady&&!d.direction){
     console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
   }
@@ -251,8 +255,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // ENTRY_2: trendline proximity + StochRSI turning with the daily bias,
   // provided it is not already at the extreme. No breakout/retest lifecycle.
   const entry2Candidate=!!direction&&near&&turn&&!extreme;
-  const ema4h=get4HEmaDiagnostic(c);
-  // 4H EMA 5/13 is momentum/context only; it never vetoes an otherwise valid V28 entry.
+  // The 4H diagnostic is contextual for entries after direction agreement is resolved.
   const entry2=entry2Candidate;
   let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
   if(!entry1&&!entry2Candidate&&direction)missing.push("stoch_turn_or_extreme");
@@ -357,11 +360,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
-  debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D baseline: ${d.direction??"NEUTRAL"} ${d.strength} | 4H turning state may override signal direction`);
+  debug.push(`[4H CONTEXT] ${tactical.direction??"NEUTRAL"} | ${tactical.label} | 1D owns direction: ${d.direction??"NEUTRAL"} ${d.strength} | disagreement means WAIT`);
 
   if(!evaluation.direction){
     debug.push(d.direction
-      ? `[DIRECTION] V28 resolved signal direction ${evaluation.direction} | 1D baseline ${d.direction}`
+      ? `[DIRECTION] V28 direction agreement required | 1D baseline ${d.direction}`
       : (dailyCandles.length>=25
         ? `[1D TRANSITION] ${pair} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} equal — no direction`
         : "[1D] NEUTRAL | insufficient daily history"));
