@@ -1,34 +1,48 @@
-const test = require("node:test");
+const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const path = require("node:path");
+const ts = require("typescript");
+require.extensions[".ts"] = (module, filename) => {
+  const source = fs.readFileSync(filename, "utf8");
+  const output = ts.transpileModule(source, { fileName: filename, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+  module._compile(output, filename);
+};
+const strategy = require("../lib/strategy.ts");
 
-const source = fs.readFileSync(path.join(__dirname, "..", "lib", "strategy.ts"), "utf8");
-const cronSource = fs.readFileSync(path.join(__dirname, "..", "app", "api", "cron", "route.ts"), "utf8");
-
-test("daily EMA5/13 owns entry direction; 4H EMA8/21 remains management context", () => {
-  const helper = source.match(/function fourHTrendDirection\(c:Candle\[\]\):Direction\|null\{[\s\S]*?\n\}/);
-  assert.ok(helper, "4H EMA8/21 direction helper exists");
-  assert.match(helper[0], /ema\(closes,8\)/);
-  assert.match(helper[0], /ema\(closes,21\)/);
-  assert.match(helper[0], /e8>e21\?"LONG":e8<e21\?"SHORT":null/);
-
-  const resolver = source.match(/function resolveSignalDirection\(c:Candle\[\],dailyDirection:Direction\|null\):Direction\|null\{[\s\S]*?\n\}/);
-  assert.ok(resolver, "signal direction resolver exists");
-  assert.match(resolver[0], /return dailyDirection/);
-  assert.doesNotMatch(resolver[0], /tacticalDirection|fourHTacticalDirection|!==dailyDirection/);
+const FOUR_HOURS = 4 * 60 * 60 * 1000;
+function candles({days=40, rising=true, bearishCurrent4h=false}={}) {
+  const start=Date.UTC(2026,0,1), out=[];
+  let prev=100;
+  for(let day=0;day<days;day++){
+    for(let slot=0;slot<6;slot++){
+      const timestamp=start+(day*6+slot)*FOUR_HOURS;
+      let close;
+      if(bearishCurrent4h&&day===days-1) close=prev-(slot+1)*18;
+      else close=100+day*(rising?1:-1)+slot*(rising?0.12:-0.12);
+      prev=close;
+      out.push({timestamp,open:close,high:close+1,low:close-1,close,volume:1});
+    }
+  }
+  return out;
+}
+test("both closed EMA 5/13 timeframes aligned bullish permits LONG direction",()=>{
+  const result=strategy.trendAlignment(candles());
+  assert.equal(result.daily,"LONG");
+  assert.equal(result.fourH,"LONG");
+  assert.equal(result.aligned,"LONG");
 });
-
-test("ENTRY_1 and ENTRY_2 use fresh closed-candle Stoch RSI crossovers", () => {
-  assert.match(source, /const closed4h=c\.slice\(0,-1\)/);
-  assert.match(source, /const closedDaily=daily\(closed4h\)\.slice\(0,-1\)/);
-  assert.match(source, /const entry1=stochTriggers\.entry1/);
-  assert.match(source, /const entry2=stochTriggers\.entry2/);
-  assert.match(source, /entry2:fourHCross&&dailyCross/);
-  assert.doesNotMatch(source, /const entry2Candidate=!!direction&&near&&turn&&!extreme/);
+test("daily bullish and 4H bearish blocks direction (BTC SHORT failure case)",()=>{
+  const data=candles({bearishCurrent4h:true});
+  const result=strategy.trendAlignment(data);
+  assert.equal(result.daily,"LONG");
+  assert.equal(result.fourH,"SHORT");
+  assert.equal(result.aligned,null);
+  const gates=strategy.evaluateGates("BTC",data,80);
+  assert.equal(gates.direction,null);
+  assert.equal(gates.allPassed,false);
+  assert.ok(gates.missing.includes("alignment"));
 });
-
-test("cron wait reason uses the 4H EMA 5/13 entry direction", () => {
-  assert.match(cronSource, /const fourHSide=normalizeSide\(snapshot\.fourHTacticalDirection\)/);
-  assert.doesNotMatch(cronSource, /const fourHSide=ema513\.turning/);
+test("closed daily and 4H EMA values are exposed for alignment display",()=>{
+  const result=strategy.trendAlignment(candles());
+  assert.ok(result.dailyE5>0&&result.dailyE13>0&&result.fourHE5>0&&result.fourHE13>0);
 });
