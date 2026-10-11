@@ -26,7 +26,7 @@ export interface TrendAlignment { daily:Direction|null; fourH:Direction|null; al
 export function trendAlignment(c:Candle[]):TrendAlignment{
   const d=daily(c).slice(0,-1),dCloses=d.map(x=>x.close),dE5=ema(dCloses,5).at(-1)??0,dE13=ema(dCloses,13).at(-1)??0;
   const dailyDirection:Direction|null=dE5>dE13?"LONG":dE5<dE13?"SHORT":null;
-  const closed4h=c.slice(0,-1),hCloses=closed4h.map(x=>x.close),hE5=ema(hCloses,5).at(-1)??0,hE13=ema(hCloses,13).at(-1)??0;
+  const closed4h=c,hCloses=closed4h.map(x=>x.close),hE5=ema(hCloses,5).at(-1)??0,hE13=ema(hCloses,13).at(-1)??0;
   const fourH:Direction|null=hE5>hE13?"LONG":hE5<hE13?"SHORT":null;
   const aligned=dailyDirection&&fourH&&dailyDirection===fourH?dailyDirection:null;
   return{daily:dailyDirection,fourH,aligned,dailyE5:dE5,dailyE13:dE13,fourHE5:hE5,fourHE13:hE13};
@@ -46,7 +46,7 @@ export function entry2RetestConditions(direction:Direction,entry:number,price:nu
   return !alreadyFired&&waveMoved&&pulledBack&&correctEmaSide&&freshCross&&!adverseCross;
 }
 export function hasAdverseEmaCrossSince(c:Candle[],state:Entry1State):boolean{
-  const closed=c.slice(0,-1),closes=closed.map(x=>x.close),e8=ema(closes,8),e21=ema(closes,21);
+  const closed=c,closes=closed.map(x=>x.close),e8=ema(closes,8),e21=ema(closes,21);
   const marker=Number(state.context?.closed4hTimestamp);
   let start=Number.isFinite(marker)?closed.findIndex(x=>x.timestamp===marker):-1;
   if(start<0)start=closed.findIndex(x=>x.timestamp>state.timestamp);
@@ -57,22 +57,45 @@ export function hasAdverseEmaCrossSince(c:Candle[],state:Entry1State):boolean{
   }
   return false;
 }
-function entry2Ready(pair:string,direction:Direction,state:Entry1State|undefined,c:Candle[],price:number,st:StochSnapshot,alreadyFired:boolean){
-  if(!state||state.pair!==pair||state.direction!==direction)return false;
-  const closed=c.slice(0,-1),marker=Number(state.context?.closed4hTimestamp);
-  if(!Number.isFinite(marker)||!closed.some(x=>x.timestamp===marker)||closed.at(-1)!.timestamp<=marker)return false;
+function entry2Ready(pair:string,direction:Direction,state:Entry1State|undefined,c:Candle[],price:number,st:StochSnapshot,alreadyFired:boolean):{ready:boolean;reason:string}{
+  if(!state)return{ready:false,reason:"no_active_entry1_state"};
+  if(state.pair!==pair)return{ready:false,reason:"entry1_state_pair_mismatch"};
+  if(state.direction!==direction)return{ready:false,reason:"entry1_state_direction_mismatch"};
+  const closed=c,marker=Number(state.context?.closed4hTimestamp);
+  if(!Number.isFinite(marker))return{ready:false,reason:"entry1_candle_timestamp_missing"};
+  if(!closed.some(x=>x.timestamp===marker))return{ready:false,reason:"entry1_candle_not_in_history"};
+  if(closed.at(-1)!.timestamp<=marker)return{ready:false,reason:"no_closed_candle_after_entry1"};
   const after=closed.filter(x=>x.timestamp>marker);
-  if(!after.length)return false;
+  if(!after.length)return{ready:false,reason:"no_closed_candle_after_entry1"};
   const firstWavePrice=direction==="LONG"?Math.max(...after.map(x=>x.high)):Math.min(...after.map(x=>x.low));
   const ema8=ema(closed.map(x=>x.close),8).at(-1)??0;
-  return entry2RetestConditions(direction,state.entry,price,firstWavePrice,ema8,st,hasAdverseEmaCrossSince(c,state),alreadyFired);
+  const waveMoved=direction==="LONG"?firstWavePrice>=state.entry*1.015:firstWavePrice<=state.entry*0.985;
+  const pulledBack=Math.abs(price-state.entry)/Math.max(state.entry,EPS)<=0.01;
+  const correctEmaSide=direction==="LONG"?price>ema8:price<ema8;
+  const freshCross=direction==="LONG"?st.pk<=st.pd&&st.k>st.d&&st.k<60:st.pk>=st.pd&&st.k<st.d&&st.k>40;
+  const adverseCross=hasAdverseEmaCrossSince(c,state);
+  const checks=[["first_wave_not_reached",waveMoved],["pullback_not_within_1pct",pulledBack],["price_on_wrong_ema8_side",correctEmaSide],["no_fresh_stoch_cross",freshCross],["adverse_ema8_21_cross",!adverseCross],["entry2_already_fired",!alreadyFired]];
+  const failed=checks.filter(([,passed])=>!passed).map(([reason])=>reason as string);
+  const ready=entry2RetestConditions(direction,state.entry,price,firstWavePrice,ema8,st,adverseCross,alreadyFired);
+  return{ready,reason:ready?"trigger_met":failed.join("+")||"retest_conditions_not_met"};
+}
+function entry1WaitReason(aligned:Direction|null,st:StochSnapshot):string{
+  if(!aligned)return"alignment_missing";
+  if(aligned==="LONG"){
+    if(!(st.pk<=st.pd&&st.k>st.d))return"no_fresh_bullish_cross";
+    if(st.k>=40)return"bullish_cross_k_not_below_40";
+  }else{
+    if(!(st.pk>=st.pd&&st.k<st.d))return"no_fresh_bearish_cross";
+    if(st.k<=60)return"bearish_cross_k_not_above_60";
+  }
+  return"trigger_met";
 }
 export interface GateEvaluation {
   direction:Direction|null;
   zone:{valid:boolean;type:string;price:number;distancePct:number}|null;
   trendlineSlope:number;
   alignment:TrendAlignment;
-  trigger:{entry1:boolean;entry2:boolean;signalType:"ENTRY_1"|"ENTRY_2"|null};
+  trigger:{entry1:boolean;entry2:boolean;signalType:"ENTRY_1"|"ENTRY_2"|null;entry1Reason:string;entry2Reason:string};
   exhaustion:string|null;
   stopCalc:StopCalc|null;
   missing:string[];
@@ -88,7 +111,7 @@ export function calculateLiquidationBufferPct(direction:Direction,entry:number,s
 export function calculateStop(direction:Direction,entry:number,atrValue:number,candles:Candle[]):{stop:number;calc:StopCalc;valid:boolean;invalidReason?:string}{
   if(!Number.isFinite(entry)||entry<=0||!Number.isFinite(atrValue)||atrValue<=0)
     return{stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_inputs"};
-  const closed=[...candles].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1),recentWindow=closed.slice(-5);
+  const closed=[...candles].sort((a,b)=>a.timestamp-b.timestamp),recentWindow=closed.slice(-5);
   if(!recentWindow.length)return{stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_no_closed_candles"};
   const recentSwing=direction==="LONG"?Math.min(...recentWindow.map(x=>x.low)):Math.max(...recentWindow.map(x=>x.high));
   const atrFloor=direction==="LONG"?entry-1.5*atrValue:entry+1.5*atrValue;
@@ -106,10 +129,11 @@ function exhaustion(direction:Direction,rv:number):string|null{
 }
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,entry1State?:Entry1State,entry2AlreadyFired=false):GateEvaluation{
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,alignment=trendAlignment(c),direction=alignment.aligned;
-  const closed4h=c.slice(0,-1),closes=closed4h.map(x=>x.close),st=stoch(closes),rv=rsi(closes),a=atr(closed4h);
+  const closed4h=c,closes=closed4h.map(x=>x.close),st=stoch(closes),rv=rsi(closes),a=atr(closed4h);
   const e1=evaluateEntry1(direction,st);
   const entry1=!!e1.entry1;
-  const entry2=!!direction&&entry2Ready(pair,direction,entry1State,c,p,st,entry2AlreadyFired);
+  const entry2Check=direction?entry2Ready(pair,direction,entry1State,c,p,st,entry2AlreadyFired):{ready:false,reason:"alignment_missing"};
+  const entry2=entry2Check.ready;
   const signalType: "ENTRY_1"|"ENTRY_2"|null=entry2?"ENTRY_2":entry1?"ENTRY_1":null;
   const exhausted=direction?exhaustion(direction,rv):null;
   const missing:string[]=[];
@@ -119,16 +143,16 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   let stopCalc:StopCalc|null=null;
   if(direction&&signalType&&a>0)stopCalc=calculateStop(direction,p,a,c).calc;
   const deduped=[...new Set(missing)];
-  return{direction,zone:null,trendlineSlope:0,alignment,trigger:{entry1,entry2,signalType},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!signalType&&!exhausted,dailyTransition:!alignment.daily,breakoutRecord:undefined};
+  return{direction,zone:null,trendlineSlope:0,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"trigger_met":entry1WaitReason(direction,st),entry2Reason:entry2?"trigger_met":entry2Check.reason},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!signalType&&!exhausted,dailyTransition:!alignment.daily,breakoutRecord:undefined};
 }
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord,entry1State?:Entry1State,entry2AlreadyFired=false){
   void candles1h;void candles15m;void lastBreakout;
   const debug:string[]=[],c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
-  const closed=c.slice(0,-1),closedCloses=closed.map(x=>x.close),a=atr(closed),av=adx(closed),rv=rsi(closedCloses),st=stoch(closedCloses);
+  const closed=c,closedCloses=closed.map(x=>x.close),a=atr(closed),av=adx(closed),rv=rsi(closedCloses),st=stoch(closedCloses);
   const evaluation=evaluateGates(pair,c,p,entry1State,entry2AlreadyFired),alignment=evaluation.alignment;
   debug.push("[ALIGNMENT] 1D EMA5="+r(alignment.dailyE5)+" EMA13="+r(alignment.dailyE13)+" "+(alignment.daily??"NEUTRAL")+" | 4H EMA5="+r(alignment.fourHE5)+" EMA13="+r(alignment.fourHE13)+" "+(alignment.fourH??"NEUTRAL")+" | aligned="+(alignment.aligned??"NO"));
   debug.push("[GATES] "+JSON.stringify(evaluation));
-  debug.push("[TRIGGER] ENTRY_1="+evaluation.trigger.entry1+" | ENTRY_2="+evaluation.trigger.entry2+" | Stoch K="+st.k+" D="+st.d);
+  debug.push("[TRIGGER] ENTRY_1="+evaluation.trigger.entry1+" ("+evaluation.trigger.entry1Reason+") | ENTRY_2="+evaluation.trigger.entry2+" ("+evaluation.trigger.entry2Reason+") | Stoch K/D prev="+st.pk+"/"+st.pd+" now="+st.k+"/"+st.d);
   debug.push("[EXHAUST] "+(evaluation.exhaustion??"clear"));
   if(!evaluation.allPassed){
     debug.push(!alignment.aligned?"[WAIT] alignment — 1D and 4H EMA5/13 must agree":"[WAIT] "+evaluation.missing.join(", "));
@@ -169,7 +193,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
   if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))
     return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
 
-  const q=x.map(z=>z.close),d=daily(x);
+  const q=x.map(z=>z.close),d=daily(x).slice(0,-1);
   if(d.length>=22){
     const qd=d.map(z=>z.close),a5=ema(qd,5),a13=ema(qd,13);
     const dr=s.direction==="LONG"
@@ -217,7 +241,7 @@ export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return"TP_HIT";return"ACTIVE"}
 export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){
   void candles1h;void candles15m;
-  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),closed=c.slice(0,-1),q=closed.map(x=>x.close),dailyCandles=daily(c).slice(0,-1),dailyCloses=dailyCandles.map(x=>x.close),alignment=trendAlignment(c);
+  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),closed=c,q=closed.map(x=>x.close),dailyCandles=daily(c).slice(0,-1),dailyCloses=dailyCandles.map(x=>x.close),alignment=trendAlignment(c);
   const e5d=alignment.dailyE5,e13d=alignment.dailyE13,e8d=ema(dailyCloses,8).at(-1)??0,e21d=ema(dailyCloses,21).at(-1)??0;
   const st=stoch(q),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;
   const fourHDirection=e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL";

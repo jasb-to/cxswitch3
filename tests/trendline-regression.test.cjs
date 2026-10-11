@@ -14,8 +14,8 @@ function sample(count=30){
  const start=Date.UTC(2026,0,1);
  return Array.from({length:count},(_,i)=>{const close=100+i*.2;return{timestamp:start+i*FOUR_HOURS,open:close,high:close+1,low:close-1,close,volume:1};});
 }
-test("stop uses the most recent five closed candles and the 1.5 ATR floor",()=>{
- const c=sample(12),closed=c.slice(0,-1),window=closed.slice(-5),atr=2;
+test("stop uses the most recent five already-closed candles and the 1.5 ATR floor",()=>{
+ const c=sample(12),window=c.slice(-5),atr=2;
  const low=Math.min(...window.map(x=>x.low)),entry=110;
  const result=strategy.calculateStop("LONG",entry,atr,c);
  assert.equal(result.valid,true);

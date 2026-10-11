@@ -298,6 +298,8 @@ export async function GET(request:Request){
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
   snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"?"LONG":canonicalDailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
+  const triggerDebug=dbg.find(x=>x.startsWith("[TRIGGER]"));
+  if(triggerDebug)console.log(`[PAIR] ${pair} — ${triggerDebug}`);
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
   if(VERBOSE_CRON_LOGS&&gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
   if(VERBOSE_CRON_LOGS)dbg.filter(x=>x.startsWith("[SWINGS]")||x.startsWith("[TL]")||x.startsWith("[TL POINTS]")).forEach(x=>console.log(x));

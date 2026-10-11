@@ -42,6 +42,14 @@ test("daily bullish and 4H bearish blocks direction (BTC SHORT failure case)",()
   assert.equal(gates.allPassed,false);
   assert.ok(gates.missing.includes("alignment"));
 });
+test("4H EMA alignment includes the newest candle returned by the closed-candle data source",()=>{
+  const data=candles();
+  const result=strategy.trendAlignment(data);
+  const ema=(values,period)=>{const k=2/(period+1),out=[values[0]];for(let i=1;i<values.length;i++)out.push(values[i]*k+out[i-1]*(1-k));return out;};
+  const closes=data.map(x=>x.close);
+  assert.equal(result.fourHE5,ema(closes,5).at(-1));
+  assert.equal(result.fourHE13,ema(closes,13).at(-1));
+});
 test("closed daily and 4H EMA values are exposed for alignment display",()=>{
   const result=strategy.trendAlignment(candles());
   assert.ok(result.dailyE5>0&&result.dailyE13>0&&result.fourHE5>0&&result.fourHE13>0);
