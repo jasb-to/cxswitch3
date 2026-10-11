@@ -10,9 +10,9 @@ const helperSource = fs.readFileSync(helperPath, "utf8");
 const js = ts.transpileModule(helperSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }
 }).outputText;
-const module = { exports: {} };
-vm.runInNewContext(js, { exports: module.exports, module, require });
-const { evaluateStochEntryTriggers } = module.exports;
+const helperModule = { exports: {} };
+vm.runInNewContext(js, { exports: helperModule.exports, module: helperModule, require });
+const { evaluateStochEntryTriggers } = helperModule.exports;
 
 const longCross = { pk: 20, pd: 25, k: 30, d: 28 };
 const shortCross = { pk: 80, pd: 75, k: 70, d: 72 };
