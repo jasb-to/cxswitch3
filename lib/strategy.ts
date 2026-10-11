@@ -8,7 +8,19 @@ export interface Signal {
 export interface BreakoutRecord { direction:Direction; price:number; timestamp:number; candleIndex:number }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[]; breakoutRecord?:BreakoutRecord }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
-import { evaluateStochEntryTriggers } from "./stoch-entry";
+
+type StochSnapshot = { k:number; d:number; pk:number; pd:number };
+function hasFreshStochCross(stoch:StochSnapshot,direction:Direction):boolean {
+  return direction==="LONG"
+    ? stoch.pk<=stoch.pd && stoch.k>stoch.d
+    : stoch.pk>=stoch.pd && stoch.k<stoch.d;
+}
+function evaluateStochEntryTriggers(direction:Direction|null,fourH:StochSnapshot,dailyStoch:StochSnapshot) {
+  if(!direction)return{entry1:false,entry2:false,fourHCross:false,dailyCross:false};
+  const fourHCross=hasFreshStochCross(fourH,direction);
+  const dailyCross=hasFreshStochCross(dailyStoch,direction);
+  return{entry1:fourHCross,entry2:fourHCross&&dailyCross,fourHCross,dailyCross};
+}
 
 export const CURRENT_SIGNAL_VERSION=28;
 type Direction="LONG"|"SHORT";
