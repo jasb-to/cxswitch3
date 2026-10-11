@@ -8,6 +8,7 @@ export interface Signal {
 export interface BreakoutRecord { direction:Direction; price:number; timestamp:number; candleIndex:number }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[]; breakoutRecord?:BreakoutRecord }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
+import { evaluateStochEntryTriggers } from "./stoch-entry";
 
 export const CURRENT_SIGNAL_VERSION=28;
 type Direction="LONG"|"SHORT";
@@ -258,17 +259,11 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   // Entry triggers are Stoch RSI first. Trendlines, pivots and Fib levels are not
   // entry gates; pivots remain available downstream for stops and profit targets.
   const breakoutRecord:BreakoutRecord|undefined=undefined;
-  const bullishStochCross=st4.pk<=st4.pd&&st4.k>st4.d;
-  const bearishStochCross=st4.pk>=st4.pd&&st4.k<st4.d;
-  const dailyBullishCross=st1d.pk<=st1d.pd&&st1d.k>st1d.d;
-  const dailyBearishCross=st1d.pk>=st1d.pd&&st1d.k<st1d.d;
-  const stochCross=direction==="LONG"?bullishStochCross:direction==="SHORT"?bearishStochCross:false;
-  const dailyStochCross=direction==="LONG"?dailyBullishCross:direction==="SHORT"?dailyBearishCross:false;
+  const stochTriggers=evaluateStochEntryTriggers(direction,st4,st1d);
   // ENTRY_1: early entry on a fresh closed 4H crossover in the 1D EMA bias.
-  const entry1=!!direction&&stochCross;
-  // ENTRY_2: the daily Stoch RSI must also have a fresh confirmed crossover,
-  // and the 4H Stoch RSI must freshly cross in the same direction.
-  const entry2=!!direction&&dailyStochCross&&stochCross;
+  const entry1=stochTriggers.entry1;
+  // ENTRY_2: fresh closed daily and 4H Stoch RSI crossovers in the same direction.
+  const entry2=stochTriggers.entry2;
   let signalType:"ENTRY_1"|"ENTRY_2"|null=entry2?"ENTRY_2":entry1?"ENTRY_1":null;
   if(!entry1&&!entry2&&direction)missing.push("fresh_4h_stoch_cross_in_daily_direction");
 
