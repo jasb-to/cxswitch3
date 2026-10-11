@@ -33,17 +33,18 @@ function atr(candles: Candle[], period = 14): number {
 }
 
 export function get4HEmaDiagnostic(candles4h: Candle[]): EmaDiagnostic {
-  const closes = candles4h.map(c => c.close);
+  const closedCandles = candles4h.slice(0, -1);
+  const closes = closedCandles.map(c => c.close);
   if (closes.length < 20) return {
     stage: "NEUTRAL", label: "NEUTRAL", direction: "NEUTRAL", turning: false, ema5: 0, ema13: 0, ema5Prev: 0, ema13Prev: 0,
     spread: 0, spreadPct: 0, spreadAtr: 0, spreadPrev: 0, spreadContracting: false, spreadChangePct: 0,
-    ema5Slope: 0, ema13Slope: 0, crossNow: false, candlesFromCross: null, closedCandleTimestamp: candles4h.at(-1)?.timestamp ?? 0,
+    ema5Slope: 0, ema13Slope: 0, crossNow: false, candlesFromCross: null, closedCandleTimestamp: closedCandles.at(-1)?.timestamp ?? 0,
   };
 
   const e5 = ema(closes, 5), e13 = ema(closes, 13), i = e5.length - 1, p = i - 1;
   const ema5 = e5[i], ema13 = e13[i], ema5Prev = e5[p], ema13Prev = e13[p];
   const spread = ema5 - ema13, spreadPrev = ema5Prev - ema13Prev;
-  const atrValue = atr(candles4h);
+  const atrValue = atr(closedCandles);
   const spreadAtr = atrValue > 0 ? spread / atrValue : 0;
   const spreadContracting = Math.abs(spread) < Math.abs(spreadPrev);
   const spreadChangePct = Math.abs(spreadPrev) > 0 ? ((Math.abs(spread) - Math.abs(spreadPrev)) / Math.abs(spreadPrev)) * 100 : 0;
@@ -78,6 +79,6 @@ export function get4HEmaDiagnostic(candles4h: Candle[]): EmaDiagnostic {
     spreadPct: ema13 !== 0 ? (spread / ema13) * 100 : 0, spreadAtr, spreadPrev,
     spreadContracting, spreadChangePct, ema5Slope, ema13Slope,
     crossNow: bullishCross || bearishCross, candlesFromCross: bullishCross || bearishCross ? 0 : null,
-    closedCandleTimestamp: candles4h.at(-1)!.timestamp,
+    closedCandleTimestamp: closedCandles.at(-1)!.timestamp,
   };
 }

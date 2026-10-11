@@ -283,7 +283,10 @@ export async function GET(request:Request){
   const price=c1.at(-1)!.close;
   console.log(marketStructureLog(pair,c4,price));
   const existing=active.find(x=>x.pair===pair);
-  const result=generateSignal(pair,c1,c4,c15,price);
+  const historyForEntry=await getSignalHistory();
+  const entry1State=historyForEntry.filter((h:any)=>h.pair===pair&&h.type==="ENTRY_1"&&h.status==="ACTIVE").sort((a:any,b:any)=>b.timestamp-a.timestamp)[0];
+  const entry2AlreadyFired=!!entry1State&&historyForEntry.some((h:any)=>h.pair===pair&&h.direction===entry1State.direction&&h.type==="ENTRY_2"&&h.timestamp>entry1State.timestamp);
+  const result=generateSignal(pair,c1,c4,c15,price,undefined,undefined,entry1State,entry2AlreadyFired);
   const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.currentPrice=price;snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
   // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
@@ -305,10 +308,10 @@ export async function GET(request:Request){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      // Entry conflict reporting uses the 4H EMA5/13 diagnostic; EMA8/21 manages an open trade.
+      // Signals require closed-candle EMA5/13 alignment on both timeframes.
       const fourHSide=normalizeSide(snapshot.fourHTacticalDirection);
-      const conflict=!!dailySide&&!!fourHSide&&dailySide!==fourHSide;
-      let waitReason=conflict?"1D/4H conflict":"setup incomplete";
+      const conflict=!dailySide||!fourHSide||dailySide!==fourHSide;
+      let waitReason=conflict?"alignment":"setup incomplete";
       if(!conflict&&gateDebug){
         try{
           const gateState=JSON.parse(gateDebug.slice(8));
@@ -316,12 +319,13 @@ export async function GET(request:Request){
           if(missing.length)waitReason=`need ${missing.join(", ")}`;
         }catch{}
       }
-      console.log(`[PAIR] ${pair} | 1D=${snapshot.dailyDirection||"—"} | 4H=${ema513.label} | WAIT — ${waitReason}`);
+      console.log(`[PAIR] ${pair} | 1D EMA5=${round(Number(snapshot.ema5_1d)||0)} EMA13=${round(Number(snapshot.ema13_1d)||0)} ${snapshot.dailyDirection||"—"} | 4H EMA5=${round(Number(snapshot.ema5_4h)||0)} EMA13=${round(Number(snapshot.ema13_4h)||0)} ${snapshot.fourHTacticalDirection||"—"} | WAIT — ${waitReason}`);
     }
     return;
   }
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2} | RR ${signal.rr}`);
-  if(existing){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);return;}
+  const entry2Continuation=!!existing&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2"&&existing.direction===signal.direction;
+  if(existing&&!entry2Continuation){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);return;}
   const history=await getSignalHistory();
   if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
   if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently`);return;}

@@ -1,4 +1,4 @@
-// lib/jarvis.ts — deterministic observation and review layer; never the V28 trade engine
+// lib/jarvis.ts — deterministic observation and review layer; never the V29 trade engine
 import { Redis } from "./supabase-kv";
 
 import { evaluateGates } from "./strategy";
@@ -48,7 +48,7 @@ function directionFromDaily(value:any): "BULL" | "BEAR" | "NEUTRAL" {
 }
 
 function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
-  // 4H 5/13 is Jarvis's observational/tactical context. It never overrides the 1D V28 direction.
+  // 4H 5/13 is Jarvis's observational/tactical context. It never overrides the 1D V29 direction.
   const tacticalLabel=String(snapshot?.fourH513?.label || snapshot?.fourH513?.stage || "");
   if(tacticalLabel.includes("BEARISH")) return "BEAR";
   if(tacticalLabel.includes("BULLISH")) return "BULL";
@@ -231,15 +231,10 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
     if(dailyDir&&tacticalSide!=="NEUTRAL"&&tacticalSide!==expectedSide){
       return "[JARVIS STATE] "+pair+" — 1D is "+dailyText+"; 4H EMA 5/13 is "+(tacticalSide==="BULL"?"bullish":"bearish")+" against the daily direction. Waiting for the 4H EMA 5/13 to turn toward the daily bias and a fresh directional StochRSI cross.";
     }
-    return "[JARVIS STATE] "+pair+" — No valid entry direction yet. 1D EMA5 "+Math.round(e5d).toLocaleString("en-US")+" / EMA13 "+Math.round(e13d).toLocaleString("en-US")+". The 4H is "+fourHText+" context; V28 is waiting for the required entry setup.";
+    return "[JARVIS STATE] "+pair+" — No valid entry direction yet. 1D EMA5 "+Math.round(e5d).toLocaleString("en-US")+" / EMA13 "+Math.round(e13d).toLocaleString("en-US")+". The 4H is "+fourHText+" context; V29 is waiting for closed-candle 1D/4H EMA5/13 alignment and the specified Stoch RSI trigger.";
   }
 
   const dir=evaluation.direction;
-  const distancePct=evaluation.zone?.distancePct??Infinity;
-  const slope=Number(evaluation.trendlineSlope??0);
-  const trendText=dir==="LONG"
-    ? (slope>0?"ascending support":slope<0?"descending support":"flat support")
-    : (slope<0?"descending resistance":slope>0?"ascending resistance":"flat resistance");
   const st=evaluation.trigger;
   const q=c.map(x=>x.close);
   const rawStoch=stochState(q);
@@ -255,13 +250,9 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
     const stopCtx=signal.context?.stopCalc;
     const riskText=stopCtx?" Stop "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk).":"";
     const fourHContext=signal.type==="ENTRY_2"
-      ?"the 4H is "+fourHText+"; its EMA is context only, not an ENTRY_2 veto."
-      :"the 4H is "+fourHText+" (ENTRY_1 does not use the 4H EMA as a veto).";
-    return "[JARVIS STATE] "+pair+" — V28 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+"; "+fourHContext+" "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
+      ?"the 4H is "+fourHText+"; ENTRY_2 also requires price on the correct side of EMA8 and no adverse EMA8/21 cross since ENTRY_1."
+      :"the 4H 5/13 is aligned with the daily 5/13; a fresh early-range Stoch RSI cross triggers ENTRY_1.";
+    return "[JARVIS STATE] "+pair+" — V29 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+"; "+fourHContext+" "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
   }
-  if(!evaluation.zone)
-    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and we are looking for a "+(dir==="LONG"?"long":"short")+" setup. The 4H is "+fourHText+". We still need a trendline and the right Stoch timing.";
-  if(distancePct>1.2)
-    return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the V28 direction is "+(dir==="LONG"?"LONG":"SHORT")+". The 4H is "+fourHText+", but price is "+distancePct.toFixed(1)+"% from the "+trendText+". We are watching for price to come into position; "+stochSummary.toLowerCase();
-  return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the V28 direction is "+(dir==="LONG"?"LONG":"SHORT")+". The 4H is "+fourHText+" and price is "+distancePct.toFixed(1)+"% from the "+trendText+". "+stochSummary;
+  return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the 4H EMA5/13 is aligned "+(dir==="LONG"?"bullish":"bearish")+". Waiting for "+(dir==="LONG"?"a fresh bullish 4H Stoch RSI cross with K below 40":"a fresh bearish 4H Stoch RSI cross with K above 60")+" for ENTRY_1, or the stored ENTRY_1 retest conditions for ENTRY_2. "+stochSummary;
 }
