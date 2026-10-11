@@ -367,12 +367,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{debug};
   }
 
-  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,e8_1d=ema(dailyCloses,8).at(-1)??0,e21_1d=ema(dailyCloses,21).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(c.slice(0,-1).map(x=>x.close)),a=atr(c),av=adx(c);
+  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,e8_1d=ema(dailyCloses,8).at(-1)??0,e21_1d=ema(dailyCloses,21).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(c.slice(0,-1).map(x=>x.close)),st1d=stoch(daily(c.slice(0,-1)).slice(0,-1).map(x=>x.close)),a=atr(c),av=adx(c);
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
-  // Keep the consistency check tied to the same 1D EMA5/13 + 4H EMA8/21 resolver as evaluateGates.
-  // The faster 4H EMA5/13 is tactical timing and never flips the resolved direction.
+  // Keep the consistency check tied to the daily EMA5/13 bias; 4H EMA diagnostics never veto direction.
   const resolvedDirection=resolveSignalDirection(c,d.direction);
   if(evaluation.direction && evaluation.direction!==resolvedDirection){
     debug.push(`[LOCK] V28 direction mismatch blocked: gate=${evaluation.direction} resolved=${resolvedDirection??"NEUTRAL"}`);
