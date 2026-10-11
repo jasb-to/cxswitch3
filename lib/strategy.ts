@@ -69,6 +69,8 @@ function entry2Ready(pair:string,direction:Direction,state:Entry1State|undefined
 }
 export interface GateEvaluation {
   direction:Direction|null;
+  zone:{valid:boolean;type:string;price:number;distancePct:number}|null;
+  trendlineSlope:number;
   alignment:TrendAlignment;
   trigger:{entry1:boolean;entry2:boolean;signalType:"ENTRY_1"|"ENTRY_2"|null};
   exhaustion:string|null;
@@ -117,7 +119,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   let stopCalc:StopCalc|null=null;
   if(direction&&signalType&&a>0)stopCalc=calculateStop(direction,p,a,c).calc;
   const deduped=[...new Set(missing)];
-  return{direction,alignment,trigger:{entry1,entry2,signalType},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!signalType&&!exhausted,dailyTransition:!alignment.daily,breakoutRecord:undefined};
+  return{direction,zone:null,trendlineSlope:0,alignment,trigger:{entry1,entry2,signalType},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!signalType&&!exhausted,dailyTransition:!alignment.daily,breakoutRecord:undefined};
 }
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord,entry1State?:Entry1State,entry2AlreadyFired=false){
   void candles1h;void candles15m;void lastBreakout;
