@@ -65,3 +65,10 @@ test("strategy uses closed 4H and closed daily candles for Stoch RSI triggers", 
   assert.doesNotMatch(strategy, /const entry2Candidate=!!direction&&near/);
   assert.doesNotMatch(strategy, /tactical\.turning&&tactical\.direction===direction&&stochCross/);
 });
+
+test("4H EMA diagnostics do not veto a crossover aligned with the daily EMA bias", () => {
+  const strategy = fs.readFileSync(path.join(__dirname, "..", "lib", "strategy.ts"), "utf8");
+  const resolver = strategy.match(/function resolveSignalDirection\([\s\S]*?\n\}/)?.[0] ?? "";
+  assert.match(resolver, /return dailyDirection/);
+  assert.doesNotMatch(resolver, /fourHTacticalDirection|!==dailyDirection/);
+});
