@@ -61,9 +61,10 @@ function fourHTrendDirection(c:Candle[]):Direction|null{
   return e8>e21?"LONG":e8<e21?"SHORT":null;
 }
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
-  if(!dailyDirection)return null;
-  const fourHTacticalDirection=tacticalDirection(c).direction;
-  return fourHTacticalDirection && fourHTacticalDirection!==dailyDirection ? null : dailyDirection;
+  // The daily EMA bias owns direction. 4H EMA5/13 is diagnostic only;
+  // Stoch RSI crossovers provide the required 4H momentum confirmation.
+  void c;
+  return dailyDirection;
 }
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
@@ -354,7 +355,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{debug};
   }
 
-  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,e8_1d=ema(dailyCloses,8).at(-1)??0,e21_1d=ema(dailyCloses,21).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
+  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,e8_1d=ema(dailyCloses,8).at(-1)??0,e21_1d=ema(dailyCloses,21).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(c.slice(0,-1).map(x=>x.close)),a=atr(c),av=adx(c);
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
