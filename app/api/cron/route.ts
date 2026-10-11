@@ -278,7 +278,7 @@ export async function GET(request:Request){
     getCandles(krakenPairFormat(pair+"/USD"),15)
   ]);stateCandles4h=c4||[];stateCandles15m=c15||[];
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});return;}
-  const ema513=get4HEmaDiagnostic(c4);
+  const ema513=get4HEmaDiagnostic(c4.slice(0,-1));
 
   const price=c1.at(-1)!.close;
   console.log(marketStructureLog(pair,c4,price));
