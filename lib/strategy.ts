@@ -226,8 +226,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     const dailyCandles=daily(c);
     if(VERBOSE_CRON_LOGS)console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
-  // The daily EMA5/13 owns direction. The 4H EMA8/21 must agree;
-  // a neutral 4H EMA8/21 preserves the daily bias. EMA5/13 is tactical only.
+  // The daily EMA5/13 owns directional bias. 4H EMA diagnostics are context only;
+  // a fresh closed 4H Stoch RSI crossover is the momentum trigger.
   const dailyHistoryReady=daily(c).length>=25;
   const dailyTransition = dailyHistoryReady&&!d.direction;
   const direction=resolveSignalDirection(c,d.direction);
@@ -235,7 +235,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const tactical=tacticalDirection(c);
   const fourHDirection=fourHTrendDirection(c);
   if(d.direction && tactical.direction && d.direction!==tactical.direction){
-    if(VERBOSE_CRON_LOGS)console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H EMA5/13=${tactical.direction} (${tactical.label}) | WAIT`);
+    if(VERBOSE_CRON_LOGS)console.log(`[EMA ADVISORY] ${pair} | 1D=${d.direction} | 4H EMA5/13=${tactical.direction} (${tactical.label}) | Stoch RSI remains the entry trigger`);
   }
   if(dailyHistoryReady&&!d.direction){
     if(VERBOSE_CRON_LOGS)console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
@@ -368,15 +368,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
-  debug.push(`[4H CONTEXT] EMA8/21 ${fourHTrendDirection(c)??"NEUTRAL"} | EMA5/13 ${tactical.direction??"NEUTRAL"} — ${tactical.label} | 1D owns bias; opposing EMA5/13 means WAIT; 8/21 manages the trade after entry`);
+  debug.push(`[4H CONTEXT] EMA8/21 ${fourHTrendDirection(c)??"NEUTRAL"} | EMA5/13 ${tactical.direction??"NEUTRAL"} — ${tactical.label} | 1D EMA owns bias; closed 4H Stoch RSI crossover triggers entries; EMAs are advisory`);
 
   if(!evaluation.direction){
     debug.push(d.direction
-      ? `[DIRECTION] V28 direction agreement required | 1D baseline ${d.direction}`
+      ? `[DIRECTION] Daily EMA bias available | 1D baseline ${d.direction}`
       : (dailyCandles.length>=25
         ? `[1D TRANSITION] ${pair} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} equal — no direction`
         : "[1D] NEUTRAL | insufficient daily history"));
-    debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
+    debug.push("[ZONE] trendline context unavailable or not required"); debug.push("[TRIGGER] no fresh closed 4H Stoch RSI crossover | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
