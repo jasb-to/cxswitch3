@@ -45,7 +45,7 @@ export function entry2RetestConditions(direction:Direction,entry:number,price:nu
   const freshCross=direction==="LONG"?st.pk<=st.pd&&st.k>st.d&&st.k<60:st.pk>=st.pd&&st.k<st.d&&st.k>40;
   return !alreadyFired&&waveMoved&&pulledBack&&correctEmaSide&&freshCross&&!adverseCross;
 }
-function hasAdverseEmaCrossSince(c:Candle[],state:Entry1State):boolean{
+export function hasAdverseEmaCrossSince(c:Candle[],state:Entry1State):boolean{
   const closed=c.slice(0,-1),closes=closed.map(x=>x.close),e8=ema(closes,8),e21=ema(closes,21);
   const marker=Number(state.context?.closed4hTimestamp);
   let start=Number.isFinite(marker)?closed.findIndex(x=>x.timestamp===marker):-1;
