@@ -1,74 +1,46 @@
-const test = require("node:test");
+const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
 const ts = require("typescript");
+require.extensions[".ts"] = (module, filename) => {
+  const source = fs.readFileSync(filename, "utf8");
+  const output = ts.transpileModule(source, { fileName: filename, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+  module._compile(output, filename);
+};
+const strategy = require("../lib/strategy.ts");
 
-const helperPath = path.join(__dirname, "..", "lib", "stoch-entry.ts");
-const helperSource = fs.readFileSync(helperPath, "utf8");
-const js = ts.transpileModule(helperSource, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 }
-}).outputText;
-const helperModule = { exports: {} };
-vm.runInNewContext(js, { exports: helperModule.exports, module: helperModule, require });
-const { evaluateStochEntryTriggers } = helperModule.exports;
-
-const longCross = { pk: 20, pd: 25, k: 30, d: 28 };
-const shortCross = { pk: 80, pd: 75, k: 70, d: 72 };
-const noCross = { pk: 30, pd: 25, k: 35, d: 28 };
-
-test("ENTRY_1 fires on a fresh 4H bullish crossover without requiring a daily crossover", () => {
-  const result = evaluateStochEntryTriggers("LONG", longCross, noCross);
-  assert.equal(result.entry1, true);
-  assert.equal(result.entry2, false);
-  assert.equal(result.fourHCross, true);
-  assert.equal(result.dailyCross, false);
+test("ENTRY_1 LONG fires on fresh bullish Stoch RSI cross at K=30",()=>{
+  const result=strategy.evaluateEntry1("LONG",{pk:20,pd:25,k:30,d:28});
+  assert.equal(result.entry1Long,true);
+  assert.equal(result.entry1,true);
+  assert.equal(result.direction,"LONG");
 });
-
-test("ENTRY_2 requires fresh daily and 4H bullish crossovers in the same direction", () => {
-  const result = evaluateStochEntryTriggers("LONG", longCross, longCross);
-  assert.equal(result.entry1, true);
-  assert.equal(result.entry2, true);
+test("ENTRY_1 LONG does not fire when K=55",()=>{
+  const result=strategy.evaluateEntry1("LONG",{pk:20,pd:25,k:55,d:28});
+  assert.equal(result.entry1Long,false);
+  assert.equal(result.entry1,false);
 });
-
-test("a daily crossover cannot trigger ENTRY_2 without a fresh 4H crossover", () => {
-  const result = evaluateStochEntryTriggers("LONG", noCross, longCross);
-  assert.equal(result.entry1, false);
-  assert.equal(result.entry2, false);
-  assert.equal(result.dailyCross, true);
+test("ENTRY_1 SHORT requires K above 60 and fresh bearish cross",()=>{
+  assert.equal(strategy.evaluateEntry1("SHORT",{pk:80,pd:75,k:70,d:72}).entry1Short,true);
+  assert.equal(strategy.evaluateEntry1("SHORT",{pk:80,pd:75,k:55,d:72}).entry1Short,false);
 });
-
-test("short entries use the bearish crossover rule", () => {
-  const result = evaluateStochEntryTriggers("SHORT", shortCross, shortCross);
-  assert.equal(result.entry1, true);
-  assert.equal(result.entry2, true);
+test("ENTRY_2 retest qualifies after a 1.5% first wave, pullback within 1%, EMA8 support and a fresh cross at K=45",()=>{
+  assert.equal(strategy.entry2RetestConditions("LONG",100,100.5,102,99.8,{pk:30,pd:35,k:45,d:40},false,false),true);
 });
-
-test("a crossover against the daily EMA direction does not trigger", () => {
-  const result = evaluateStochEntryTriggers("LONG", shortCross, shortCross);
-  assert.equal(result.entry1, false);
-  assert.equal(result.entry2, false);
+test("ENTRY_2 is blocked when EMA8/21 crossed bearish after ENTRY_1",()=>{
+  assert.equal(strategy.entry2RetestConditions("LONG",100,100.5,102,99.8,{pk:30,pd:35,k:45,d:40},true,false),false);
 });
-
-test("neutral daily direction blocks both entry types", () => {
-  const result = evaluateStochEntryTriggers(null, longCross, longCross);
-  assert.equal(result.entry1, false);
-  assert.equal(result.entry2, false);
+test("ENTRY_2 requires pullback, correct EMA8 side, K threshold, and one-time state",()=>{
+  const st={pk:30,pd:35,k:45,d:40};
+  assert.equal(strategy.entry2RetestConditions("LONG",100,102,102,99,st,false,false),false);
+  assert.equal(strategy.entry2RetestConditions("LONG",100,100.5,102,101,st,false,false),false);
+  assert.equal(strategy.entry2RetestConditions("LONG",100,100.5,102,99,{...st,k:65},false,false),false);
+  assert.equal(strategy.entry2RetestConditions("LONG",100,100.5,102,99,st,false,true),false);
 });
-
-test("strategy uses closed 4H and closed daily candles for Stoch RSI triggers", () => {
-  const strategy = fs.readFileSync(path.join(__dirname, "..", "lib", "strategy.ts"), "utf8");
-  assert.match(strategy, /const closed4h=c\.slice\(0,-1\)/);
-  assert.match(strategy, /const closedDaily=daily\(closed4h\)\.slice\(0,-1\)/);
-  assert.match(strategy, /evaluateStochEntryTriggers\(direction,st4,st1d\)/);
-  assert.doesNotMatch(strategy, /const entry2Candidate=!!direction&&near/);
-  assert.doesNotMatch(strategy, /tactical\.turning&&tactical\.direction===direction&&stochCross/);
+test("ENTRY_2 SHORT retest requires first wave down, pullback, below EMA8 and K above 40 on bearish cross",()=>{
+  assert.equal(strategy.entry2RetestConditions("SHORT",100,99.5,98,100,{pk:70,pd:65,k:55,d:60},false,false),true);
 });
-
-test("4H EMA diagnostics do not veto a crossover aligned with the daily EMA bias", () => {
-  const strategy = fs.readFileSync(path.join(__dirname, "..", "lib", "strategy.ts"), "utf8");
-  const resolver = strategy.match(/function resolveSignalDirection\([\s\S]*?\n\}/)?.[0] ?? "";
-  assert.match(resolver, /return dailyDirection/);
-  assert.doesNotMatch(resolver, /fourHTacticalDirection|!==dailyDirection/);
+test("entry logic contains no retired EMA, trendline, pivot, fib, RR, or K exhaustion gates",()=>{
+  const source=fs.readFileSync(require.resolve("../lib/strategy.ts"),"utf8");
+  for(const retired of ["dailyTrend(","fourHTrendDirection(","tacticalDirection(","resolveSignalDirection(","structureTargets(","emaAdvisory","trendlinePivots",">=95","<=5","3% above 4H EMA(21)"]) assert.equal(source.includes(retired),false,retired);
 });
