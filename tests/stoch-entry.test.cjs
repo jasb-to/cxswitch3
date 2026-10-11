@@ -44,3 +44,22 @@ test("entry logic contains no retired EMA, trendline, pivot, fib, RR, or K exhau
   const source=fs.readFileSync(require.resolve("../lib/strategy.ts"),"utf8");
   for(const retired of ["dailyTrend(","fourHTrendDirection(","tacticalDirection(","resolveSignalDirection(","structureTargets(","emaAdvisory","trendlinePivots",">=95","<=5","3% above 4H EMA(21)"]) assert.equal(source.includes(retired),false,retired);
 });
+
+test("EMA8/21 bearish cross after the stored ENTRY_1 candle invalidates a LONG retest",()=>{
+  const step=4*60*60*1000,start=Date.UTC(2026,0,1);
+  const c=Array.from({length:48},(_,i)=>{
+    const close=i<=35?100+i:135-(i-35)*15;
+    return{timestamp:start+i*step,open:close,high:close+1,low:close-1,close,volume:1};
+  });
+  const state={pair:"BTC",direction:"LONG",entry:135,timestamp:start+35*step+step/2,context:{closed4hTimestamp:start+35*step}};
+  assert.equal(strategy.hasAdverseEmaCrossSince(c,state),true);
+});
+test("EMA8/21 remaining bullish after ENTRY_1 does not invalidate a LONG retest",()=>{
+  const step=4*60*60*1000,start=Date.UTC(2026,0,1);
+  const c=Array.from({length:48},(_,i)=>{
+    const close=100+i;
+    return{timestamp:start+i*step,open:close,high:close+1,low:close-1,close,volume:1};
+  });
+  const state={pair:"BTC",direction:"LONG",entry:135,timestamp:start+35*step+step/2,context:{closed4hTimestamp:start+35*step}};
+  assert.equal(strategy.hasAdverseEmaCrossSince(c,state),false);
+});
