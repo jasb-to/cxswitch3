@@ -31,6 +31,20 @@ export function trendAlignment(c:Candle[]):TrendAlignment{
   const aligned=dailyDirection&&fourH&&dailyDirection===fourH?dailyDirection:null;
   return{daily:dailyDirection,fourH,aligned,dailyE5:dE5,dailyE13:dE13,fourHE5:hE5,fourHE13:hE13};
 }
+export type DailyTrendStrength="LOW"|"MEDIUM"|"HIGH"|"NEUTRAL";
+export function classifyDailyStrength(c:Candle[],alignment:TrendAlignment):DailyTrendStrength{
+  if(!alignment.daily)return "NEUTRAL";
+  const completedDaily=daily([...c].sort((a,b)=>a.timestamp-b.timestamp)).slice(0,-1);
+  if(completedDaily.length<25)return "NEUTRAL";
+  const closes=completedDaily.map(x=>x.close),e5s=ema(closes,5),e13s=ema(closes,13);
+  if(e5s.length<2||e13s.length<2)return "NEUTRAL";
+  const e5=e5s.at(-1)!,e13=e13s.at(-1)!,e5Prev=e5s.at(-2)!,e13Prev=e13s.at(-2)!,price=closes.at(-1)!;
+  const spread=Math.abs(e5-e13)/Math.max(price,EPS)*100;
+  const contracting=Math.abs(e5-e13)<Math.abs(e5Prev-e13Prev);
+  const weakening=alignment.daily==="LONG"?(e5<e5Prev&&contracting):(e5>e5Prev&&contracting);
+  const strong=spread>=1.5&&!contracting&&(alignment.daily==="LONG"?e5>=e5Prev:e5<=e5Prev);
+  return strong?"HIGH":weakening||spread<0.75?"LOW":"MEDIUM";
+}
 export interface Entry1State { pair:string; direction:Direction; entry:number; timestamp:number; context?:any }
 type StochSnapshot={k:number;d:number;pk:number;pd:number};
 export function evaluateEntry1(aligned:Direction|null,st:StochSnapshot){
@@ -223,5 +237,6 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
   const fourHDirection=e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL";
   const fourHTacticalDirection=alignment.fourH==="LONG"?"BULL":alignment.fourH==="SHORT"?"BEAR":"NEUTRAL";
   const fourHTacticalLabel="EMA5 "+r(alignment.fourHE5)+" "+(alignment.fourH==="LONG"?">":alignment.fourH==="SHORT"?"<":"=")+" EMA13 "+r(alignment.fourHE13);
-  return{pair,price:c.at(-1)?.close??0,trend:alignment.daily??"NEUTRAL",adx:adx(closed),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:e8d,ema21_1d:e21d,ema5_1d:e5d,ema13_1d:e13d,dailyDirection:alignment.daily==="LONG"?"BULL":alignment.daily==="SHORT"?"BEAR":"NEUTRAL",dailyStrength:"NEUTRAL",fourHDirection,fourHTacticalDirection,fourHTacticalLabel,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,alignedDirection:alignment.aligned};
+  const dailyStrength=classifyDailyStrength(c,alignment);
+  return{pair,price:c.at(-1)?.close??0,trend:alignment.daily??"NEUTRAL",adx:adx(closed),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:e8d,ema21_1d:e21d,ema5_1d:e5d,ema13_1d:e13d,dailyDirection:alignment.daily==="LONG"?"BULL":alignment.daily==="SHORT"?"BEAR":"NEUTRAL",dailyStrength,fourHDirection,fourHTacticalDirection,fourHTacticalLabel,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,alignedDirection:alignment.aligned};
 }
