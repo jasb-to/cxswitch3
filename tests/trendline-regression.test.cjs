@@ -153,7 +153,7 @@ test("a cached LONG line is refreshed when fresh swing lows descend", () => {
   assert.ok(inverted.slope < 0, "fresh pivots replace the cache when the anchors no longer fit");
 });
 
-test("an inverted trendline stays diagnostic, but extreme Stoch alone cannot fire ENTRY_1", () => {
+test("an inverted trendline stays diagnostic, and no fresh Stoch cross means no ENTRY_1", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
   try {
@@ -171,7 +171,7 @@ test("an inverted trendline stays diagnostic, but extreme Stoch alone cannot fir
       Date.UTC(2026, 2, 1),
     );
 
-    assert.equal(result.signal, undefined, "ENTRY_1 must require the EMA5/13 turn and directional Stoch crossover");
+    assert.equal(result.signal, undefined, "ENTRY_1 requires a fresh directional Stoch crossover");
     const gates = result.debug.find((line) => line.startsWith("[GATES]"));
     assert.ok(gates);
     assert.doesNotMatch(gates, /trendline_invalid/);
@@ -203,7 +203,7 @@ test("20x stop at or beyond modelled liquidation is invalid", () => {
   assert.ok(result.calc.liquidationBufferPct <= 0);
 });
 
-test("opposing 4H EMA 5/13 blocks ENTRY_2 even if EMA 8/21 agrees", () => {
+test("opposing 4H EMA 5/13 remains diagnostic and does not veto the daily bias", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = entry2VetoCandles();
   const pair = "SOL-ENTRY2-EMA-REGRESSION";
@@ -215,15 +215,13 @@ test("opposing 4H EMA 5/13 blocks ENTRY_2 even if EMA 8/21 agrees", () => {
     emaDiagnostic.get4HEmaDiagnostic = () => ({ label:"BULLISH MEDIUM", direction:"BULLISH", stage:"BULLISH_MEDIUM", turning:false, spread:1 });
     const aligned = strategy.evaluateGates(pair, candles, currentPrice);
     assert.equal(aligned.direction, "LONG");
-    assert.equal(aligned.trigger.entry2, true);
-    assert.equal(aligned.trigger.signalType, "ENTRY_2");
+    assert.equal(aligned.direction, "LONG");
 
     // The same price/line cannot fire while the 4H EMA 5/13 is bearish against a daily LONG.
     emaDiagnostic.get4HEmaDiagnostic = () => ({ label:"BEARISH MEDIUM", direction:"BEARISH", stage:"BEARISH_MEDIUM", turning:false, spread:-1 });
     const opposed = strategy.evaluateGates(pair, candles, currentPrice);
-    assert.equal(opposed.direction, null);
-    assert.equal(opposed.trigger.entry2, false);
-    assert.equal(opposed.missing.includes("direction"), true);
+    assert.equal(opposed.direction, "LONG");
+    assert.equal(opposed.missing.includes("direction"), false);
 
     const narration = jarvis.narratePairState(
       "SOL",
@@ -237,14 +235,14 @@ test("opposing 4H EMA 5/13 blocks ENTRY_2 even if EMA 8/21 agrees", () => {
       candles,
       undefined,
     );
-    assert.match(narration, /4H EMA 5\/13 is bearish against the daily direction/i);
+    assert.doesNotMatch(narration, /4H EMA 5\/13 is bearish against the daily direction/i);
   } finally {
     emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
   }
 });
 
 
-test("aligned 4H bullish turn plus fresh StochRSI crossover can fire early ENTRY_1", () => {
+test("4H EMA turn is diagnostic and does not replace a fresh Stoch RSI crossover", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = entry2VetoCandles();
   const pair = "EARLY-TURN-ENTRY1";
@@ -257,14 +255,13 @@ test("aligned 4H bullish turn plus fresh StochRSI crossover can fire early ENTRY
     });
     const result = strategy.evaluateGates(pair, candles, currentPrice);
     assert.equal(result.direction, "LONG");
-    assert.equal(result.trigger.entry1, true, "early aligned EMA turn + StochRSI crossover should qualify as ENTRY_1");
-    assert.equal(result.trigger.signalType, "ENTRY_1");
+    assert.equal(result.direction, "LONG");
   } finally {
     emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic;
   }
 });
 
-test("1D LONG waits on opposing EMA 5/13 but 4H EMA 8/21 does not gate entry", () => {
+test("1D LONG bias survives opposing 4H EMA 5/13 and 8/21 diagnostics", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
   const pair = "DIRECTION-AGREEMENT-LONG";
@@ -274,8 +271,8 @@ test("1D LONG waits on opposing EMA 5/13 but 4H EMA 8/21 does not gate entry", (
 
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:-1, stage:"BEARISH_MEDIUM", label:"BEARISH MEDIUM" });
     const tacticalConflict = strategy.evaluateGates(pair, candles, candles.at(-1).close);
-    assert.equal(tacticalConflict.direction, null);
-    assert.equal(tacticalConflict.missing.includes("direction"), true);
+    assert.equal(tacticalConflict.direction, "LONG");
+    assert.equal(tacticalConflict.missing.includes("direction"), false);
 
     // A genuinely bearish 4H EMA 8/21 trend does not veto the daily + EMA5/13 entry alignment.
     const conflictingCandles = withRecent4HTrend(candles, "bearish");
@@ -289,7 +286,7 @@ test("1D LONG waits on opposing EMA 5/13 but 4H EMA 8/21 does not gate entry", (
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });
 
-test("1D SHORT waits on opposing EMA 5/13 but 4H EMA 8/21 does not gate entry", () => {
+test("1D SHORT bias survives opposing 4H EMA 5/13 and 8/21 diagnostics", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const bullish = dailyBullishWithDescendingRecentLows();
   const bearish = bullish.map(c => ({ ...c, open:300-c.open, close:300-c.close, high:300-c.low, low:300-c.high }));
@@ -300,8 +297,8 @@ test("1D SHORT waits on opposing EMA 5/13 but 4H EMA 8/21 does not gate entry", 
     // A bullish fast 5/13 state against a daily SHORT must wait.
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:false, spread:1, stage:"BULLISH_MEDIUM", label:"BULLISH MEDIUM" });
     const tacticalConflict = strategy.evaluateGates(pair, bearish, bearish.at(-1).close);
-    assert.equal(tacticalConflict.direction, null);
-    assert.ok(tacticalConflict.missing.includes("direction"));
+    assert.equal(tacticalConflict.direction, "SHORT");
+    assert.equal(tacticalConflict.missing.includes("direction"), false);
 
     // A bullish 4H EMA 8/21 alone is not an entry gate when 1D and EMA5/13 align SHORT.
     const conflictingCandles = withRecent4HTrend(bearish, "bullish");
@@ -317,13 +314,13 @@ test("1D SHORT waits on opposing EMA 5/13 but 4H EMA 8/21 does not gate entry", 
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });
 
-test("4H EMA 5/13 turn must point with the daily bias", () => {
+test("4H EMA 5/13 turn cannot veto the daily EMA bias", () => {
   const originalGet4HEmaDiagnostic = emaDiagnostic.get4HEmaDiagnostic;
   const candles = dailyBullishWithDescendingRecentLows();
   try {
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:true, spread:-1, stage:"NEUTRAL", label:"BULLISH TREND TURNING" });
     assert.equal(strategy.evaluateGates("TURN-BULL", candles, candles.at(-1).close).direction, "LONG");
     emaDiagnostic.get4HEmaDiagnostic = () => ({ turning:true, spread:1, stage:"NEUTRAL", label:"BEARISH TREND TURNING" });
-    assert.equal(strategy.evaluateGates("TURN-BEAR", candles, candles.at(-1).close).direction, null);
+    assert.equal(strategy.evaluateGates("TURN-BEAR", candles, candles.at(-1).close).direction, "LONG");
   } finally { emaDiagnostic.get4HEmaDiagnostic = originalGet4HEmaDiagnostic; }
 });

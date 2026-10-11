@@ -9,6 +9,19 @@ export interface BreakoutRecord { direction:Direction; price:number; timestamp:n
 export interface SignalResult { signal?:Signal; market?:any; debug:string[]; breakoutRecord?:BreakoutRecord }
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
+type StochSnapshot = { k:number; d:number; pk:number; pd:number };
+function hasFreshStochCross(stoch:StochSnapshot,direction:Direction):boolean {
+  return direction==="LONG"
+    ? stoch.pk<=stoch.pd && stoch.k>stoch.d
+    : stoch.pk>=stoch.pd && stoch.k<stoch.d;
+}
+function evaluateStochEntryTriggers(direction:Direction|null,fourH:StochSnapshot,dailyStoch:StochSnapshot) {
+  if(!direction)return{entry1:false,entry2:false,fourHCross:false,dailyCross:false};
+  const fourHCross=hasFreshStochCross(fourH,direction);
+  const dailyCross=hasFreshStochCross(dailyStoch,direction);
+  return{entry1:fourHCross,entry2:fourHCross&&dailyCross,fourHCross,dailyCross};
+}
+
 export const CURRENT_SIGNAL_VERSION=28;
 type Direction="LONG"|"SHORT";
 const VERBOSE_CRON_LOGS=process.env.CRON_VERBOSE_LOGS==="true";
@@ -60,9 +73,10 @@ function fourHTrendDirection(c:Candle[]):Direction|null{
   return e8>e21?"LONG":e8<e21?"SHORT":null;
 }
 function resolveSignalDirection(c:Candle[],dailyDirection:Direction|null):Direction|null{
-  if(!dailyDirection)return null;
-  const fourHTacticalDirection=tacticalDirection(c).direction;
-  return fourHTacticalDirection && fourHTacticalDirection!==dailyDirection ? null : dailyDirection;
+  // The daily EMA bias owns direction. 4H EMA5/13 is diagnostic only;
+  // Stoch RSI crossovers provide the required 4H momentum confirmation.
+  void c;
+  return dailyDirection;
 }
 interface Swing{index:number;price:number;timestamp:number}
 function swings(c:Candle[],high:boolean){const o:Swing[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p,timestamp:c[i].timestamp})}return o}
@@ -224,8 +238,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
     const dailyCandles=daily(c);
     if(VERBOSE_CRON_LOGS)console.log(`[1D AUDIT GATES] candles=${dailyCandles.length} lastClose=${dailyCandles.at(-1)?.close??0} dir=${d.direction??"NULL"}`);
   }
-  // The daily EMA5/13 owns direction. The 4H EMA8/21 must agree;
-  // a neutral 4H EMA8/21 preserves the daily bias. EMA5/13 is tactical only.
+  // The daily EMA5/13 owns directional bias. 4H EMA diagnostics are context only;
+  // a fresh closed 4H Stoch RSI crossover is the momentum trigger.
   const dailyHistoryReady=daily(c).length>=25;
   const dailyTransition = dailyHistoryReady&&!d.direction;
   const direction=resolveSignalDirection(c,d.direction);
@@ -233,7 +247,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const tactical=tacticalDirection(c);
   const fourHDirection=fourHTrendDirection(c);
   if(d.direction && tactical.direction && d.direction!==tactical.direction){
-    if(VERBOSE_CRON_LOGS)console.log(`[DIRECTION CONFLICT] ${pair} | 1D=${d.direction} | 4H EMA5/13=${tactical.direction} (${tactical.label}) | WAIT`);
+    if(VERBOSE_CRON_LOGS)console.log(`[EMA ADVISORY] ${pair} | 1D=${d.direction} | 4H EMA5/13=${tactical.direction} (${tactical.label}) | Stoch RSI remains the entry trigger`);
   }
   if(dailyHistoryReady&&!d.direction){
     if(VERBOSE_CRON_LOGS)console.log(`[1D TRANSITION] ${pair} | EMA5/EMA13 equal — no direction`);
@@ -247,31 +261,24 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const tl=trendlineResult?.state??null;
   const trendlineSlope=tl?.slope??trendlineResult?.slope??0;
   const linePrice=tl?tl.slope*(c.length-1)+tl.intercept:0;
+  // Retain trendline context for diagnostics only; its availability/proximity is not an entry gate.
   const zoneValue=tl?{type:direction==="LONG"?"TRENDLINE_SUPPORT":"TRENDLINE_RESISTANCE",price:linePrice,distance:Math.abs(p-linePrice),distancePct:Math.abs(p-linePrice)/Math.max(p,EPS)*100}:null;
 
-  const st4=stoch(c.map(x=>x.close));
-  // ENTRY_1 uses daily direction and Stoch timing; trendline proximity is not required.
-  // Keep the existing 1.2% fitted-line proximity test exclusively for ENTRY_2.
-  const near=!!zoneValue && Math.abs(p-linePrice)/Math.max(Math.abs(linePrice),EPS)<0.012;
+  // Use closed candles for crossover decisions so the active candle cannot repaint a trigger.
+  const closed4h=c.slice(0,-1);
+  const closedDaily=daily(closed4h).slice(0,-1);
+  const st4=stoch(closed4h.map(x=>x.close));
+  const st1d=stoch(closedDaily.map(x=>x.close));
+  // Entry triggers are Stoch RSI first. Trendlines, pivots and Fib levels are not
+  // entry gates; pivots remain available downstream for stops and profit targets.
   const breakoutRecord:BreakoutRecord|undefined=undefined;
-
-  const extreme=!!direction&&(direction==="LONG"?st4.k<20:st4.k>80);
-  const turn=!!direction&&(direction==="LONG"?st4.k>st4.d:st4.k<st4.d);
-  // ENTRY_1 requires both a 4H EMA5/13 turn toward the 1D bias and a fresh
-  // directional StochRSI crossover. An extreme Stoch reading alone is NOT an entry.
-  // Do not wait for a completed EMA5/13 crossover; the early-turn diagnostic is sufficient.
-  const bullishStochCross=st4.pk<=st4.pd&&st4.k>st4.d;
-  const bearishStochCross=st4.pk>=st4.pd&&st4.k<st4.d;
-  const stochCross=direction==="LONG"?bullishStochCross:bearishStochCross;
-  const earlyTurnEntry=!!direction&&tactical.turning&&tactical.direction===direction&&stochCross;
-  const entry1=earlyTurnEntry;
-  // ENTRY_2 remains the existing trendline proximity + directional StochRSI turn,
-  // provided it is not already at the extreme. No extra EMA or indicator gate.
-  const entry2Candidate=!!direction&&near&&turn&&!extreme;
-  // The 4H diagnostic is contextual for entries after direction agreement is resolved.
-  const entry2=entry2Candidate;
-  let signalType:"ENTRY_1"|"ENTRY_2"|null=entry1?"ENTRY_1":entry2?"ENTRY_2":null;
-  if(!entry1&&!entry2Candidate&&direction)missing.push("entry1_ema_turn_and_stoch_cross_or_entry2");
+  const stochTriggers=evaluateStochEntryTriggers(direction,st4,st1d);
+  // ENTRY_1: early entry on a fresh closed 4H crossover in the 1D EMA bias.
+  const entry1=stochTriggers.entry1;
+  // ENTRY_2: fresh closed daily and 4H Stoch RSI crossovers in the same direction.
+  const entry2=stochTriggers.entry2;
+  let signalType:"ENTRY_1"|"ENTRY_2"|null=entry2?"ENTRY_2":entry1?"ENTRY_1":null;
+  if(!entry1&&!entry2&&direction)missing.push("fresh_4h_stoch_cross_in_daily_direction");
 
   const emaAdvisory:string[]=[];
   if(signalType && direction==="SHORT" && !ema4h.label.includes("BEARISH"))emaAdvisory.push("4h_ema_not_bearish");
@@ -360,12 +367,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{debug};
   }
 
-  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,e8_1d=ema(dailyCloses,8).at(-1)??0,e21_1d=ema(dailyCloses,21).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(cl),a=atr(c),av=adx(c);
+  const d=dailyTrend(c),dailyCandles=daily(c),dailyCloses=dailyCandles.map(x=>x.close),e5_1d=ema(dailyCloses,5).at(-1)??0,e13_1d=ema(dailyCloses,13).at(-1)??0,e8_1d=ema(dailyCloses,8).at(-1)??0,e21_1d=ema(dailyCloses,21).at(-1)??0,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1)!,e21=ema(cl,21).at(-1)!,rv=rsi(cl),st4=stoch(c.slice(0,-1).map(x=>x.close)),st1d=stoch(daily(c.slice(0,-1)).slice(0,-1).map(x=>x.close)),a=atr(c),av=adx(c);
   const tactical=tacticalDirection(c);
   const evaluation=evaluateGates(pair,c,p,lastBreakout);
   debug.push(`[GATES] ${JSON.stringify(evaluation)}`);
-  // Keep the consistency check tied to the same 1D EMA5/13 + 4H EMA8/21 resolver as evaluateGates.
-  // The faster 4H EMA5/13 is tactical timing and never flips the resolved direction.
+  // Keep the consistency check tied to the daily EMA5/13 bias; 4H EMA diagnostics never veto direction.
   const resolvedDirection=resolveSignalDirection(c,d.direction);
   if(evaluation.direction && evaluation.direction!==resolvedDirection){
     debug.push(`[LOCK] V28 direction mismatch blocked: gate=${evaluation.direction} resolved=${resolvedDirection??"NEUTRAL"}`);
@@ -373,15 +379,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
   debug.push(`[1D] ${d.direction??"NEUTRAL"} ${d.strength} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} | spread ${d.spread.toFixed(2)}%`);
-  debug.push(`[4H CONTEXT] EMA8/21 ${fourHTrendDirection(c)??"NEUTRAL"} | EMA5/13 ${tactical.direction??"NEUTRAL"} — ${tactical.label} | 1D owns bias; opposing EMA5/13 means WAIT; 8/21 manages the trade after entry`);
+  debug.push(`[4H CONTEXT] EMA8/21 ${fourHTrendDirection(c)??"NEUTRAL"} | EMA5/13 ${tactical.direction??"NEUTRAL"} — ${tactical.label} | 1D EMA owns bias; closed 4H Stoch RSI crossover triggers entries; EMAs are advisory`);
 
   if(!evaluation.direction){
     debug.push(d.direction
-      ? `[DIRECTION] V28 direction agreement required | 1D baseline ${d.direction}`
+      ? `[DIRECTION] Daily EMA bias available | 1D baseline ${d.direction}`
       : (dailyCandles.length>=25
         ? `[1D TRANSITION] ${pair} | EMA5 ${r(d.e5)} | EMA13 ${r(d.e13)} equal — no direction`
         : "[1D] NEUTRAL | insufficient daily history"));
-    debug.push("[ZONE] none in range"); debug.push("[TRIGGER] 4H Stoch/Trendline unavailable | fired=false");
+    debug.push("[ZONE] trendline context unavailable or not required"); debug.push("[TRIGGER] no fresh closed 4H Stoch RSI crossover | fired=false");
     debug.push("[EXHAUST] clear"); debug.push("[SIGNAL] none"); debug.push("[JARVIS] not evaluated"); debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:evaluation.breakoutRecord};
   }
@@ -393,7 +399,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(evaluation.zone
     ? `[ZONE] ${trendlineType} @ ${r(trendlinePrice)} | distance ${trendlineDistancePct.toFixed(2)}% | ${zoneDistanceAtr.toFixed(2)} ATR`
     : "[ZONE] none | validated 4H trendline unavailable");
-  debug.push(`[TRIGGER] 4H Stoch K ${st4.k.toFixed(1)} / D ${st4.d.toFixed(1)} | ENTRY_1=${evaluation.trigger.entry1} (daily direction + Stoch) | ENTRY_2=${evaluation.trigger.entry2} (trendline ${Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2)+"%":"unavailable"})`);
+  debug.push(`[TRIGGER] closed 4H Stoch K ${st4.k.toFixed(1)} / D ${st4.d.toFixed(1)} | ENTRY_1=${evaluation.trigger.entry1} (fresh 4H cross) | ENTRY_2=${evaluation.trigger.entry2} (fresh daily + 4H cross)`);
   const swingDebug=evaluation.direction?getTrendlineDebug(pair,c,evaluation.direction):null;
   if(swingDebug){
     debug.push(`[SWINGS] ${pair} | ${evaluation.direction==="LONG"?"lows":"highs"}: ${JSON.stringify(swingDebug.pivots)}`);
@@ -405,7 +411,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[EXHAUST] ${evaluation.exhaustion??"clear"}`);
 
   if(!evaluation.allPassed){
-    debug.push(`[REVERSAL] none — V28 waits for 1D/4H direction agreement and directional Stoch timing; ENTRY_2 also requires trendline proximity`);
+    debug.push(`[REVERSAL] none — waiting for a fresh closed 4H Stoch RSI crossover in the daily EMA direction; ENTRY_2 also requires a fresh daily crossover`);
     debug.push(`[SIGNAL] none — missing ${evaluation.missing.join(", ")}`);
     debug.push("[JARVIS] observation only — no trade");
     debug.push("[ALERT] none");
@@ -414,7 +420,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const signalType=evaluation.trigger.signalType!;
   const entryBase=p;
-  debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | ${signalType==="ENTRY_1"?"daily direction + Stoch confirmation":"trendline distance "+(Number.isFinite(trendlineDistancePct)?trendlineDistancePct.toFixed(2)+"%":"unavailable")}`);
+  debug.push(`[ENTRY] MARKET | current price ${r(entryBase)} | ${signalType==="ENTRY_1"?"fresh closed 4H Stoch RSI crossover":"fresh closed daily + 4H Stoch RSI crossovers"}`);
   const calculatedStop=calculateStop(evaluation.direction!,entryBase,a,c);
   const stop=calculatedStop.stop;
   if(!calculatedStop.valid){
@@ -430,9 +436,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const s:Signal={
     id:`${pair}_${signalType}_${now}`,pair,direction:evaluation.direction,type:signalType,entry:priceRound(entryBase),signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,
     stop:priceRound(stop),tp1:priceRound(targets.tp1),tp2:priceRound(targets.tp2),rr:r(actualRr,2),expectedMove:r(Math.abs(targets.tp2-entryBase)/Math.max(entryBase,EPS)*100),adx:r(av,1),rsi:r(rv,1),stochK:st4.k,stochD:st4.d,
-    reason:signalType==="ENTRY_1"?`${evaluation.direction} ENTRY_1 | 1D direction + existing Stoch trigger; trendline proximity not required | 4H Stoch ${st4.k}/${st4.d}`:`${evaluation.direction} ENTRY_2 | trendline proximity + directional 4H Stoch RSI | 4H Stoch ${st4.k}/${st4.d}`,
+    reason:signalType==="ENTRY_1"?`${evaluation.direction} ENTRY_1 | fresh closed 4H Stoch RSI crossover aligned with 1D EMA direction | 4H Stoch ${st4.k}/${st4.d}`:`${evaluation.direction} ENTRY_2 | fresh closed daily and 4H Stoch RSI crossovers aligned with 1D EMA direction | 1D Stoch ${st1d.k}/${st1d.d}, 4H Stoch ${st4.k}/${st4.d}`,
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{zone:evaluation.zone?trendlineType:"NOT_REQUIRED_FOR_ENTRY_1",zonePrice:evaluation.zone?r(trendlinePrice):null,zoneDistancePct:Number.isFinite(trendlineDistancePct)?trendlineDistancePct:null,zoneDistanceAtr:Number.isFinite(zoneDistanceAtr)?zoneDistanceAtr:null,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema8_1d:e8_1d,ema21_1d:e21_1d,ema5_1d:e5_1d,ema13_1d:e13_1d,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d}
+    context:{zone:evaluation.zone?trendlineType:"NOT_REQUIRED_FOR_ENTRY",zonePrice:evaluation.zone?r(trendlinePrice):null,zoneDistancePct:Number.isFinite(trendlineDistancePct)?trendlineDistancePct:null,zoneDistanceAtr:Number.isFinite(zoneDistanceAtr)?zoneDistanceAtr:null,entryAnchor:"current price",signalClass:"TREND",sizeMultiplier:calculatedStop.calc.liquidationBufferPct<1.5?0.5:1,structuralAnchor:calculatedStop.calc.structuralAnchor,liquidationPrice:calculatedStop.calc.liquidationPrice,stopToLiquidationBufferPct:calculatedStop.calc.liquidationBufferPct,stopCalc:calculatedStop.calc,targetPlan:targets,ema8_1d:e8_1d,ema21_1d:e21_1d,ema5_1d:e5_1d,ema13_1d:e13_1d,ema8_4h:e8,ema21_4h:e21,stochK_4h:st4.k,stochD_4h:st4.d,stochK_1d:st1d.k,stochD_1d:st1d.d}
   };
   debug.push(`[STOP] ${s.direction} | SL ${s.stop} | ${s.context?.stopCalc?.riskPct ?? "—"}% risk | ${s.context?.stopCalc?.atrMultiplier ?? "—"} ATR | liq ${s.context?.stopCalc?.liquidationPrice ?? "—"} | liq buffer ${s.context?.stopCalc?.liquidationBufferPct ?? "—"}%`);
   debug.push(`[SIGNAL] ${s.direction} ${s.type} | entry ${s.entry} | ${evaluation.zone?`${trendlineType} ${r(trendlinePrice)}`:"4H swing pivots for targets"} | SL ${s.stop} | TP1 ${s.tp1} (${targets.tp1Source}) | TP2 ${s.tp2} (${targets.tp2Source}) | RR ${s.rr} | size ${s.sizeMultiplier===0.5?"50%":"100%"}`);
