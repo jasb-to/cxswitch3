@@ -72,10 +72,7 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
     console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);
     hold={shouldHold:true,reason:"active_alert_stale",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
   }
-  if(hold.reason==="1d_ema_reversal"){
-    const key=`management:${trade.id}:1d_reversal`;
-    if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"1D_REVERSAL"});
-  }else if(hold.reason==="4h_ema_reversal_confirmed"){
+  if(hold.reason==="4h_ema_reversal_confirmed"){
     const key=`management:${trade.id}:4h_reversal`;
     if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"4H_REVERSAL"});
   }else if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
@@ -158,12 +155,6 @@ async function observeManualManagement(active:any[],marketData:any[]){
       if(await claimTelegramAlert(key)){
         await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"TRAIL",stop:Number(hold.newStop)});
         console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. Trail stop raised to ${round(Number(hold.newStop))}.`);
-      }
-    }else if(hold.reason==="1d_ema_reversal"){
-      const key=`management:${trade.id}:1d_reversal`;
-      if(await claimTelegramAlert(key)){
-        await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"1D_REVERSAL"});
-        console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. 1D trend reversed. Exit now.`);
       }
     }else if(hold.reason==="4h_ema_reversal_confirmed"){
       const key=`management:${trade.id}:4h_reversal`;
@@ -292,12 +283,13 @@ export async function GET(request:Request){
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
   snapshot.fourH513=ema513;
   const canonicalDailyDirection=String(snapshot.dailyDirection||"NEUTRAL");
-  // Keep dashboard/Jarvis daily bias identical to pasted V28 strategy.ts dailyTrend(): EMA8/21 direction plus 20-day HH/LL strength.
-  // Do not reapply the retired EMA5/13 spread threshold here.
+  // Keep dashboard and Jarvis daily bias identical to the canonical regime calculated by strategy.ts.
   snapshot.dailyDirection=canonicalDailyDirection;
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
   snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"?"LONG":canonicalDailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
+  const regimeDebug=dbg.find(x=>x.startsWith("[REGIME]"));
+  if(regimeDebug)console.log(`[PAIR] ${pair} — ${regimeDebug}`);
   const triggerDebug=dbg.find(x=>x.startsWith("[TRIGGER]"));
   if(triggerDebug)console.log(`[PAIR] ${pair} — ${triggerDebug}`);
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
@@ -306,14 +298,15 @@ export async function GET(request:Request){
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
   const signal=result.signal;
+  if(signal)snapshot.strategyStatus=`FIRED — ${signal.type} ${signal.direction}`;
   if(!signal){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      // Signals require closed-candle EMA5/13 alignment on both timeframes.
+      // The daily regime defines direction; the 4H EMA5/13 must agree with it.
       const fourHSide=normalizeSide(snapshot.fourHTacticalDirection);
-      const conflict=!dailySide||!fourHSide||dailySide!==fourHSide;
-      let waitReason=conflict?"alignment":"setup incomplete";
+      const conflict=snapshot.regime==="CHOP"||!dailySide||!fourHSide||dailySide!==fourHSide;
+      let waitReason=snapshot.regime==="CHOP"?"regime CHOP":conflict?"4H disagrees with regime":"setup incomplete";
       if(!conflict&&gateDebug){
         try{
           const gateState=JSON.parse(gateDebug.slice(8));
@@ -321,7 +314,7 @@ export async function GET(request:Request){
           if(missing.length)waitReason=`need ${missing.join(", ")}`;
         }catch{}
       }
-      console.log(`[PAIR] ${pair} | 1D EMA5=${round(Number(snapshot.ema5_1d)||0)} EMA13=${round(Number(snapshot.ema13_1d)||0)} ${snapshot.dailyDirection||"—"} | 4H EMA5=${round(Number(snapshot.ema5_4h)||0)} EMA13=${round(Number(snapshot.ema13_4h)||0)} ${snapshot.fourHTacticalDirection||"—"} | WAIT — ${waitReason}`);
+      console.log(`[PAIR] ${pair} | REGIME=${snapshot.regime||"—"} 1D close=${round(Number(snapshot.dailyClose)||0)} EMA21=${round(Number(snapshot.dailyE21)||0)} EMA5/13=${round(Number(snapshot.ema5_1d)||0)}/${round(Number(snapshot.ema13_1d)||0)} | 4H EMA5/13=${round(Number(snapshot.ema5_4h)||0)}/${round(Number(snapshot.ema13_4h)||0)} ${snapshot.fourHTacticalDirection||"—"} | aligned=${snapshot.alignedDirection||"NO"} | ${snapshot.strategyStatus||"WAIT — "+waitReason}`);
     }
     return;
   }
