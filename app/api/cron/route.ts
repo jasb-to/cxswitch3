@@ -76,9 +76,10 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
     console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);
     hold={shouldHold:true,reason:"active_alert_stale",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
   }
-  if(hold.reason==="4h_ema_reversal_confirmed"){
-    const key=`management:${trade.id}:4h_reversal`;
-    if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"4H_REVERSAL"});
+  if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
+    const kind=hold.reason==="1d_ema_reversal_confirmed"?"1D_REVERSAL":hold.reason==="4h_rsi_extreme_opposite"?"RSI_EXTREME":hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
+    const key=`management:${trade.id}:exit:${hold.reason}`;
+    if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind});
   }else if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
     const improves=trade.direction==="LONG"?hold.newStop>Number(trade.stop):hold.newStop<Number(trade.stop);
     if(improves){
@@ -162,11 +163,12 @@ async function observeManualManagement(active:any[],marketData:any[]){
         await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"TRAIL",stop:Number(hold.newStop)});
         console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. Trail stop raised to ${round(Number(hold.newStop))}.`);
       }
-    }else if(hold.reason==="4h_ema_reversal_confirmed"){
-      const key=`management:${trade.id}:4h_reversal`;
+    }else if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
+      const kind=hold.reason==="1d_ema_reversal_confirmed"?"1D_REVERSAL":hold.reason==="4h_rsi_extreme_opposite"?"RSI_EXTREME":hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
+      const key=`management:${trade.id}:exit:${hold.reason}`;
       if(await claimTelegramAlert(key)){
-        await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"4H_REVERSAL"});
-        console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. 4H trend reversed. Exit now.`);
+        await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind});
+        console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. ${hold.reason} confirmed. EXIT TRADE.`);
       }
     }
   }
