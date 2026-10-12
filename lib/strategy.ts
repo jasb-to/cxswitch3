@@ -274,16 +274,16 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
     return{shouldHold:false,reason:"stop_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
   if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))
     return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
-  const lastExit=lastExitAlertAt??exitAlertStore.get(s.pair)??0;
-  if(now-lastExit<EXIT_ALERT_COOLDOWN_MS){
-    return{shouldHold:true,reason:"exit_cooldown",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
-  }
-
   const q=x.map(z=>z.close);
 
   const tp1AlreadyHit=!!(s as any).tp1HitAt;
   if(!tp1AlreadyHit&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))
     return{shouldHold:true,reason:"tp1_hit_scale_out",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1"}};
+
+  const lastExit=lastExitAlertAt??exitAlertStore.get(s.pair)??0;
+  if(now-lastExit<EXIT_ALERT_COOLDOWN_MS){
+    return{shouldHold:true,reason:"exit_cooldown",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
+  }
 
   // Indicator exits are based only on closed candles. The latest candle is
   // still forming, so use the two preceding closed 4H RSI readings.
@@ -304,16 +304,21 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
     if(adverseNow&&adversePrev)return exit("1d_ema_reversal_confirmed");
   }
 
-  if(x.length>=5){
-    const a=atr(x),last5=x.slice(-5);
-    const trail=s.direction==="LONG"
-      ? Math.min(...last5.map(z=>z.low))-.5*a
-      : Math.max(...last5.map(z=>z.high))+.5*a;
+  if(closed4h.length>=6){
+    const trailAt=(bars:Candle[])=>{
+      const window=bars.slice(-5),volatility=atr(bars);
+      return s.direction==="LONG"
+        ? Math.min(...window.map(z=>z.low))-.5*volatility
+        : Math.max(...window.map(z=>z.high))+.5*volatility;
+    };
+    const trail=trailAt(closed4h),previousClosed=closed4h.slice(0,-1),previousTrail=trailAt(previousClosed);
+    const lastClosed=closed4h.at(-1)!,priorClosed=closed4h.at(-2)!;
+    const breachedNow=s.direction==="LONG"?lastClosed.close<=trail:lastClosed.close>=trail;
+    const breachedPrevious=s.direction==="LONG"?priorClosed.close<=previousTrail:priorClosed.close>=previousTrail;
     const profitPct=s.direction==="LONG"?(p-s.entry)/s.entry:(s.entry-p)/s.entry;
     const trailImproves=s.direction==="LONG"?trail>s.stop:trail<s.stop;
     if(profitPct>=.03){
-      if((s.direction==="LONG"&&p<=trail)||(s.direction==="SHORT"&&p>=trail))
-        return exit("chandelier_trailing_stop",trail);
+      if(breachedNow&&breachedPrevious)return exit("chandelier_trailing_stop",trail);
       if(trailImproves)
         return{shouldHold:true,reason:"chandelier_stop",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:trail};
     }
