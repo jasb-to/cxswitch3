@@ -260,17 +260,17 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
   if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))
     return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
 
-  const rv=rsi(x.slice(0,-1).map(z=>z.close));
-  if(s.direction==="LONG"&&rv>=78)
-    return{shouldHold:false,reason:"4h_rsi_extreme_opposite",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
-  if(s.direction==="SHORT"&&rv<=22)
-    return{shouldHold:false,reason:"4h_rsi_extreme_opposite",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
-
   const q=x.map(z=>z.close);
 
   const tp1AlreadyHit=!!(s as any).tp1HitAt;
   if(!tp1AlreadyHit&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))
     return{shouldHold:true,reason:"tp1_hit_scale_out",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1"}};
+
+  const rv=rsi(x.slice(0,-1).map(z=>z.close));
+  if(s.direction==="LONG"&&rv>=78)
+    return{shouldHold:false,reason:"4h_rsi_extreme_opposite",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
+  if(s.direction==="SHORT"&&rv<=22)
+    return{shouldHold:false,reason:"4h_rsi_extreme_opposite",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
 
   if(x.length>=5){
     const a=atr(x),last5=x.slice(-5);
