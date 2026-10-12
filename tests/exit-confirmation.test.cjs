@@ -42,7 +42,8 @@ test("indicator exits use a four-hour cooldown persisted outside the strategy mo
   assert.ok(state.includes('const EXIT_ALERT_COOLDOWNS_KEY = "cxswitch:exit_alert_cooldowns"'));
   assert.ok(state.includes("getExitAlertCooldowns"));
   assert.ok(state.includes("setExitAlertCooldowns"));
-  assert.ok(cron.includes("persistExitCooldown(trade.pair,hold.reason)"));
+  assert.ok(cron.includes("persistExitCooldown(alert.pair,hold.reason)"));
+  assert.ok(cron.includes("async function observeAlertManagement(active,marketData)"));
 });
 
 test("hard stop and TP2 exits are checked before the indicator cooldown", () => {
