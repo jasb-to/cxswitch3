@@ -33,6 +33,8 @@ export async function POST(request: Request) {
     if (existing) return NextResponse.json({ error: "This symbol already has a confirmed active position", active: existing }, { status: 409 });
 
     latest.status = "ACTIVE";
+    latest.confirmedManually = true;
+    latest.confirmedAt = Date.now();
     delete latest.exitReason;
     delete latest.exitPrice;
     delete latest.exitTimestamp;
