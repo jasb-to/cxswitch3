@@ -1,7 +1,7 @@
 // app/api/signals/route.ts — canonical dashboard state + alert validity
 import { NextResponse } from "next/server";
 import { getActiveSignals, getSignalHistory, getLatestAlerts, getMarketData, getLastCronRun } from "@/lib/state";
-import { CXSWITCH_VERSION, ENTRY_ARCHITECTURE, DAILY_BIAS, EXECUTION_MODE } from "@/lib/version";
+import { CXSWITCH_VERSION, ENTRY_ARCHITECTURE, DAILY_BIAS } from "@/lib/version";
 import { getJarvisSnapshot } from "@/lib/jarvis";
 import { shouldHold } from "@/lib/strategy";
 
@@ -111,7 +111,7 @@ export async function GET(){
     const jarvis=j?.verdict||"watch";
     return `[PAIR] ${pair} | 1D=${m.dailyDirection||"—"} | 4H=${m.fourH513?.label||m.trend||"—"} | SIGNAL=${signal} | POSITION=${position} | MANAGEMENT=${management} | JARVIS=${jarvis}`;
   });
-  const logs=[`[SYSTEM] CXSwitch v${CXSWITCH_VERSION} | ${ENTRY_ARCHITECTURE} | ${DAILY_BIAS} | ${EXECUTION_MODE}`,`[CRON] Last run ${lastCronRun?new Date(lastCronRun).toISOString():"not recorded"}`,...unifiedPairLogs,...historyLogs,`[CRON] State: active=${enrichedActive.length} marketData=${liveMarketData.length} history=${signalHistory.length} latest=${Object.keys(latestAlerts).length}`].slice(0,40);
-  const response=NextResponse.json({version:CXSWITCH_VERSION,architecture:ENTRY_ARCHITECTURE,dailyBias:DAILY_BIAS,executionMode:EXECUTION_MODE,activeSignals:enrichedActive,signalHistory:enrichedHistory,marketData:liveMarketData,latestAlerts,logs,system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length},updatedAt:new Date(now).toISOString()});
+  const logs=[`[SYSTEM] CXSwitch v${CXSWITCH_VERSION} | ${ENTRY_ARCHITECTURE} | ${DAILY_BIAS}`,`[CRON] Last run ${lastCronRun?new Date(lastCronRun).toISOString():"not recorded"}`,...unifiedPairLogs,...historyLogs,`[CRON] State: active=${enrichedActive.length} marketData=${liveMarketData.length} history=${signalHistory.length} latest=${Object.keys(latestAlerts).length}`].slice(0,40);
+  const response=NextResponse.json({version:CXSWITCH_VERSION,architecture:ENTRY_ARCHITECTURE,dailyBias:DAILY_BIAS,activeSignals:enrichedActive,signalHistory:enrichedHistory,marketData:liveMarketData,latestAlerts,logs,system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length},updatedAt:new Date(now).toISOString()});
   response.headers.set("Cache-Control","no-store, no-cache, must-revalidate, proxy-revalidate");response.headers.set("Pragma","no-cache");response.headers.set("Expires","0");return response;
 }

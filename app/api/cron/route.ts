@@ -1,18 +1,17 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
-import { getCandles, krakenPairFormat, getFuturesPositions, isExchangeSyncConfigured, placeFuturesReduceOnlyMarketOrder, moveFuturesStopToBreakeven } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
+import { getCandles, krakenPairFormat } from "@/lib/kraken";
+import { generateSignal, getMarketSnapshot } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
-import { sendAlert, sendManagementAlert } from "@/lib/telegram";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { sendAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
 const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC"] as const;
-const EXECUTION_MODE:"MANUAL"|"AUTO"="MANUAL";
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
 const MIN_CRON_INTERVAL_MS=2*60*1000;
@@ -45,185 +44,36 @@ function marketStructureLog(pair:string,candles:any[],price:number):string {
   return `[STRUCTURE] ${pair} @ ${round(price)} | Pivot S ${fmt(supports[0]?.price)} / R ${fmt(resistances[0]?.price)} | Fib50-bar range ${round(lo)}–${round(hi)} nearest ${nearestFib}`;
 }
 function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&h.exitReason!=="manual_symbol_reset"&&now-h.timestamp<SIGNAL_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<SIGNAL_DEDUP_ENTRY_PCT);}
-function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
-const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
-async function persistExitCooldown(pair:string,reason:string){if(!INDICATOR_EXIT_REASONS.has(reason))return;const cooldowns=await getExitAlertCooldowns();cooldowns[pair]=Date.now();await setExitAlertCooldowns(cooldowns);}
 function telegramAlertKey(signal:Signal,resetAt?:number):string{
   const resetSuffix=resetAt?`:reset:${resetAt}`:"";
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
-async function manageActivePositions(initialActive:any[], marketData:any[], managementByPair:Record<string,any>, alerts:any[]){
- let active=initialActive;
- for(const trade of [...active]){try{
-  if(trade.recoveredFromExchange){
-    console.log(`[MANAGE] ${trade.pair} ${trade.direction} — recovered exchange position; awaiting matching internal signal before strategy management`);
-    continue;
-  }
-  const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
-  const tp1AlreadyHit=!!trade.tp1HitAt;
-  // Evaluate management before persisting a newly-hit TP1 milestone so the first
-  // touch can still produce the one-time 50% scale-out + breakeven instruction.
-  const exitCooldowns=await getExitAlertCooldowns();
-  let hold=shouldHold(toSignalLike(trade),c,price,Date.now(),exitCooldowns[trade.pair]);
-  if(!hold.shouldHold)await persistExitCooldown(trade.pair,hold.reason);
-  await updateHistoryMilestones(trade.id,price);
-  if(typeof hold.shouldHold!=="boolean"){
-    console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);
-    hold={shouldHold:true,reason:"hold_result_invalid",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
-  }
-  if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){
-    console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);
-    hold={shouldHold:true,reason:"active_alert_stale",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
-  }
-  if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
-    const kind=hold.reason==="1d_ema_reversal_confirmed"?"1D_REVERSAL":hold.reason==="4h_rsi_extreme_opposite"?"RSI_EXTREME":hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
-    const key=`management:${trade.id}:exit:${hold.reason}`;
-    if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind});
-  }else if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
-    const improves=trade.direction==="LONG"?hold.newStop>Number(trade.stop):hold.newStop<Number(trade.stop);
-    if(improves){
-      const key=`management:${trade.id}:trail:${round(Number(hold.newStop))}`;
-      if(await claimTelegramAlert(key))await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"TRAIL",stop:Number(hold.newStop)});
+async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], alerts:any[]){
+  let active=[...initialActive];
+  for(const alert of [...active]){
+    const market=marketData.find((item:any)=>item?.pair===alert.pair);
+    const price=Number(market?.currentPrice??market?.price);
+    if(!Number.isFinite(price)||price<=0)continue;
+    await updateHistoryMilestones(alert.id,price);
+    const stop=Number(alert.stop);
+    const target=Number(alert.tp2??alert.target);
+    const stopHit=Number.isFinite(stop)&&stop>0&&(alert.direction==="LONG"?price<=stop:price>=stop);
+    const targetHit=Number.isFinite(target)&&target>0&&(alert.direction==="LONG"?price>=target:price<=target);
+    if(stopHit){
+      await updateSignalHistoryStatus(alert.id,"SL_HIT","stop_hit",price);
+      active=active.filter((item:any)=>item.id!==alert.id);
+      alerts.push({pair:alert.pair,status:"sl_hit",price,level:stop});
+      console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — SL_HIT @ ${price} (SL ${stop})`);
+    }else if(targetHit){
+      await updateSignalHistoryStatus(alert.id,"TP_HIT","tp2_hit",price);
+      active=active.filter((item:any)=>item.id!==alert.id);
+      alerts.push({pair:alert.pair,status:"tp_hit",price,level:target});
+      console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — TP_HIT @ ${price} (TP2 ${target})`);
     }
   }
-  console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | Management ${hold.managementState} | ${hold.recommendation} | ${hold.reason}`);
-  if(!hold.shouldHold){
-    try{
-      const execution=await placeFuturesReduceOnlyMarketOrder(trade.pair,trade.direction,Number(trade.exchangeSize||0));
-      console.log(`[EXIT] ${trade.pair} ${trade.direction} — Kraken Futures close confirmed ${execution.requestedSize} remaining=${execution.remainingSize} @ ${price}`);
-    }catch(error){
-      console.error(`[EXIT] ${trade.pair} ${trade.direction} — Kraken Futures close failed; keeping position active`,error);
-      alerts.push({pair:trade.pair,status:"exit_failed",reason:hold.reason,price,error:String(error)});
-      continue;
-    }
-    await updateSignalHistoryStatus(trade.id,hold.reason==="tp2_hit"?"TP_HIT":"FAILED",hold.reason,price);
-    active=active.filter(x=>x.id!==trade.id);
-    alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});
-    continue;
-  }
-  if("scaleOut" in hold && hold.scaleOut && !tp1AlreadyHit){
-    try{
-      const positions=await getFuturesPositions();
-      const exchangePosition=positions.find(p=>pairFromFuturesSymbol(p.symbol)===trade.pair&&p.side===trade.direction);
-      if(!exchangePosition) throw new Error(`No Kraken Futures ${trade.direction} position found for TP1 scale-out`);
-      const halfSize=exchangePosition.size*0.5;
-      const execution=await placeFuturesReduceOnlyMarketOrder(trade.pair,trade.direction,halfSize);
-      trade.exchangeSize=execution.remainingSize;
-      const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);
-      if(milestoneTrade)Object.assign(trade,milestoneTrade);
-      console.log(`[MGT] ${trade.pair} — TP1 scale-out confirmed ${execution.requestedSize}; remaining=${execution.remainingSize}`);
-    }catch(error){
-      console.error(`[MGT] ${trade.pair} — TP1 scale-out failed; keeping position active`,error);
-      alerts.push({pair:trade.pair,status:"scaleout_failed",reason:hold.reason,error:String(error)});
-      continue;
-    }
-  }
-  if(hold.newStop&&hold.newStop!==trade.stop&&trade.tp1HitAt){
-    try{
-      const remainingSize=Number(trade.exchangeSize||0);
-      if(remainingSize<=0) throw new Error("Missing remaining Kraken Futures size for breakeven stop");
-      const stopExecution=await moveFuturesStopToBreakeven(trade.pair,trade.direction,remainingSize,hold.newStop);
-      trade.stop=hold.newStop;
-      await updateHistoryStopMilestone(trade.id,trade.stop);
-      console.log(`[MGT] ${trade.pair} — Kraken Futures stop moved to ${hold.reason==="chandelier_stop"?"chandelier trail":"breakeven"} ${hold.newStop} (${stopExecution.stopOrderId||"accepted"})`);
-    }catch(error){
-      console.error(`[MGT] ${trade.pair} — breakeven stop update failed; keeping position active`,error);
-      alerts.push({pair:trade.pair,status:"breakeven_stop_failed",reason:hold.reason,error:String(error)});
-      continue;
-    }
-  }
-  // TP1 scale-out is a one-time lifecycle event. shouldHold() remains deliberately
-  // permissive for management, but must not re-emit the same 50% instruction on
-  // every cron run once the TP1 milestone has already been persisted.
-  if("scaleOut" in hold && hold.scaleOut && !tp1AlreadyHit)console.log(`[MGT] ${trade.pair} — scale-out ${hold.scaleOut.label} ${hold.scaleOut.size*100}% @ ${hold.scaleOut.level}`);
-  const snapshot:any=getMarketSnapshot(trade.pair,c,c,c);snapshot.positionState="ACTIVE";snapshot.positionDirection=trade.direction;snapshot.positionEntry=trade.entry;snapshot.positionStop=trade.stop;snapshot.positionTarget=trade.tp2??trade.target;snapshot.positionTp1=trade.tp1;snapshot.positionTp2=trade.tp2;snapshot.positionTp1HitAt=trade.tp1HitAt;snapshot.positionTp2HitAt=trade.tp2HitAt;snapshot.positionManagementState=hold.managementState;snapshot.positionManagementRecommendation=hold.recommendation;snapshot.positionManagementReason=hold.reason;snapshot.positionThesis=hold.reason;managementByPair[trade.pair]={state:hold.managementState,recommendation:hold.recommendation,reason:hold.reason};marketData.push(snapshot);
- }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
- await setActiveSignals(active);
- return active;
-}
-
-async function observeManualManagement(active:any[],marketData:any[]){
-  if(EXECUTION_MODE!=="MANUAL")return;
-  for(const trade of active){
-    const m=marketData.find((x:any)=>x?.pair===trade.pair);
-    const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
-    const price=Number(m?.price);
-    if(!candles.length||!Number.isFinite(price))continue;
-    const milestone=await updateHistoryMilestones(trade.id,price);
-    if(milestone)Object.assign(trade,milestone);
-    const exitCooldowns=await getExitAlertCooldowns();
-    const hold=shouldHold(toSignalLike(trade),candles,price,Date.now(),exitCooldowns[trade.pair]);
-    if(!hold.shouldHold)await persistExitCooldown(trade.pair,hold.reason);
-    if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
-      const improves=trade.direction==="LONG"?hold.newStop>Number(trade.stop):hold.newStop<Number(trade.stop);
-      if(!improves)continue;
-      const key=`management:${trade.id}:trail:${round(Number(hold.newStop))}`;
-      if(await claimTelegramAlert(key)){
-        await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind:"TRAIL",stop:Number(hold.newStop)});
-        console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. Trail stop raised to ${round(Number(hold.newStop))}.`);
-      }
-    }else if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
-      const kind=hold.reason==="1d_ema_reversal_confirmed"?"1D_REVERSAL":hold.reason==="4h_rsi_extreme_opposite"?"RSI_EXTREME":hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
-      const key=`management:${trade.id}:exit:${hold.reason}`;
-      if(await claimTelegramAlert(key)){
-        await sendManagementAlert({pair:trade.pair,direction:trade.direction,kind});
-        console.log(`[ALERT] CX — ${trade.pair} ${trade.direction}. ${hold.reason} confirmed. EXIT TRADE.`);
-      }
-    }
-  }
-}
-
-function pairFromFuturesSymbol(symbol:string):string|undefined{
-  const s=symbol.toUpperCase().replace(/^(PI|PF)_/,"").replace(/[^A-Z0-9]/g,"");
-  const map:Record<string,string>={XBTUSD:"BTC",ETHUSD:"ETH",SOLUSD:"SOL",HYPEUSD:"HYPE",DOGEUSD:"DOGE",LINKUSD:"LINK",VIRTUALUSD:"VIRTUAL",ZECUSD:"ZEC"};
-  return map[s];
-}
-
-async function reconcileExchangePositions(activeInput:any[]):Promise<any[]>{
-  if(!isExchangeSyncConfigured()){
-    console.log("[SYNC] Kraken Futures credentials not configured; preserving internal state");
-    return activeInput;
-  }
-  try{
-    const exchange=await getFuturesPositions();
-    const next=[...activeInput];
-    const exchangeByKey=new Map(exchange.map(p=>[`${pairFromFuturesSymbol(p.symbol)}|${p.side}`,p]));
-    for(const trade of [...next]){
-      const ex=exchangeByKey.get(`${trade.pair}|${trade.direction}`);
-      if(!ex){
-        await updateSignalHistoryStatus(trade.id,"FAILED","exchange_position_gone",undefined);
-        next.splice(next.indexOf(trade),1);
-        console.log(`[SYNC] ${trade.pair} ${trade.direction} — position gone from exchange`);
-        continue;
-      }
-      if(Math.abs(Number(trade.entry)-ex.entryPrice)>Math.max(0.01,Math.abs(ex.entryPrice)*0.0005)){
-        console.warn(`[SYNC] ${trade.pair} ${trade.direction} — entry mismatch internal=${trade.entry} exchange=${ex.entryPrice}; trusting Kraken`);
-        trade.entry=ex.entryPrice;
-      }
-      if(Number(trade.exchangeSize)!==ex.size){
-        console.warn(`[SYNC] ${trade.pair} ${trade.direction} — size mismatch internal=${trade.exchangeSize??"unknown"} exchange=${ex.size}; trusting Kraken`);
-        trade.exchangeSize=ex.size;
-      }
-      exchangeByKey.delete(`${trade.pair}|${trade.direction}`);
-    }
-    for(const [key,ex] of exchangeByKey){
-      const [pair,direction]=key.split("|") as [string,"LONG"|"SHORT"];
-      if(!pair) continue;
-      const recovered:any={
-        id:`EXCHANGE_RECOVERY_${pair}_${direction}_${Date.now()}`,
-        pair,direction,type:"ENTRY",entry:ex.entryPrice,stop:0,tp1:0,tp2:0,rr:0,
-        timestamp:Date.now(),status:"ACTIVE",version:29,context:{recoveredFromExchange:true},
-        exchangeSize:ex.size,recoveredFromExchange:true
-      };
-      next.push(recovered);
-      console.log(`[SYNC] recovered orphan position ${pair} ${direction} @ ${ex.entryPrice} size=${ex.size}`);
-    }
-    return next;
-  }catch(error){
-    console.error("[SYNC] Kraken Futures reconciliation failed; preserving internal state",error);
-    return activeInput;
-  }
+  await setActiveSignals(active);
+  return active;
 }
 
 export async function GET(request:Request){
@@ -235,20 +85,13 @@ export async function GET(request:Request){
  try{await runPersistenceCleanup();}catch(error){console.error("[STATE CLEANUP] persistence cleanup failed; continuing",error);}
  console.log("========================================");console.log(`[CRON v${CXSWITCH_VERSION}] Started at ${new Date(started).toISOString()}`);
  let active=await getActiveSignals();
- if(EXECUTION_MODE==="AUTO") active=await reconcileExchangePositions(active);
- if(EXECUTION_MODE==="MANUAL"){
-   // Preserve only positions explicitly confirmed through the dashboard.
-   // Entry alerts alone never create positions; the confirm-trade endpoint
-   // writes the active position and its history status together.
-   console.log(`[STATE] MANUAL mode — preserving ${active.length} explicitly confirmed active position(s)`);
- }
  // Reconcile the persistent position store against ACTIVE history before any
  // management runs. This recovers a live position if the active-state key was
  // lost/reset while its corresponding history entry remained ACTIVE.
  const historyAtStart=await getSignalHistory();
  const activeKeys=new Set(active.map((x:any)=>`${x.pair}|${x.direction}`));
  const recoverable=historyAtStart
-   .filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2")&&(EXECUTION_MODE==="AUTO"||h.confirmedManually===true)&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
+   .filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2")&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
    .reduce((map:any,h:any)=>{
      const key=`${h.pair}|${h.direction}`;
      if(!map.has(key)||h.timestamp>map.get(key).timestamp)map.set(key,h);
@@ -273,7 +116,7 @@ export async function GET(request:Request){
    console.log(`[STATE] Retired PAID legacy positions=${retiredPaid.length}`);
  }
  console.log(`[STATE] Active signals on entry: ${active.map(a=>`${a.pair}_${a.direction}_${a.type}`).join(", ")||"none"}`);
- let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],managementByPair:Record<string,any>={};
+ let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[];
 
 
  for(const batch of [PAIRS.slice(0,4),PAIRS.slice(4)]){ await Promise.all(batch.map(async (pair)=>{let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;try{
@@ -297,8 +140,7 @@ export async function GET(request:Request){
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
   snapshot.fourH513=ema513;
   const canonicalDailyDirection=String(snapshot.dailyDirection||"NEUTRAL");
-  // Keep dashboard and Jarvis daily bias identical to the canonical regime calculated by strategy.ts.
-  snapshot.dailyDirection=canonicalDailyDirection;
+  // Keep dashboard and Jarvis daily bias identical to the canonical regime calculated by strategy.ts.  snapshot.dailyDirection=canonicalDailyDirection;
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
   snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"?"LONG":canonicalDailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
@@ -360,10 +202,8 @@ export async function GET(request:Request){
   newSignals.push(signal);
   alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
   console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
-  if(EXECUTION_MODE==="AUTO"){
-   await addActiveSignal(signal);
-   active=await getActiveSignals();
-  }
+  await addActiveSignal(signal);
+  active=await getActiveSignals();
  } catch(e){
     console.error(`[PAIR] ${pair} — ERROR`,e);
     alerts.push({pair,status:"error",error:String(e)});
@@ -385,17 +225,8 @@ export async function GET(request:Request){
  }catch(error){
    console.error("[JARVIS] State refresh failed; existing strategy continues unchanged",error);
  }
- if(EXECUTION_MODE==="AUTO"){
-  active=await manageActivePositions(active,marketData,managementByPair,alerts);
-  await setActiveSignals(active);
- }else{
-  // Manage only positions explicitly confirmed by the user in the dashboard.
-  // Unconfirmed entry alerts never enter active state and cannot trigger exits.
-  await observeManualManagement(active,marketData);
-  console.log(`[MANUAL] Managed ${active.length} explicitly confirmed position(s); no automatic execution`);
- }
+ active=await reconcileAlertOutcomes(active,marketData,alerts);
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
  console.log("========================================");
- return NextResponse.json({success:true,version:CXSWITCH_VERSION,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});
-}
+ return NextResponse.json({success:true,version:CXSWITCH_VERSION,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});}

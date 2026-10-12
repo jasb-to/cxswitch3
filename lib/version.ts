@@ -3,4 +3,3 @@
 export const CXSWITCH_VERSION = 31 as const;
 export const ENTRY_ARCHITECTURE = "V31 7-STATE REGIME + 4H STOCH RETEST" as const;
 export const DAILY_BIAS = "1D CLOSE/EMA21 + EMA5/13 REGIME" as const;
-export const EXECUTION_MODE = "MANUAL" as const;
