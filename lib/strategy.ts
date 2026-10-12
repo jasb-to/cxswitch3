@@ -281,7 +281,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
     return{shouldHold:true,reason:"tp1_hit_scale_out",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1"}};
 
   const lastExit=lastExitAlertAt??exitAlertStore.get(s.pair)??0;
-  if(now-lastExit<EXIT_ALERT_COOLDOWN_MS){
+  if(lastExit>0&&now-lastExit>=0&&now-lastExit<EXIT_ALERT_COOLDOWN_MS){
     return{shouldHold:true,reason:"exit_cooldown",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
   }
 
