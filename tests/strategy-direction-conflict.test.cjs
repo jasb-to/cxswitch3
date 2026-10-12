@@ -24,7 +24,7 @@ function candlesFromDaily(targets, { lastDayRising = false } = {}) {
 }
 function trendTargets(kind, days = 40) {
   return Array.from({ length: days }, (_, i) => {
-    if (kind === "bullHigh") return 100 + i * i * 0.22;
+    if (kind === "bullHigh") return i < 35 ? 100 + i * 2 : 170 + (i - 34) ** 2 * 10;
     if (kind === "bearHigh") return 600 - i * i * 0.22;
     if (kind === "bullLow") return 100 + 5 * i - 0.05 * i * i;
     if (kind === "bearLow") return 500 - 5 * i + 0.05 * i * i;
