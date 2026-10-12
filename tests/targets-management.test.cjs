@@ -62,8 +62,11 @@ test("indicator exit cooldown suppresses a repeat exit within four hours", () =>
     return { timestamp: i * 14400000, open: close - 0.2, high: close + 1, low: close - 1, close, volume: 1 };
   });
   const signal = { pair: "COOLDOWN_TEST", direction: "LONG", entry: 100, stop: 95, tp1: 105, tp2: 110, timestamp: 1 };
-  const first = strategy.shouldHold(signal, candles, 100, 1000000);
-  const repeat = strategy.shouldHold(signal, candles, 100, 1600000);
+  // Use a realistic clock so the "no prior exit" state is not mistaken
+  // for a recent exit merely because the synthetic timestamp is near epoch.
+  const now = Date.now();
+  const first = strategy.shouldHold(signal, candles, 100, now);
+  const repeat = strategy.shouldHold(signal, candles, 100, now + 10 * 60 * 1000);
   assert.equal(first.reason, "4h_rsi_extreme_opposite");
   assert.equal(repeat.shouldHold, true);
   assert.equal(repeat.reason, "exit_cooldown");
