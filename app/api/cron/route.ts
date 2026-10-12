@@ -247,8 +247,8 @@ export async function GET(request:Request){
  // lost/reset while its corresponding history entry remained ACTIVE.
  const historyAtStart=await getSignalHistory();
  const activeKeys=new Set(active.map((x:any)=>`${x.pair}|${x.direction}`));
- const recoverable=EXECUTION_MODE==="MANUAL"?new Map<string,any>():historyAtStart
-   .filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2")&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
+ const recoverable=historyAtStart
+   .filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2")&&(EXECUTION_MODE==="AUTO"||h.confirmedManually===true)&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
    .reduce((map:any,h:any)=>{
      const key=`${h.pair}|${h.direction}`;
      if(!map.has(key)||h.timestamp>map.get(key).timestamp)map.set(key,h);
