@@ -265,18 +265,19 @@ const exitAlertStore=new Map<string,number>();
 const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
 export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number){
   const x=[...c].sort((a,b)=>a.timestamp-b.timestamp);
-  const lastExit=lastExitAlertAt??exitAlertStore.get(s.pair)??0;
-  if(now-lastExit<EXIT_ALERT_COOLDOWN_MS){
-    return{shouldHold:true,reason:"exit_cooldown",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
-  }
   const exit=(reason:"4h_ema_reversal_confirmed"|"1d_ema_reversal_confirmed"|"4h_rsi_extreme_opposite"|"chandelier_trailing_stop",newStop?:number)=>{
     if(INDICATOR_EXIT_REASONS.has(reason))exitAlertStore.set(s.pair,now);
     return{shouldHold:false,reason,managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const,...(newStop===undefined?{}:{newStop})};
   };
+  // Hard price exits always take priority over an indicator-alert cooldown.
   if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))
     return{shouldHold:false,reason:"stop_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
   if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))
     return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
+  const lastExit=lastExitAlertAt??exitAlertStore.get(s.pair)??0;
+  if(now-lastExit<EXIT_ALERT_COOLDOWN_MS){
+    return{shouldHold:true,reason:"exit_cooldown",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
+  }
 
   const q=x.map(z=>z.close);
 
