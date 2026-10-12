@@ -1,12 +1,12 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
-import { sendAlert } from "@/lib/telegram";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
 export const dynamic="force-dynamic";
@@ -47,6 +47,39 @@ function sameRecentSignal(history:any[],s:Signal,now:number){return history.some
 function telegramAlertKey(signal:Signal,resetAt?:number):string{
   const resetSuffix=resetAt?`:reset:${resetAt}`:"";
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
+}
+
+const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
+async function persistExitCooldown(pair:string,reason:string){if(!INDICATOR_EXIT_REASONS.has(reason))return;const cooldowns=await getExitAlertCooldowns();cooldowns[pair]=Date.now();await setExitAlertCooldowns(cooldowns);}
+function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
+
+async function observeAlertManagement(active:any[],marketData:any[]){
+  for(const alert of active){
+    const market=marketData.find((item:any)=>item?.pair===alert.pair);
+    const candles=Array.isArray(market?.momentumCandles4h)?market.momentumCandles4h:[];
+    const price=Number(market?.currentPrice??market?.price);
+    if(!candles.length||!Number.isFinite(price)||price<=0)continue;
+    await updateHistoryMilestones(alert.id,price);
+    const cooldowns=await getExitAlertCooldowns();
+    const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
+    if(!hold.shouldHold)await persistExitCooldown(alert.pair,hold.reason);
+    if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
+      const improves=alert.direction==="LONG"?hold.newStop>Number(alert.stop):hold.newStop<Number(alert.stop);
+      if(!improves)continue;
+      const key=`management:${alert.id}:trail:${round(Number(hold.newStop))}`;
+      if(await claimTelegramAlert(key)){
+        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"TRAIL",stop:Number(hold.newStop)});
+        console.log(`[ALERT] CX — ${alert.pair} ${alert.direction}. Trail stop raised to ${round(Number(hold.newStop))}.`);
+      }
+    }else if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
+      const kind=hold.reason==="1d_ema_reversal_confirmed"?"1D_REVERSAL":hold.reason==="4h_rsi_extreme_opposite"?"RSI_EXTREME":hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
+      const key=`management:${alert.id}:exit:${hold.reason}`;
+      if(await claimTelegramAlert(key)){
+        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind});
+        console.log(`[ALERT] CX — ${alert.pair} ${alert.direction}. ${hold.reason} confirmed. EXIT TRADE.`);
+      }
+    }
+  }
 }
 
 async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], alerts:any[]){
@@ -97,8 +130,7 @@ export async function GET(request:Request){
      if(!map.has(key)||h.timestamp>map.get(key).timestamp)map.set(key,h);
      return map;
    },new Map<string,any>());
- if(recoverable.size){
-   for(const h of recoverable.values()){
+ if(recoverable.size){   for(const h of recoverable.values()){
      active.push({...h,status:"ACTIVE",scale:h.type,});
      console.log(`[STATE] Recovered ACTIVE position from history: ${h.pair}_${h.direction}_${h.type}`);
    }
@@ -197,8 +229,7 @@ export async function GET(request:Request){
   try{
     await sendAlert({symbol:signal.pair,state:"ENTRY",price:signal.entry,bias:signal.direction,stopLoss:signal.stop,takeProfit:signal.tp2,takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,signalClass:signal.signalClass,sizeMultiplier:signal.sizeMultiplier,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",context:signal.context,jarvis:jarvisReview});
   }catch(e){await releaseTelegramAlert(alertKey);throw e;}
-  await appendSignalHistory(signal);
-  stateSignal=signal;
+  await appendSignalHistory(signal);  stateSignal=signal;
   newSignals.push(signal);
   alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
   console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
@@ -225,6 +256,7 @@ export async function GET(request:Request){
  }catch(error){
    console.error("[JARVIS] State refresh failed; existing strategy continues unchanged",error);
  }
+ await observeAlertManagement(active,marketData);
  active=await reconcileAlertOutcomes(active,marketData,alerts);
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
