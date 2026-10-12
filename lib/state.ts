@@ -17,6 +17,7 @@ const CRON_KEY = "cxswitch:last_cron";
 const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
 const MIGRATION_FLAG_KEY = "cxswitch:migrated_v01";
 const COOLDOWN_KEY = "cxswitch:cooldowns";
+const EXIT_ALERT_COOLDOWNS_KEY = "cxswitch:exit_alert_cooldowns";
 const TELEGRAM_ALERT_KEY_PREFIX = "cxswitch:telegram_alert:";
 const ONE_TIME_BTC_SHORT_CLEANUP_KEY = "cxswitch:cleanup:btc_short_20260923";
 const SIGNAL_HISTORY_MAX = 100;
@@ -188,6 +189,8 @@ export async function updateHistoryMilestones(id:string,price:number):Promise<Si
 export async function updateHistoryStopMilestone(id:string,stop:number):Promise<SignalHistoryEntry|undefined>{const history=await getSignalHistory();const h=history.find(x=>x.id===id);if(!h)return undefined;const atEntry=Math.abs(stop-h.entry)<=Math.max(Math.abs(h.entry)*0.000001,0.000001);if(!h.slToEntryAt&&atEntry){h.slToEntryAt=Date.now();await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};if(latest[h.pair]?.id===id){latest[h.pair]=h;await redis.set(LATEST_ALERTS_KEY,latest);}console.log(`[MILESTONE] ${h.pair} — SL moved to entry @ ${stop}`);}return h;}
 export async function getCooldowns():Promise<Record<string,number>>{return(await redis.get<Record<string,number>>(COOLDOWN_KEY))||{};}
 export async function setCooldowns(cooldowns:Record<string,number>):Promise<void>{await redis.set(COOLDOWN_KEY,cooldowns);}
+export async function getExitAlertCooldowns():Promise<Record<string,number>>{return(await redis.get<Record<string,number>>(EXIT_ALERT_COOLDOWNS_KEY))||{};}
+export async function setExitAlertCooldowns(cooldowns:Record<string,number>):Promise<void>{await redis.set(EXIT_ALERT_COOLDOWNS_KEY,cooldowns);}
 export async function getMarketData():Promise<any[]>{return(await redis.get<any[]>(MARKET_KEY))||[];}
 export async function setMarketData(data:any[]):Promise<void>{await redis.set(MARKET_KEY,data);}
 export async function getLastCronRun():Promise<number>{const data=await redis.get<{timestamp:number}>(CRON_KEY);return data?.timestamp||0;}
