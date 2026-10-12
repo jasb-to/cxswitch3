@@ -229,19 +229,10 @@ export async function GET(request:Request){
  let active=await getActiveSignals();
  if(EXECUTION_MODE==="AUTO") active=await reconcileExchangePositions(active);
  if(EXECUTION_MODE==="MANUAL"){
-   // Manual-mode alerts are ideas, not proof that the user entered a trade.
-   // Retire stale active-state/history records before recovery so a prior alert
-   // can never be resurrected and managed as a phantom position.
-   const staleActive=active;
-   if(staleActive.length)console.log(`[STATE] MANUAL mode — clearing unconfirmed active positions: ${staleActive.map((x:any)=>`${x.pair}_${x.direction}_${x.type}`).join(", ")}`);
-   await setActiveSignals([]);
-   active=[];
-   const manualHistory=await getSignalHistory();
-   const unconfirmed=manualHistory.filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2"));
-   for(const h of unconfirmed){
-     await updateSignalHistoryStatus(h.id,"EXPIRED","manual_mode_signal_not_entered");
-   }
-   if(unconfirmed.length)console.log(`[STATE] MANUAL mode — expired ${unconfirmed.length} unconfirmed signal history record(s)`);
+   // Preserve only positions explicitly confirmed through the dashboard.
+   // Entry alerts alone never create positions; the confirm-trade endpoint
+   // writes the active position and its history status together.
+   console.log(`[STATE] MANUAL mode — preserving ${active.length} explicitly confirmed active position(s)`);
  }
  // Reconcile the persistent position store against ACTIVE history before any
  // management runs. This recovers a live position if the active-state key was
@@ -388,9 +379,10 @@ export async function GET(request:Request){
   active=await manageActivePositions(active,marketData,managementByPair,alerts);
   await setActiveSignals(active);
  }else{
-  // MANUAL mode sends entry alerts and records history only. Position
-  // management is opt-in and must not run until an explicit confirmation flow exists.
-  console.log("[MANUAL] Skipping position management — no confirmed manual positions");
+  // Manage only positions explicitly confirmed by the user in the dashboard.
+  // Unconfirmed entry alerts never enter active state and cannot trigger exits.
+  await observeManualManagement(active,marketData);
+  console.log(`[MANUAL] Managed ${active.length} explicitly confirmed position(s); no automatic execution`);
  }
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
