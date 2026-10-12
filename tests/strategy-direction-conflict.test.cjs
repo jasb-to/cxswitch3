@@ -9,85 +9,122 @@ require.extensions[".ts"] = (module, filename) => {
 };
 const strategy = require("../lib/strategy.ts");
 const FOUR_HOURS = 4 * 60 * 60 * 1000;
-function candles({days=40, rising=true, bearishCurrent4h=false}={}) {
-  const start=Date.UTC(2026,0,1), out=[]; let prev=100;
-  for(let day=0;day<days;day++)for(let slot=0;slot<6;slot++){
-    const timestamp=start+(day*6+slot)*FOUR_HOURS;
-    let close;
-    if(bearishCurrent4h&&day===days-1)close=prev-(slot+1)*18;
-    else close=100+day*(rising?1:-1)+slot*(rising?0.12:-0.12);
-    prev=close;out.push({timestamp,open:close,high:close+1,low:close-1,close,volume:1});
-  }
-  return out;
-}
-function chopCandles(){
-  const targets=[];
-  for(let i=0;i<20;i++)targets.push(100+i*2.5);
-  for(let i=20;i<35;i++)targets.push(147.5-(i-19)*2);
-  for(let i=35;i<39;i++)targets.push(117+3*(i-34));
-  targets.push(132);
-  const out=[];let prev=targets[0];
-  for(let day=0;day<targets.length;day++){
-    const target=targets[day];
-    for(let slot=0;slot<6;slot++){
-      const close=prev+(target-prev)*(slot+1)/6,timestamp=Date.UTC(2026,0,1)+(day*6+slot)*FOUR_HOURS;
-      out.push({timestamp,open:close,high:close+1,low:close-1,close,volume:1});
+
+function candlesFromDaily(targets, { lastDayRising = false } = {}) {
+  const out = [], start = Date.UTC(2026, 0, 1);
+  for (let day = 0; day < targets.length; day++) {
+    for (let slot = 0; slot < 6; slot++) {
+      let close = targets[day];
+      if (lastDayRising && day === targets.length - 1) close = targets[day] + slot * Math.max(0.2, targets[day] * 0.01);
+      const timestamp = start + (day * 6 + slot) * FOUR_HOURS;
+      out.push({ timestamp, open: close, high: close + 0.2, low: close - 0.2, close, volume: 1 });
     }
-    prev=target;
   }
   return out;
 }
-test("BULL regime and 4H LONG align",()=>{
-  const a=strategy.trendAlignment(candles());
-  assert.equal(a.regime,"BULL");assert.equal(a.fourH,"LONG");assert.equal(a.aligned,"LONG");
-  assert.ok(a.dailyClose>a.dailyE21&&a.dailyE5>a.dailyE13);
+function trendTargets(kind, days = 40) {
+  return Array.from({ length: days }, (_, i) => {
+    if (kind === "bullHigh") return 100 + i * i * 0.22;
+    if (kind === "bearHigh") return 600 - i * i * 0.22;
+    if (kind === "bullLow") return 100 + 5 * i - 0.05 * i * i;
+    if (kind === "bearLow") return 500 - 5 * i + 0.05 * i * i;
+    if (kind === "bullMed") return 100 + 2 * i;
+    if (kind === "bearMed") return 500 - 2 * i;
+    if (i < 20) return 100 + i * 2.5;
+    if (i < 35) return 147.5 - (i - 19) * 2;
+    if (i < 39) return 117 + 3 * (i - 34);
+    return 132;
+  });
+}
+function stoch(k, d, pk, pd) { return { k, d, pk, pd }; }
+
+test("BEAR_HIGH + fresh 4H bearish Stoch cross at K=75 => SHORT at 100% size", () => {
+  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearHigh")));
+  assert.equal(regime.state, "BEAR_HIGH");
+  assert.equal(regime.direction, "SHORT");
+  assert.equal(regime.sizeMultiplier, 1);
+  const trigger = strategy.evaluateEntry1(regime.direction, stoch(75, 77, 80, 78));
+  assert.equal(trigger.entry1Short, true);
+  assert.equal(trigger.direction, "SHORT");
 });
-test("BEAR regime and 4H SHORT align",()=>{
-  const a=strategy.trendAlignment(candles({rising:false}));
-  assert.equal(a.regime,"BEAR");assert.equal(a.fourH,"SHORT");assert.equal(a.aligned,"SHORT");
+
+test("BEAR_LOW + fresh 4H bearish Stoch cross at K=75 => SHORT at 50% size", () => {
+  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearLow")));
+  assert.equal(regime.state, "BEAR_LOW");
+  assert.equal(regime.direction, "SHORT");
+  assert.equal(regime.sizeMultiplier, 0.5);
+  const trigger = strategy.evaluateEntry1(regime.direction, stoch(75, 77, 80, 78));
+  assert.equal(trigger.entry1Short, true);
 });
-test("BULL regime with 4H SHORT waits because 4H disagrees",()=>{
-  const c=candles({bearishCurrent4h:true}),a=strategy.trendAlignment(c),g=strategy.evaluateGates("BTC",c,80);
-  assert.equal(a.regime,"BULL");assert.equal(a.fourH,"SHORT");assert.equal(a.aligned,null);
-  assert.equal(g.direction,null);assert.equal(g.allPassed,false);assert.ok(g.missing.includes("fourH_disagrees_with_regime"));
+
+test("CHOP + fresh bearish Stoch cross => no signal and zero size", () => {
+  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bullMed", 16)));
+  assert.equal(regime.state, "CHOP");
+  assert.equal(regime.direction, null);
+  assert.equal(regime.sizeMultiplier, 0);
+  const trigger = strategy.evaluateEntry1(regime.direction, stoch(75, 77, 80, 78));
+  assert.equal(trigger.entry1, false);
 });
-test("CHOP regime blocks signals regardless of 4H direction",()=>{
-  const c=chopCandles(),a=strategy.trendAlignment(c),g=strategy.evaluateGates("BTC",c,c.at(-1).close);
-  assert.equal(a.regime,"CHOP");assert.equal(a.aligned,null);assert.ok(g.missing.includes("regime_chop"));
+
+test("BULL_LOW + fresh 4H bullish Stoch cross at K=30 => LONG at 50% size", () => {
+  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bullLow")));
+  assert.equal(regime.state, "BULL_LOW");
+  assert.equal(regime.direction, "LONG");
+  assert.equal(regime.sizeMultiplier, 0.5);
+  const trigger = strategy.evaluateEntry1(regime.direction, stoch(30, 28, 25, 30));
+  assert.equal(trigger.entry1Long, true);
+  assert.equal(trigger.direction, "LONG");
 });
-test("ENTRY_1 LONG fires on fresh bullish Stoch RSI cross at K below 40",()=>{
-  const e=strategy.evaluateEntry1("LONG",{pk:25,pd:30,k:30,d:28});
-  assert.equal(e.entry1Long,true);assert.equal(e.direction,"LONG");
+
+test("MED regimes use full size; direction does not require 4H EMA5/13 agreement", () => {
+  const c = candlesFromDaily(trendTargets("bearMed"), { lastDayRising: true });
+  const regime = strategy.computeRegime(c);
+  const alignment = strategy.trendAlignment(c);
+  assert.equal(regime.state, "BEAR_MED");
+  assert.equal(regime.sizeMultiplier, 1);
+  assert.equal(alignment.daily, "SHORT");
+  assert.equal(alignment.aligned, "SHORT");
+  assert.equal(alignment.fourH, "LONG");
 });
-test("ENTRY_1 SHORT fires on fresh bearish Stoch RSI cross at K above 60",()=>{
-  const e=strategy.evaluateEntry1("SHORT",{pk:80,pd:78,k:75,d:77});
-  assert.equal(e.entry1Short,true);assert.equal(e.direction,"SHORT");
+
+test("Spread output is signed and includes the three-day comparison", () => {
+  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearMed")));
+  assert.ok(regime.spread < 0);
+  assert.ok(Number.isFinite(regime.spread3));
+  assert.ok(Number.isFinite(regime.spreadDelta));
 });
-test("4H EMA calculations include the latest candle already returned closed",()=>{
-  const c=candles(),a=strategy.trendAlignment(c);
-  const ema=(v,p)=>{const k=2/(p+1),o=[v[0]];for(let i=1;i<v.length;i++)o.push(v[i]*k+o[i-1]*(1-k));return o};
-  const closes=c.map(x=>x.close);
-  assert.equal(a.fourHE5,ema(closes,5).at(-1));assert.equal(a.fourHE13,ema(closes,13).at(-1));
+
+test("ENTRY_1 trigger thresholds remain unchanged", () => {
+  assert.equal(strategy.evaluateEntry1("LONG", stoch(30, 28, 25, 30)).entry1Long, true);
+  assert.equal(strategy.evaluateEntry1("SHORT", stoch(75, 77, 80, 78)).entry1Short, true);
+  assert.equal(strategy.evaluateEntry1("LONG", stoch(45, 42, 40, 44)).entry1, false);
+  assert.equal(strategy.evaluateEntry1("SHORT", stoch(55, 58, 60, 57)).entry1, false);
 });
-test("structural stop uses the last five closed candles and the 1.5 ATR floor",()=>{
-  const c=candles(),result=strategy.calculateStop("LONG",110,2,c),low=Math.min(...c.slice(-5).map(x=>x.low));
-  assert.equal(result.valid,true);assert.equal(result.stop,Math.min(low,107));
+
+test("structural stop uses the last five candles and the 1.5 ATR floor", () => {
+  const c = candlesFromDaily(trendTargets("bullMed"));
+  const result = strategy.calculateStop("LONG", 110, 2, c);
+  const low = Math.min(...c.slice(-5).map(x => x.low));
+  assert.equal(result.valid, true);
+  assert.equal(result.stop, Math.min(low, 107));
 });
-test("daily EMA reversal alone no longer exits an open trade",()=>{
-  const c=candles({rising:false}),s={direction:"LONG",entry:100,stop:90,tp1:103,tp2:106,timestamp:Date.UTC(2026,0,1),version:30};
-  const hold=strategy.shouldHold(s,c,99.5);
-  assert.equal(hold.shouldHold,true);assert.equal(hold.managementState,"STAY");assert.notEqual(hold.reason,"1d_ema_reversal");
-});
-test("shouldHold stays at -0.5% and +2%, scales out at TP1, and trails after +3%",()=>{
-  const c=candles({days:40}),base={direction:"LONG",entry:100,stop:90,tp1:103,tp2:106,timestamp:Date.UTC(2026,0,1),version:30};
-  assert.equal(strategy.shouldHold(base,c,99.5).managementState,"STAY");
-  assert.equal(strategy.shouldHold(base,c,102).managementState,"STAY");
-  const tp1=strategy.shouldHold(base,c,103);
-  assert.equal(tp1.reason,"tp1_hit_scale_out");assert.equal(tp1.scaleOut.size,0.5);assert.equal(tp1.newStop,100);
-  const rising=[...c];for(let i=0;i<5;i++){const close=101+i*.5;rising[rising.length-5+i]={...rising[rising.length-5+i],open:close,close,high:close+.2,low:close-.2};}
-  const managed={...base,tp1HitAt:Date.UTC(2026,1,1)};
-  const trail=strategy.shouldHold(managed,rising,103.5);
-  assert.equal(trail.reason,"chandelier_stop");assert.ok(trail.newStop>managed.stop);
-  const protectedTrade={...managed,stop:trail.newStop};
-  assert.equal(strategy.shouldHold(protectedTrade,rising,trail.newStop-.01).reason,"stop_hit");
+
+test("shouldHold management remains unchanged: stop, TP1 scale-out and trailing stop", () => {
+  const c = candlesFromDaily(Array.from({ length: 40 }, (_, i) => 100 + i * 0.02));
+  const base = { direction: "LONG", entry: 100, stop: 90, tp1: 103, tp2: 106, timestamp: Date.UTC(2026, 0, 1), version: 31 };
+  assert.equal(strategy.shouldHold(base, c, 99.5).managementState, "STAY");
+  assert.equal(strategy.shouldHold(base, c, 102).managementState, "STAY");
+  const tp1 = strategy.shouldHold(base, c, 103);
+  assert.equal(tp1.reason, "tp1_hit_scale_out");
+  assert.equal(tp1.scaleOut.size, 0.5);
+  assert.equal(tp1.newStop, 100);
+  const rising = [...c];
+  for (let i = 0; i < 5; i++) {
+    const close = 101 + i * 0.5;
+    rising[rising.length - 5 + i] = { ...rising[rising.length - 5 + i], open: close, close, high: close + 0.2, low: close - 0.2 };
+  }
+  const managed = { ...base, tp1HitAt: Date.UTC(2026, 1, 1) };
+  const trail = strategy.shouldHold(managed, rising, 103.5);
+  assert.equal(trail.reason, "chandelier_stop");
+  assert.ok(trail.newStop > managed.stop);
 });

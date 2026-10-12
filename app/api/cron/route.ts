@@ -303,10 +303,9 @@ export async function GET(request:Request){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      // The daily regime defines direction; the 4H EMA5/13 must agree with it.
-      const fourHSide=normalizeSide(snapshot.fourHTacticalDirection);
-      const conflict=snapshot.regime==="CHOP"||!dailySide||!fourHSide||dailySide!==fourHSide;
-      let waitReason=snapshot.regime==="CHOP"?"regime CHOP":conflict?"4H disagrees with regime":"setup incomplete";
+      // Direction is regime-only; 4H EMA5/13 is diagnostic context, not an entry gate.
+      const conflict=snapshot.regime==="CHOP"||!dailySide;
+      let waitReason=snapshot.regime==="CHOP"?"regime CHOP":conflict?"daily regime unavailable":"setup incomplete";
       if(!conflict&&gateDebug){
         try{
           const gateState=JSON.parse(gateDebug.slice(8));
