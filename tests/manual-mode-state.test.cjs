@@ -8,7 +8,7 @@ const dashboard = fs.readFileSync("app/page.tsx", "utf8");
 
 test("MANUAL mode preserves explicitly confirmed positions without recovering unconfirmed alerts", () => {
   assert.ok(cron.includes('MANUAL mode — preserving ${active.length} explicitly confirmed active position'));
-  assert.ok(cron.includes('EXECUTION_MODE==="MANUAL"?new Map<string,any>():historyAtStart'));
+  assert.ok(cron.includes('EXECUTION_MODE==="AUTO"||h.confirmedManually===true'));
   assert.ok(!cron.includes('await setActiveSignals([]);'));
   assert.ok(!cron.includes('manual_mode_signal_not_entered'));
 });
@@ -22,6 +22,7 @@ test("only an explicit dashboard confirmation activates a manual position", () =
   assert.ok(dashboard.includes('I ENTERED THIS TRADE · ENABLE 4H MANAGEMENT'));
   assert.ok(dashboard.includes('fetch("/api/confirm-trade"'));
   assert.ok(confirmRoute.includes('confirmedManually: true'));
+  assert.ok(confirmRoute.includes('latest.confirmedManually = true'));
   assert.ok(confirmRoute.includes('latest.status = "ACTIVE"'));
 });
 
