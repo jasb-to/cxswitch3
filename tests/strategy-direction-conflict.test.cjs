@@ -109,8 +109,8 @@ test("structural stop uses the last five candles and the 1.5 ATR floor", () => {
   assert.equal(result.stop, Math.min(low, 107));
 });
 
-test("shouldHold management remains unchanged: stop, TP1 scale-out and trailing stop", () => {
-  const c = candlesFromDaily(Array.from({ length: 40 }, (_, i) => 100 + i * 0.02));
+test("shouldHold preserves stop, TP1 scale-out and trailing stop when RSI is not extreme", () => {
+  const c = candlesFromDaily(Array.from({ length: 40 }, (_, i) => 100 + i * 0.02 + (i % 2 ? 0.5 : -0.5)));
   const base = { direction: "LONG", entry: 100, stop: 90, tp1: 103, tp2: 106, timestamp: Date.UTC(2026, 0, 1), version: 31 };
   assert.equal(strategy.shouldHold(base, c, 99.5).managementState, "STAY");
   assert.equal(strategy.shouldHold(base, c, 102).managementState, "STAY");
