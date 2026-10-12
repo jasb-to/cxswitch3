@@ -18,9 +18,9 @@ test("MANUAL entry alerts do not automatically create active positions", () => {
   assert.ok(!cron.includes('if(EXECUTION_MODE==="MANUAL") await addActiveSignal(signal)'));
 });
 
-test("only an explicit dashboard confirmation activates a manual position", () => {
-  assert.ok(dashboard.includes('I ENTERED THIS TRADE · ENABLE 4H MANAGEMENT'));
-  assert.ok(dashboard.includes('fetch("/api/confirm-trade"'));
+test("manual confirmation controls remain available through the API, not on symbol cards", () => {
+  assert.ok(!dashboard.includes('I ENTERED THIS TRADE · ENABLE 4H MANAGEMENT'));
+  assert.ok(!dashboard.includes('fetch("/api/confirm-trade"'));
   assert.ok(confirmRoute.includes('confirmedManually: true'));
   assert.ok(confirmRoute.includes('latest.confirmedManually = true'));
   assert.ok(confirmRoute.includes('latest.status = "ACTIVE"'));
