@@ -30,7 +30,10 @@ function trendTargets(kind, days = 40) {
     if (kind === "bearLow") return 500 - 5 * i + 0.05 * i * i;
     if (kind === "bullMed") return 100 + 2 * i;
     if (kind === "bearMed") return 500 - 2 * i;
-    return 100 + Math.sin(i / 2) * 8;
+    if (i < 20) return 100 + i * 2.5;
+    if (i < 35) return 147.5 - (i - 19) * 2;
+    if (i < 39) return 117 + 3 * (i - 34);
+    return 132;
   });
 }
 function stoch(k, d, pk, pd) { return { k, d, pk, pd }; }
