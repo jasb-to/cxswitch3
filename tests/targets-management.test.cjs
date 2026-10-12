@@ -23,7 +23,7 @@ test("SHORT TP1 uses a farther pivot when no closer pivot reaches 1.5R", () => {
     { price: 85, index: 1 },
   ]);
   assert.equal(targets.tp1, 85);
-  assert.equal(targets.tp2, 90);
+  assert.equal(targets.tp2, 82.5);
 });
 
 test("target fallbacks maintain at least 1.5R and 2R", () => {
