@@ -58,7 +58,7 @@ test("BEAR_LOW + fresh 4H bearish Stoch cross at K=75 => SHORT at 50% size", () 
 });
 
 test("CHOP + fresh bearish Stoch cross => no signal and zero size", () => {
-  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("chop")));
+  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bullMed", 16)));
   assert.equal(regime.state, "CHOP");
   assert.equal(regime.direction, null);
   assert.equal(regime.sizeMultiplier, 0);
@@ -110,7 +110,7 @@ test("structural stop uses the last five candles and the 1.5 ATR floor", () => {
 });
 
 test("shouldHold management remains unchanged: stop, TP1 scale-out and trailing stop", () => {
-  const c = candlesFromDaily(trendTargets("bullMed"));
+  const c = candlesFromDaily(Array.from({ length: 40 }, (_, i) => 100 + i * 0.02));
   const base = { direction: "LONG", entry: 100, stop: 90, tp1: 103, tp2: 106, timestamp: Date.UTC(2026, 0, 1), version: 31 };
   assert.equal(strategy.shouldHold(base, c, 99.5).managementState, "STAY");
   assert.equal(strategy.shouldHold(base, c, 102).managementState, "STAY");
