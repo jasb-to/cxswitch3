@@ -5,7 +5,7 @@ import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
@@ -46,6 +46,8 @@ function marketStructureLog(pair:string,candles:any[],price:number):string {
 }
 function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&h.exitReason!=="manual_symbol_reset"&&now-h.timestamp<SIGNAL_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<SIGNAL_DEDUP_ENTRY_PCT);}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
+const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
+async function persistExitCooldown(pair:string,reason:string){if(!INDICATOR_EXIT_REASONS.has(reason))return;const cooldowns=await getExitAlertCooldowns();cooldowns[pair]=Date.now();await setExitAlertCooldowns(cooldowns);}
 function telegramAlertKey(signal:Signal,resetAt?:number):string{
   const resetSuffix=resetAt?`:reset:${resetAt}`:"";
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
@@ -62,7 +64,9 @@ async function manageActivePositions(initialActive:any[], marketData:any[], mana
   const tp1AlreadyHit=!!trade.tp1HitAt;
   // Evaluate management before persisting a newly-hit TP1 milestone so the first
   // touch can still produce the one-time 50% scale-out + breakeven instruction.
-  let hold=shouldHold(toSignalLike(trade),c,price);
+  const exitCooldowns=await getExitAlertCooldowns();
+  let hold=shouldHold(toSignalLike(trade),c,price,Date.now(),exitCooldowns[trade.pair]);
+  if(!hold.shouldHold)await persistExitCooldown(trade.pair,hold.reason);
   await updateHistoryMilestones(trade.id,price);
   if(typeof hold.shouldHold!=="boolean"){
     console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);
@@ -147,7 +151,9 @@ async function observeManualManagement(active:any[],marketData:any[]){
     if(!candles.length||!Number.isFinite(price))continue;
     const milestone=await updateHistoryMilestones(trade.id,price);
     if(milestone)Object.assign(trade,milestone);
-    const hold=shouldHold(toSignalLike(trade),candles,price);
+    const exitCooldowns=await getExitAlertCooldowns();
+    const hold=shouldHold(toSignalLike(trade),candles,price,Date.now(),exitCooldowns[trade.pair]);
+    if(!hold.shouldHold)await persistExitCooldown(trade.pair,hold.reason);
     if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
       const improves=trade.direction==="LONG"?hold.newStop>Number(trade.stop):hold.newStop<Number(trade.stop);
       if(!improves)continue;
@@ -283,7 +289,7 @@ export async function GET(request:Request){
   const historyForEntry=await getSignalHistory();
   const entry1State=historyForEntry.filter((h:any)=>h.pair===pair&&h.type==="ENTRY_1"&&h.status==="ACTIVE").sort((a:any,b:any)=>b.timestamp-a.timestamp)[0];
   const entry2AlreadyFired=!!entry1State&&historyForEntry.some((h:any)=>h.pair===pair&&h.direction===entry1State.direction&&h.type==="ENTRY_2"&&h.timestamp>entry1State.timestamp);
-  const result=generateSignal(pair,c1,c4,c15,price,undefined,undefined,entry1State,entry2AlreadyFired);
+  const result=generateSignal(pair,c1,c4,c15,price,undefined,undefined,entry1State,entry2AlreadyFired,active.map((x:any)=>({pair:x.pair,direction:x.direction})));
   const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.currentPrice=price;snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
   // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
@@ -294,6 +300,8 @@ export async function GET(request:Request){
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
   snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"?"LONG":canonicalDailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
+  const activeSuppression=dbg.find((x:string)=>x.startsWith("[SUPPRESSED]")&&x.includes("active_position_exists"));
+  if(activeSuppression)console.log(`[PAIR] ${pair} ${activeSuppression}`);
   const regimeDebug=dbg.find(x=>x.startsWith("[REGIME]"));
   if(regimeDebug)console.log(`[PAIR] ${pair} — ${regimeDebug}`);
   const triggerDebug=dbg.find(x=>x.startsWith("[TRIGGER]"));
