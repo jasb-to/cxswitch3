@@ -43,7 +43,7 @@ test("indicator exits use a four-hour cooldown persisted outside the strategy mo
   assert.ok(state.includes("getExitAlertCooldowns"));
   assert.ok(state.includes("setExitAlertCooldowns"));
   assert.ok(cron.includes("persistExitCooldown(alert.pair,hold.reason)"));
-  assert.ok(cron.includes("async function observeAlertManagement(active,marketData)"));
+  assert.ok(cron.includes("async function observeAlertManagement(active:any[],marketData:any[])"));
 });
 
 test("hard stop and TP2 exits are checked before the indicator cooldown", () => {
