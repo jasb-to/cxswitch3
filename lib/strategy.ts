@@ -206,7 +206,7 @@ export function calculateTargets(direction:Direction,entry:number,stop:number,c:
   const pivots=swings(closed4h,direction==="LONG");
   return calculateTargetsFromPivots(direction,entry,stop,pivots);
 }
-export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord,entry1State?:Entry1State,entry2AlreadyFired=false){
+export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord,entry1State?:Entry1State,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:Direction}>=[]){
   void candles1h;void candles15m;void lastBreakout;
   const debug:string[]=[],c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
   const closed=c,closedCloses=closed.map(x=>x.close),a=atr(closed),av=adx(closed),rv=rsi(closedCloses),st=stoch(closedCloses);
@@ -245,6 +245,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
     context:{entryAnchor:"current price",signalClass:"TREND",sizeMultiplier,structuralAnchor:stopResult.calc.structuralAnchor,liquidationPrice:stopResult.calc.liquidationPrice,stopToLiquidationBufferPct:stopResult.calc.liquidationBufferPct,stopCalc:stopResult.calc,regime:alignment.regime,dailySpreadPct:alignment.dailySpreadPct,dailySpread3dPct:alignment.dailySpread3dPct,dailySpreadDelta:alignment.dailySpreadDelta,ema5_1d:alignment.dailyE5,ema13_1d:alignment.dailyE13,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,ema8_4h:ema8_4h,ema21_4h:ema21_4h,closed4hTimestamp,stochK_4h:st.k,stochD_4h:st.d}
   };
+  const activeMatch=activeSignals.find(active=>active.pair===pair&&active.direction===s.direction);
+  if(activeMatch){
+    debug.push(`[SUPPRESSED] ${pair} — active ${s.direction} position already exists | reason=active_position_exists`);
+    debug.push("[SIGNAL] none");
+    debug.push("[ALERT] none");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
+  }
   debug.push("[STOP] "+direction+" | SL "+s.stop+" | "+stopResult.calc.riskPct+"% risk | 1.5 ATR floor");
   debug.push("[TARGETS] TP1 "+s.tp1+" ("+r(Math.abs(s.tp1-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | TP2 "+s.tp2+" ("+r(Math.abs(s.tp2-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | 4H swing pivots / minimum 1.5R and 2.0R | RR "+s.rr);
   debug.push("[SIGNAL] "+s.direction+" "+s.type+" | entry "+s.entry+" | SL "+s.stop+" | TP1 "+s.tp1+" | TP2 "+s.tp2);
@@ -253,9 +260,19 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
 }
 
-export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
-  void now;
+const EXIT_ALERT_COOLDOWN_MS=4*60*60*1000;
+const exitAlertStore=new Map<string,number>();
+const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
+export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number){
   const x=[...c].sort((a,b)=>a.timestamp-b.timestamp);
+  const lastExit=lastExitAlertAt??exitAlertStore.get(s.pair)??0;
+  if(now-lastExit<EXIT_ALERT_COOLDOWN_MS){
+    return{shouldHold:true,reason:"exit_cooldown",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
+  }
+  const exit=(reason:"4h_ema_reversal_confirmed"|"1d_ema_reversal_confirmed"|"4h_rsi_extreme_opposite"|"chandelier_trailing_stop",newStop?:number)=>{
+    if(INDICATOR_EXIT_REASONS.has(reason))exitAlertStore.set(s.pair,now);
+    return{shouldHold:false,reason,managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const,...(newStop===undefined?{}:{newStop})};
+  };
   if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))
     return{shouldHold:false,reason:"stop_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
   if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))
@@ -267,11 +284,24 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
   if(!tp1AlreadyHit&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))
     return{shouldHold:true,reason:"tp1_hit_scale_out",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1"}};
 
-  const rv=rsi(x.slice(0,-1).map(z=>z.close));
-  if(s.direction==="LONG"&&rv>=78)
-    return{shouldHold:false,reason:"4h_rsi_extreme_opposite",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
-  if(s.direction==="SHORT"&&rv<=22)
-    return{shouldHold:false,reason:"4h_rsi_extreme_opposite",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
+  // Indicator exits are based only on closed candles. The latest candle is
+  // still forming, so use the two preceding closed 4H RSI readings.
+  const closed4h=x.slice(0,-1),closedRsi=rsiSeries(closed4h.map(z=>z.close));
+  const rsiNow=closedRsi.at(-1)??50,rsiPrev=closedRsi.at(-2)??50;
+  if(s.direction==="LONG"&&rsiNow>=78&&rsiPrev>=78)
+    return exit("4h_rsi_extreme_opposite");
+  if(s.direction==="SHORT"&&rsiNow<=22&&rsiPrev<=22)
+    return exit("4h_rsi_extreme_opposite");
+
+  // Daily EMA 5/13 reversal: require two consecutive completed UTC daily
+  // candles on the adverse side before treating the daily thesis as reversed.
+  const d=daily(x).slice(0,-1),dClose=d.map(z=>z.close),dE5=ema(dClose,5),dE13=ema(dClose,13);
+  if(dE5.length>=2&&dE13.length>=2){
+    const last=dE5.length-1,prev=last-1;
+    const adverseNow=s.direction==="LONG"?dE5[last]<dE13[last]:dE5[last]>dE13[last];
+    const adversePrev=s.direction==="LONG"?dE5[prev]<dE13[prev]:dE5[prev]>dE13[prev];
+    if(adverseNow&&adversePrev)return exit("1d_ema_reversal_confirmed");
+  }
 
   if(x.length>=5){
     const a=atr(x),last5=x.slice(-5);
@@ -282,22 +312,18 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
     const trailImproves=s.direction==="LONG"?trail>s.stop:trail<s.stop;
     if(profitPct>=.03){
       if((s.direction==="LONG"&&p<=trail)||(s.direction==="SHORT"&&p>=trail))
-        return{shouldHold:false,reason:"chandelier_trailing_stop",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const,newStop:trail};
+        return exit("chandelier_trailing_stop",trail);
       if(trailImproves)
         return{shouldHold:true,reason:"chandelier_stop",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:trail};
     }
   }
 
-  if(x.length>=3){
-    const e8=ema(q,8),e21=ema(q,21);
-    const cross=s.direction==="LONG"
-      ? e8.at(-3)!>=e21.at(-3)!&&e8.at(-2)!<e21.at(-2)!
-      : e8.at(-3)!<=e21.at(-3)!&&e8.at(-2)!>e21.at(-2)!;
-    const reclaimed=s.direction==="LONG"?x.at(-1)!.close>=e8.at(-1)!:x.at(-1)!.close<=e8.at(-1)!;
-    if(cross){
-      if(!reclaimed)return{shouldHold:false,reason:"4h_ema_reversal_confirmed",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
-      return{shouldHold:true,reason:"4h_reclaim_held",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
-    }
+  if(closed4h.length>=21){
+    const closedCloses=closed4h.map(z=>z.close),e8=ema(closedCloses,8),e21=ema(closedCloses,21);
+    const last=e8.length-1,prev=last-1;
+    const wrongNow=s.direction==="SHORT"?e8[last]>e21[last]:e8[last]<e21[last];
+    const wrongPrev=s.direction==="SHORT"?e8[prev]>e21[prev]:e8[prev]<e21[prev];
+    if(wrongNow&&wrongPrev)return exit("4h_ema_reversal_confirmed");
   }
 
   return{shouldHold:true,reason:"thesis_intact",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
