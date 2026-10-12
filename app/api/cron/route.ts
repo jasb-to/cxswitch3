@@ -228,12 +228,27 @@ export async function GET(request:Request){
  console.log("========================================");console.log(`[CRON v${CXSWITCH_VERSION}] Started at ${new Date(started).toISOString()}`);
  let active=await getActiveSignals();
  if(EXECUTION_MODE==="AUTO") active=await reconcileExchangePositions(active);
+ if(EXECUTION_MODE==="MANUAL"){
+   // Manual-mode alerts are ideas, not proof that the user entered a trade.
+   // Retire stale active-state/history records before recovery so a prior alert
+   // can never be resurrected and managed as a phantom position.
+   const staleActive=active;
+   if(staleActive.length)console.log(`[STATE] MANUAL mode — clearing unconfirmed active positions: ${staleActive.map((x:any)=>`${x.pair}_${x.direction}_${x.type}`).join(", ")}`);
+   await setActiveSignals([]);
+   active=[];
+   const manualHistory=await getSignalHistory();
+   const unconfirmed=manualHistory.filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2"));
+   for(const h of unconfirmed){
+     await updateSignalHistoryStatus(h.id,"EXPIRED","manual_mode_signal_not_entered");
+   }
+   if(unconfirmed.length)console.log(`[STATE] MANUAL mode — expired ${unconfirmed.length} unconfirmed signal history record(s)`);
+ }
  // Reconcile the persistent position store against ACTIVE history before any
  // management runs. This recovers a live position if the active-state key was
  // lost/reset while its corresponding history entry remained ACTIVE.
  const historyAtStart=await getSignalHistory();
  const activeKeys=new Set(active.map((x:any)=>`${x.pair}|${x.direction}`));
- const recoverable=historyAtStart
+ const recoverable=EXECUTION_MODE==="MANUAL"?new Map<string,any>():historyAtStart
    .filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2")&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
    .reduce((map:any,h:any)=>{
      const key=`${h.pair}|${h.direction}`;
@@ -373,7 +388,9 @@ export async function GET(request:Request){
   active=await manageActivePositions(active,marketData,managementByPair,alerts);
   await setActiveSignals(active);
  }else{
-  await observeManualManagement(active,marketData);
+  // MANUAL mode sends entry alerts and records history only. Position
+  // management is opt-in and must not run until an explicit confirmation flow exists.
+  console.log("[MANUAL] Skipping position management — no confirmed manual positions");
  }
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
