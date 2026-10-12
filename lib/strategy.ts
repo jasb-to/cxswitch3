@@ -176,6 +176,35 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const deduped=[...new Set(missing)];
   return{direction,zone:null,trendlineSlope:0,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"trigger_met":alignment.regime==="CHOP"?"regime_chop":entry1WaitReason(direction,st),entry2Reason:entry2?"trigger_met":entry2Check.reason},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!signalType&&!exhausted,dailyTransition:alignment.regime==="CHOP",breakoutRecord:undefined};
 }
+type SwingPivot={price:number;index:number};
+function swings(c:Candle[],highs:boolean):SwingPivot[]{
+  const out:SwingPivot[]=[];
+  for(let i=2;i<c.length-2;i++){
+    const value=highs?c[i].high:c[i].low;
+    const isPivot=highs
+      ? value>c[i-1].high&&value>c[i-2].high&&value>=c[i+1].high&&value>=c[i+2].high
+      : value<c[i-1].low&&value<c[i-2].low&&value<=c[i+1].low&&value<=c[i+2].low;
+    if(isPivot)out.push({price:value,index:i});
+  }
+  return out;
+}
+export function calculateTargetsFromPivots(direction:Direction,entry:number,stop:number,pivots:SwingPivot[]){
+  const riskDistance=Math.abs(entry-stop);
+  const minTp1Distance=1.5*riskDistance,minTp2Distance=2.0*riskDistance;
+  const forwardPivots=pivots
+    .filter(x=>direction==="LONG"?x.price>entry:x.price<entry)
+    .sort((a,b)=>direction==="LONG"?a.price-b.price:b.price-a.price);
+  const tp1Pivot=forwardPivots.find(x=>Math.abs(x.price-entry)>=minTp1Distance);
+  const tp1=tp1Pivot?.price??(direction==="LONG"?entry+minTp1Distance:entry-minTp1Distance);
+  const tp2Pivot=forwardPivots.find(x=>direction==="LONG"?x.price>tp1&&(x.price-entry)>=minTp2Distance:x.price<tp1&&(entry-x.price)>=minTp2Distance);
+  const tp2=tp2Pivot?.price??(direction==="LONG"?entry+minTp2Distance:entry-minTp2Distance);
+  return{tp1,tp2};
+}
+export function calculateTargets(direction:Direction,entry:number,stop:number,c:Candle[]){
+  const closed4h=c.slice(0,-1);
+  const pivots=swings(closed4h,direction==="LONG");
+  return calculateTargetsFromPivots(direction,entry,stop,pivots);
+}
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord,entry1State?:Entry1State,entry2AlreadyFired=false){
   void candles1h;void candles15m;void lastBreakout;
   const debug:string[]=[],c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
@@ -198,7 +227,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     debug.push("[SIGNAL BLOCKED] "+pair+" | "+(stopResult.invalidReason??"invalid stop inputs"));
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
-  const tp1=direction==="LONG"?entry*1.03:entry*0.97,tp2=direction==="LONG"?entry*1.06:entry*0.94;
+  const riskPct=Math.abs(entry-stopResult.stop)/Math.max(entry,EPS)*100;
+  if(riskPct>3.5){
+    debug.push("[SIGNAL BLOCKED] "+pair+" | risk_too_wide | stop risk "+r(riskPct,2)+"% exceeds 3.5%");
+    return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
+  }
+  const targets=calculateTargets(direction,entry,stopResult.stop,c);
+  const tp1=targets.tp1,tp2=targets.tp2;
   const risk=Math.abs(entry-stopResult.stop),actualRr=Math.abs(tp2-entry)/Math.max(risk,EPS);
   const closed4hTimestamp=closed.at(-1)?.timestamp??0,ema8_4h=ema(closedCloses,8).at(-1)??0,ema21_4h=ema(closedCloses,21).at(-1)??0;
   const sizeMultiplier:1|0.5=alignment.sizeMultiplier===0.5?0.5:1;
@@ -210,7 +245,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     context:{entryAnchor:"current price",signalClass:"TREND",sizeMultiplier,structuralAnchor:stopResult.calc.structuralAnchor,liquidationPrice:stopResult.calc.liquidationPrice,stopToLiquidationBufferPct:stopResult.calc.liquidationBufferPct,stopCalc:stopResult.calc,regime:alignment.regime,dailySpreadPct:alignment.dailySpreadPct,dailySpread3dPct:alignment.dailySpread3dPct,dailySpreadDelta:alignment.dailySpreadDelta,ema5_1d:alignment.dailyE5,ema13_1d:alignment.dailyE13,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,ema8_4h:ema8_4h,ema21_4h:ema21_4h,closed4hTimestamp,stochK_4h:st.k,stochD_4h:st.d}
   };
   debug.push("[STOP] "+direction+" | SL "+s.stop+" | "+stopResult.calc.riskPct+"% risk | 1.5 ATR floor");
-  debug.push("[TARGETS] TP1 "+s.tp1+" (3%) | TP2 "+s.tp2+" (6%) | RR "+s.rr);
+  debug.push("[TARGETS] TP1 "+s.tp1+" ("+r(Math.abs(s.tp1-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | TP2 "+s.tp2+" ("+r(Math.abs(s.tp2-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | 4H swing pivots / minimum 1.5R and 2.0R | RR "+s.rr);
   debug.push("[SIGNAL] "+s.direction+" "+s.type+" | entry "+s.entry+" | SL "+s.stop+" | TP1 "+s.tp1+" | TP2 "+s.tp2);
   debug.push("[JARVIS] trade conditions passed — execution remains separate from opportunity guidance");
   debug.push("[ALERT] SURFACE");
@@ -224,6 +259,12 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now?:number){
     return{shouldHold:false,reason:"stop_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
   if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))
     return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
+
+  const rv=rsi(x.slice(0,-1).map(z=>z.close));
+  if(s.direction==="LONG"&&rv>=78)
+    return{shouldHold:false,reason:"4h_rsi_extreme_opposite",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
+  if(s.direction==="SHORT"&&rv<=22)
+    return{shouldHold:false,reason:"4h_rsi_extreme_opposite",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
 
   const q=x.map(z=>z.close);
 
