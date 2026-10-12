@@ -2,20 +2,31 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 
-const source = fs.readFileSync("app/api/cron/route.ts", "utf8");
+const cron = fs.readFileSync("app/api/cron/route.ts", "utf8");
+const confirmRoute = fs.readFileSync("app/api/confirm-trade/route.ts", "utf8");
+const dashboard = fs.readFileSync("app/page.tsx", "utf8");
 
-test("MANUAL mode clears unconfirmed active positions before history recovery", () => {
-  assert.match(source, /if\(EXECUTION_MODE==="MANUAL"\)\{[\s\S]*?await setActiveSignals\(\[\]\);[\s\S]*?active=\[\];/);
-  assert.match(source, /manual_mode_signal_not_entered/);
-  assert.match(source, /EXECUTION_MODE==="MANUAL"\?new Map<string,any>\(\):historyAtStart/);
+test("MANUAL mode preserves explicitly confirmed positions without recovering unconfirmed alerts", () => {
+  assert.match(cron, /MANUAL mode — preserving \$\{active\.length\} explicitly confirmed active position/);
+  assert.match(cron, /EXECUTION_MODE==="MANUAL"\?new Map<string,any>\(\):historyAtStart/);
+  assert.doesNotMatch(cron, /await setActiveSignals\(\[\]\);/);
+  assert.doesNotMatch(cron, /manual_mode_signal_not_entered/);
 });
 
-test("MANUAL mode never auto-creates an active position after sending an alert", () => {
-  assert.match(source, /if\(EXECUTION_MODE==="AUTO"\)\{[\s\S]*?await addActiveSignal\(signal\);[\s\S]*?\}/);
-  assert.doesNotMatch(source, /if\(EXECUTION_MODE==="MANUAL"\)\s*await addActiveSignal\(signal\)/);
+test("MANUAL entry alerts do not automatically create active positions", () => {
+  assert.match(cron, /if\(EXECUTION_MODE==="AUTO"\)\{[\s\S]*?await addActiveSignal\(signal\);/);
+  assert.doesNotMatch(cron, /if\(EXECUTION_MODE==="MANUAL"\)\s*await addActiveSignal\(signal\)/);
 });
 
-test("MANUAL mode skips automated position management and exit alerts", () => {
-  assert.match(source, /Skipping position management — no confirmed manual positions/);
-  assert.doesNotMatch(source, /else\{\s*await observeManualManagement\(active,marketData\);\s*\}/);
+test("only an explicit dashboard confirmation activates a manual position", () => {
+  assert.match(dashboard, /I ENTERED THIS TRADE · ENABLE 4H MANAGEMENT/);
+  assert.match(dashboard, /fetch\("\/api\/confirm-trade"/);
+  assert.match(confirmRoute, /confirmedManually:true/);
+  assert.match(confirmRoute, /latest\.status = "ACTIVE"/);
+});
+
+test("confirmed manual positions are observed for 4H management without auto-execution", () => {
+  assert.match(cron, /await observeManualManagement\(active,marketData\);/);
+  assert.match(cron, /no automatic execution/);
+  assert.doesNotMatch(cron, /placeFuturesReduceOnlyMarketOrder\(trade\.pair,trade\.direction/);
 });
