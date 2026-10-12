@@ -14,6 +14,11 @@ test("active pair and direction suppress a new signal independently of entry pri
   assert.ok(cron.includes("entry2AlreadyFired,active.map((x:any)=>({pair:x.pair,direction:x.direction}))"));
 });
 
+test("chandelier trailing-stop exit requires two consecutive closed-candle breaches", () => {
+  assert.ok(strategy.includes("const trailAt=(bars:Candle[])=>"));
+  assert.ok(strategy.includes("if(breachedNow&&breachedPrevious)return exit(\"chandelier_trailing_stop\",trail)"));
+});
+
 test("4H EMA reversal requires two consecutive closed candles on the adverse side", () => {
   assert.ok(strategy.includes("const closed4h=x.slice(0,-1)"));
   assert.ok(strategy.includes("const wrongNow=s.direction==="));
