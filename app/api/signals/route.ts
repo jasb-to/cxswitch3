@@ -76,10 +76,12 @@ function managementAdvice(h:any,m:any){
     return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"TP1 hit — take 50% off and protect the remaining position.",newStop:h.entry,nextAction:`MOVE SL TO ENTRY ${h.entry}; RUNNER → TP2 ${h.tp2}`};
   return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Thesis intact. No confirmed higher-timeframe reversal.",nextAction:`HOLD · SL ${h.stop} · TP1 ${h.tp1} · TP2 ${h.tp2}`};
 }
-function latestAlertMomentum(pair:string,history:any[],market:any){
+function latestAlertMomentum(pair:string,history:any[],market:any,activePosition?:any){
   const now=Date.now();
-  const h=history.filter((x:any)=>x?.pair===pair&&x?.status==="ACTIVE"&&Number.isFinite(Number(x.timestamp))).sort((a:any,b:any)=>b.timestamp-a.timestamp)[0];
-  if(!h||now-Number(h.timestamp)>24*60*60*1000)return null;
+  // Confirmed positions remain managed regardless of how old their entry alert is.
+  // Only an unexecuted/latest alert is subject to the 24-hour display window.
+  const h=activePosition?.status==="ACTIVE"?activePosition:history.filter((x:any)=>x?.pair===pair&&x?.status==="ACTIVE"&&Number.isFinite(Number(x.timestamp))).sort((a:any,b:any)=>b.timestamp-a.timestamp)[0];
+  if(!h||(!activePosition&&now-Number(h.timestamp)>24*60*60*1000))return null;
   const price=Number(market?.price);
   const candles=Array.isArray(market?.momentumCandles4h)?market.momentumCandles4h:[];
   if(!Number.isFinite(price)||!candles.length)return null;
@@ -93,7 +95,7 @@ export async function GET(){
   const activeByPair:Record<string,any>=Object.fromEntries(activeSignals.map((s:any)=>[s.pair,s]));
   const v28LatestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;const active=activeByPair[pair];const price=m?.price??h.entry;const v=alertValidity(h,price,now,!!active);const management=active?managementAdvice(active,m):null;const validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`}:v;return[pair,{...h,target:h.tp2,tp1:h.tp1,tp2:h.tp2,managementAdvice:management,momentumState:momentumState(active,m,management),momentumStatus:momentumStatus(active,m,management),currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];}));
   const latestAlerts=v28LatestAlerts;
-  const momentumByPair:Record<string,any>=Object.fromEntries((Array.isArray(marketData)?marketData:[]).map((m:any)=>[m.pair,latestAlertMomentum(m.pair,signalHistory,m)]));
+  const momentumByPair:Record<string,any>=Object.fromEntries((Array.isArray(marketData)?marketData:[]).map((m:any)=>[m.pair,latestAlertMomentum(m.pair,signalHistory,m,activeByPair[m.pair])]));
   const liveMarketData=(Array.isArray(marketData)?marketData:[]).map((m:any)=>{const a:any=activeByPair[m.pair];const momentumState=momentumByPair[m.pair]??null;const clean={...m,momentumState};delete clean.momentumCandles4h;if(!a||a.status!=="ACTIVE")return clean;return{...clean,price:a.currentPrice??m.price,alertState:a.validity?.state||"VALID",alertType:a.type,alertDirection:a.direction,alertEntry:a.entry,alertTimestamp:a.timestamp};});
   const enrichedActive=activeSignals.map((s:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===s.pair):undefined;const price=m?.price??s.entry;const management=managementAdvice(s,m);const jarvis=jarvisSnapshot?.pairs?.[s.pair];return{...s,scale:s.type,tp1:s.tp1,tp2:s.tp2,expectedMove:s.entry&&s.tp2?Math.round(Math.abs(s.tp2-s.entry)/s.entry*1000)/10:0,currentPrice:price,unrealizedPnlPct:Math.round(((price-s.entry)/s.entry*(s.direction==="LONG"?1:-1))*10000)/100,ageMinutes:Math.round((now-s.timestamp)/60000),validity:alertValidity(s,price,now,true),managementAdvice:management,managementState:management?.managementState??"STAY",managementRecommendation:management?.recommendation??"🟢 STAY IN TRADE",jarvisVerdict:jarvis?.verdict??"GOOD",jarvisReason:jarvis?.reason??"No active Jarvis warning",momentumState:momentumState(s,m,management),momentumStatus:momentumStatus(s,m,management),meta:{status:s.status,ageMinutes:Math.round((now-s.timestamp)/60000),actionable:s.status==="ACTIVE",state:"POSITION_ACTIVE"}};});
   const enrichedHistory=signalHistory.map((h:any)=>({...h,scale:h.type,tp1:h.tp1,tp2:h.tp2,meta:{ageMinutes:Math.round((now-h.timestamp)/60000),status:h.status}}));
