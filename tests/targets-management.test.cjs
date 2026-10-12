@@ -37,7 +37,7 @@ test("SHORT exits when closed 4H RSI is at or below 22", () => {
     const close = 140 - i;
     return { timestamp: i * 14400000, open: close + 0.2, high: close + 1, low: close - 1, close, volume: 1 };
   });
-  const signal = { direction: "SHORT", entry: 100, stop: 105, tp1: 95, tp2: 90, timestamp: 1 };
+  const signal = { pair: "SHORT_RSI_TEST", direction: "SHORT", entry: 100, stop: 105, tp1: 95, tp2: 90, timestamp: 1 };
   const result = strategy.shouldHold(signal, candles, 100);
   assert.equal(result.shouldHold, false);
   assert.equal(result.reason, "4h_rsi_extreme_opposite");
@@ -49,7 +49,7 @@ test("LONG exits when closed 4H RSI is at or above 78", () => {
     const close = 60 + i;
     return { timestamp: i * 14400000, open: close - 0.2, high: close + 1, low: close - 1, close, volume: 1 };
   });
-  const signal = { direction: "LONG", entry: 100, stop: 95, tp1: 105, tp2: 110, timestamp: 1 };
+  const signal = { pair: "LONG_RSI_TEST", direction: "LONG", entry: 100, stop: 95, tp1: 105, tp2: 110, timestamp: 1 };
   const result = strategy.shouldHold(signal, candles, 100);
   assert.equal(result.shouldHold, false);
   assert.equal(result.reason, "4h_rsi_extreme_opposite");
