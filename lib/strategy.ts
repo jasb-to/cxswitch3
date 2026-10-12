@@ -197,7 +197,8 @@ export function calculateTargetsFromPivots(direction:Direction,entry:number,stop
   const tp1Pivot=forwardPivots.find(x=>Math.abs(x.price-entry)>=minTp1Distance);
   const tp1=tp1Pivot?.price??(direction==="LONG"?entry+minTp1Distance:entry-minTp1Distance);
   const tp2Pivot=forwardPivots.find(x=>direction==="LONG"?x.price>tp1&&(x.price-entry)>=minTp2Distance:x.price<tp1&&(entry-x.price)>=minTp2Distance);
-  const tp2=tp2Pivot?.price??(direction==="LONG"?entry+minTp2Distance:entry-minTp2Distance);
+  const tp2FallbackDistance=Math.max(minTp2Distance,Math.abs(tp1-entry)+0.5*riskDistance);
+  const tp2=tp2Pivot?.price??(direction==="LONG"?entry+tp2FallbackDistance:entry-tp2FallbackDistance);
   return{tp1,tp2};
 }
 export function calculateTargets(direction:Direction,entry:number,stop:number,c:Candle[]){
