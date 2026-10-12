@@ -15,7 +15,7 @@ function candlesFromDaily(targets, { lastDayRising = false } = {}) {
   for (let day = 0; day < targets.length; day++) {
     for (let slot = 0; slot < 6; slot++) {
       let close = targets[day];
-      if (lastDayRising && day === targets.length - 1) close = targets[day] + slot * Math.max(0.2, targets[day] * 0.002);
+      if (lastDayRising && day === targets.length - 1) close = targets[day] + slot * Math.max(0.2, targets[day] * 0.01);
       const timestamp = start + (day * 6 + slot) * FOUR_HOURS;
       out.push({ timestamp, open: close, high: close + 0.2, low: close - 0.2, close, volume: 1 });
     }
