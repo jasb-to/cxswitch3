@@ -9,12 +9,12 @@ require.extensions[".ts"] = (module, filename) => {
 };
 const strategy = require("../lib/strategy.ts");
 
-test("RR is informational and not an entry gate; fixed target percentages are used",()=>{
+test("RR is informational and targets use pivot structure with minimum R distances",()=>{
  const source=fs.readFileSync(require.resolve("../lib/strategy.ts"),"utf8");
- assert.match(source,/entry\*1\.03/);
- assert.match(source,/entry\*1\.06/);
- assert.match(source,/entry\*0\.97/);
- assert.match(source,/entry\*0\.94/);
+ assert.match(source,/minTp1Distance=1\.5\*riskDistance/);
+ assert.match(source,/minTp2Distance=2\.0\*riskDistance/);
+ assert.match(source,/calculateTargets\(direction,entry,stopResult\.stop,c\)/);
+ assert.match(source,/riskPct>3\.5/);
  assert.doesNotMatch(source,/rr\s*<\s*\d|minimumRR|rrGate|R:R gate/i);
 });
 test("15x leverage is used for modelled liquidation diagnostics",()=>{
