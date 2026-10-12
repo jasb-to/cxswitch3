@@ -187,7 +187,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push("[TRIGGER] ENTRY_1="+evaluation.trigger.entry1+" ("+evaluation.trigger.entry1Reason+") | ENTRY_2="+evaluation.trigger.entry2+" ("+evaluation.trigger.entry2Reason+") | Stoch K/D prev="+st.pk+"/"+st.pd+" now="+st.k+"/"+st.d);
   debug.push("[EXHAUST] "+(evaluation.exhaustion??"clear"));
   if(!evaluation.allPassed){
-    debug.push(alignment.regime==="CHOP"?"[WAIT] regime CHOP — daily close/EMA21 and EMA5/13 are not aligned":"[WAIT] "+evaluation.missing.join(", "));
+    debug.push(alignment.regime==="CHOP"?"[WAIT] daily regime CHOP — no directional entry until the daily regime is directional":"[WAIT] "+evaluation.missing.join(", "));
     debug.push("[SIGNAL] none");
     debug.push("[JARVIS] observation only — no trade");
     debug.push("[ALERT] none");
