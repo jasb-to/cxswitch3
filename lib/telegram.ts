@@ -141,16 +141,20 @@ export async function sendJarvisOpportunity(update:{
 export async function sendManagementAlert(update:{
   pair:string;
   direction:"LONG"|"SHORT";
-  kind:"TRAIL"|"1D_REVERSAL"|"4H_REVERSAL";
+  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL";
   stop?:number;
 }){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
   const text=update.kind==="TRAIL"
     ? `CX — ${update.pair} ${update.direction}. Trail stop raised to ${formatPrice(update.stop)}.`
-    : update.kind==="1D_REVERSAL"
-      ? `CX — ${update.pair} ${update.direction}. 1D trend reversed. Exit now.`
-      : `CX — ${update.pair} ${update.direction}. 4H trend reversed. Exit now.`;
+    : update.kind==="TRAIL_EXIT"
+      ? `CX — ${update.pair} ${update.direction}. Confirmed chandelier trailing-stop breach. EXIT TRADE.`
+      : update.kind==="RSI_EXTREME"
+        ? `CX — ${update.pair} ${update.direction}. 4H RSI extreme confirmed on two closed candles. EXIT TRADE.`
+        : update.kind==="1D_REVERSAL"
+          ? `CX — ${update.pair} ${update.direction}. 1D EMA 5/13 reversal confirmed on two closed daily candles. EXIT TRADE.`
+          : `CX — ${update.pair} ${update.direction}. 4H EMA 8/21 reversal confirmed on two closed candles. EXIT TRADE.`;
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
   if(!response.ok){
     const body=await response.text().catch(()=>"");
