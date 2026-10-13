@@ -30,14 +30,17 @@ async function waitForRequestSlot(): Promise<void> {
 }
 
 async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Never automatically retry private POSTs: a timed-out exchange order may
+  // already have been accepted by the exchange.
+  const retryable = (opts?.method ?? "GET").toUpperCase() === "GET";
+  for (let attempt = 0; attempt < (retryable ? 2 : 1); attempt++) {
     await waitForRequestSlot();
     try {
       const res = await fetch(url, {
         ...opts,
         signal: opts?.signal ?? AbortSignal.timeout(6000),
       });
-      if (res.status === 429 && attempt === 0) {
+      if (retryable && res.status === 429 && attempt === 0) {
         console.warn("[KRAKEN] HTTP 429; retrying once after backoff");
         await new Promise(resolve => setTimeout(resolve, 1000));
         continue;
@@ -45,7 +48,7 @@ async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
       return res;
     } catch (error) {
       const name = (error as { name?: string })?.name;
-      if (attempt === 0 && (name === "TimeoutError" || name === "AbortError")) {
+      if (retryable && attempt === 0 && (name === "TimeoutError" || name === "AbortError")) {
         console.warn(`[KRAKEN] ${name}; retrying request once`);
         await new Promise(resolve => setTimeout(resolve, 250));
         continue;
