@@ -11,6 +11,8 @@ import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
+// Give transient market-data/API latency room without relying on the platform default.
+export const maxDuration=30;
 const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC"] as const;
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
@@ -151,7 +153,7 @@ export async function GET(request:Request){
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[];
 
 
- for(const batch of [PAIRS.slice(0,4),PAIRS.slice(4)]){ await Promise.all(batch.map(async (pair)=>{let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;try{
+ for(const batch of [PAIRS.slice(0,4),PAIRS.slice(4)]){ await Promise.all(batch.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;try{
   const [c1,c4,c15]=await Promise.all([
     getCandles(krakenPairFormat(pair+"/USD"),60),
     getCandles(krakenPairFormat(pair+"/USD"),240),
@@ -163,7 +165,7 @@ export async function GET(request:Request){
   const price=c1.at(-1)!.close;
   console.log(marketStructureLog(pair,c4,price));
   const existing=active.find(x=>x.pair===pair);
-  const historyForEntry=await getSignalHistory();
+  const historyForEntry=historyAtStart;
   const entry1State=historyForEntry.filter((h:any)=>h.pair===pair&&h.type==="ENTRY_1"&&h.status==="ACTIVE").sort((a:any,b:any)=>b.timestamp-a.timestamp)[0];
   const entry2AlreadyFired=!!entry1State&&historyForEntry.some((h:any)=>h.pair===pair&&h.direction===entry1State.direction&&h.type==="ENTRY_2"&&h.timestamp>entry1State.timestamp);
   const result=generateSignal(pair,c1,c4,c15,price,undefined,undefined,entry1State,entry2AlreadyFired,active.map((x:any)=>({pair:x.pair,direction:x.direction})));
@@ -210,7 +212,7 @@ export async function GET(request:Request){
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2} | RR ${signal.rr}`);
   const entry2Continuation=!!existing&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2"&&existing.direction===signal.direction;
   if(existing&&!entry2Continuation){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);return;}
-  const history=await getSignalHistory();
+  const history=historyAtStart;
   if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
   if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently`);return;}
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];
@@ -242,6 +244,7 @@ export async function GET(request:Request){
     const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);
     if(stateMarket)stateMarket.jarvisState=jarvisState;
     if(VERBOSE_CRON_LOGS)console.log(jarvisState);
+    console.log(`[PERF] ${pair} processed in ${Date.now()-pairStarted}ms`);
   }
  })); }
  await setMarketData(marketData);
@@ -260,5 +263,6 @@ export async function GET(request:Request){
  active=await reconcileAlertOutcomes(active,marketData,alerts);
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
+ console.log(`[PERF] Total cron duration ${Date.now()-started}ms`);
  console.log("========================================");
  return NextResponse.json({success:true,version:CXSWITCH_VERSION,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});}
