@@ -10,14 +10,50 @@ export interface Candle {
 }
 
 let lastReq = 0;
-const MIN_MS = 1000;
+// Pace request starts globally across concurrent pair calculations. The old
+// delay checked lastReq before awaiting, allowing a burst of simultaneous calls.
+const MIN_MS = 250;
+let requestStartQueue: Promise<void> = Promise.resolve();
+
+async function waitForRequestSlot(): Promise<void> {
+  let release!: () => void;
+  const previous = requestStartQueue;
+  requestStartQueue = new Promise<void>(resolve => { release = resolve; });
+  await previous;
+  try {
+    const elapsed = Date.now() - lastReq;
+    if (elapsed < MIN_MS) await new Promise(resolve => setTimeout(resolve, MIN_MS - elapsed));
+    lastReq = Date.now();
+  } finally {
+    release();
+  }
+}
 
 async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
-  const now = Date.now();
-  const elapsed = now - lastReq;
-  if (elapsed < MIN_MS) await new Promise(r => setTimeout(r, MIN_MS - elapsed));
-  lastReq = Date.now();
-  return fetch(url, { ...opts, signal: opts?.signal ?? AbortSignal.timeout(8000) });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await waitForRequestSlot();
+    try {
+      const res = await fetch(url, {
+        ...opts,
+        signal: opts?.signal ?? AbortSignal.timeout(6000),
+      });
+      if (res.status === 429 && attempt === 0) {
+        console.warn("[KRAKEN] HTTP 429; retrying once after backoff");
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      return res;
+    } catch (error) {
+      const name = (error as { name?: string })?.name;
+      if (attempt === 0 && (name === "TimeoutError" || name === "AbortError")) {
+        console.warn(`[KRAKEN] ${name}; retrying request once`);
+        await new Promise(resolve => setTimeout(resolve, 250));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Kraken request failed after retry");
 }
 
 export async function getCandles(pair: string, interval: number = 60, since?: number): Promise<Candle[]> {
