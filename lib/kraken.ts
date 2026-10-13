@@ -17,7 +17,7 @@ async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
   const elapsed = now - lastReq;
   if (elapsed < MIN_MS) await new Promise(r => setTimeout(r, MIN_MS - elapsed));
   lastReq = Date.now();
-  return fetch(url, opts);
+  return fetch(url, { ...opts, signal: opts?.signal ?? AbortSignal.timeout(8000) });
 }
 
 export async function getCandles(pair: string, interval: number = 60, since?: number): Promise<Candle[]> {
