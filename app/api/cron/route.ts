@@ -247,20 +247,32 @@ export async function GET(request:Request){
     console.log(`[PERF] ${pair} processed in ${Date.now()-pairStarted}ms`);
   }
  })); }
+ const marketPersistStarted=Date.now();
+ console.log(`[PERF] Stage setMarketData started rows=${marketData.length}`);
  await setMarketData(marketData);
+ console.log(`[PERF] Stage setMarketData completed in ${Date.now()-marketPersistStarted}ms`);
  // Jarvis refresh completes before management.
+ const jarvisStarted=Date.now();
+ console.log(`[PERF] Stage JARVIS started`);
  try{
    const jarvis=await runJarvis(marketData,await getActiveSignals());
    console.log(`[JARVIS] Portfolio ${jarvis.portfolioState} | ${jarvis.whatChanged}`);
+   console.log(`[PERF] Stage JARVIS completed in ${Date.now()-jarvisStarted}ms`);
    // Jarvis is dashboard guidance only. Telegram stays strictly actionable:
    // V28 ENTRY_1/ENTRY_2 alerts and position-management alerts are the only
    // strategy notifications sent to Telegram. 4H turns and Jarvis opportunities
    // remain visible in the dashboard but never create Telegram noise.
  }catch(error){
-   console.error("[JARVIS] State refresh failed; existing strategy continues unchanged",error);
+   console.error(`[JARVIS] State refresh failed after ${Date.now()-jarvisStarted}ms; existing strategy continues unchanged`,error);
  }
+ const managementStarted=Date.now();
+ console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
  await observeAlertManagement(active,marketData);
+ console.log(`[PERF] Stage observeAlertManagement completed in ${Date.now()-managementStarted}ms`);
+ const reconcileStarted=Date.now();
+ console.log(`[PERF] Stage reconcileAlertOutcomes started`);
  active=await reconcileAlertOutcomes(active,marketData,alerts);
+ console.log(`[PERF] Stage reconcileAlertOutcomes completed in ${Date.now()-reconcileStarted}ms`);
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
  console.log(`[PERF] Total cron duration ${Date.now()-started}ms`);
