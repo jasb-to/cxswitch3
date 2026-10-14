@@ -82,7 +82,8 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
     if(bearishAge===null&&before.k>=before.d&&now.k<now.d){bearishAge=age;bearishIndex=i;}
     if(bullishAge===null&&before.k<=before.d&&now.k>now.d){bullishAge=age;bullishIndex=i;}
   }
-  const isShort=aligned==="SHORT",age=isShort?bearishAge:bullishAge;
+  const isShort=aligned==="SHORT",age=isShort?bearishAge:bullishAge,live=liveStoch??last;
+  const liveCorrect=isShort?live.k<live.d:live.k>live.d;
   const latestIsBearish=bearishAge!==null&&(bullishAge===null||bearishAge<=bullishAge);
   const latestCrossAge=bearishAge===null?bullishAge:bullishAge===null?bearishAge:Math.min(bearishAge,bullishAge);
   const latestCrossIndex=latestIsBearish?bearishIndex:bullishIndex;
