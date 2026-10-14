@@ -84,7 +84,7 @@ test("ENTRY_1 recent cross sizing and extension filters mirror for LONG and SHOR
   assert.equal(recent.crossAgeInCandles,3);
   assert.equal(recent.case,"recent");
   assert.equal(strategy.evaluateEntry1("SHORT",bearishRecent,candles(),96).entry1,false);
-  const tooOld=[{k:50,d:40},...Array.from({length:8},()=>({k:35,d:45}))];
+  const tooOld=[{k:50,d:40},...Array.from({length:9},()=>({k:35,d:45}))];
   assert.equal(strategy.evaluateEntry1("SHORT",tooOld,candles(),99).entry1,false);
   const oversold=bearishRecent.map(x=>({...x}));
   oversold[6]={k:15,d:25};
