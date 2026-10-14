@@ -69,54 +69,48 @@ export function trendAlignment(c:Candle[]):TrendAlignment{
 }
 export interface Entry1State { pair:string; direction:Direction; entry:number; timestamp:number; context?:any }
 type StochSnapshot={k:number;d:number;pk:number;pd:number};
-type Entry1Evaluation={entry1Long:boolean;entry1Short:boolean;entry1:boolean;direction:Direction|null;crossDetected:"bullish"|"bearish"|null;crossAge:"last candle"|"previous candle"|null;crossAgeInCandles:number|null;case:"fresh"|"recent"|null;sizeMultiplier:1|0.5;thresholdPassed:boolean;reason:string};
+type Entry1Evaluation={entry1Long:boolean;entry1Short:boolean;entry1:boolean;direction:Direction|null;crossDetected:"bullish"|"bearish"|null;crossAge:"last candle"|"previous candle"|null;crossAgeInCandles:number|null;case:"fresh"|"recent"|null;sizeMultiplier:1|0.5;thresholdPassed:boolean;reason:string;crossPrice:number|null;priceMovePct:number|null;kInRange:boolean;notExtended:boolean};
 export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSnapshot,closed4h:Candle[]=[],price?:number):Entry1Evaluation{
   const kdSeries=Array.isArray(input)?input:[{k:input.pk,d:input.pd},{k:input.k,d:input.d}];
-  const last=kdSeries.at(-1),prev=kdSeries.at(-2);
-  const empty=(reason:string):Entry1Evaluation=>({entry1Long:false,entry1Short:false,entry1:false,direction:null,crossDetected:null,crossAge:null,crossAgeInCandles:null,case:null,sizeMultiplier:1,thresholdPassed:false,reason});
-  if(!aligned||!last||!prev)return empty("insufficient_stoch_history");
-  const scan=kdSeries.slice(-7);
-  let bearishAge:number|null=null,bullishAge:number|null=null;
-  for(let i=scan.length-1;i>=1;i--){
-    const before=scan[i-1],now=scan[i],age=scan.length-1-i;
-    if(bearishAge===null&&before.k>=before.d&&now.k<now.d)bearishAge=age;
-    if(bullishAge===null&&before.k<=before.d&&now.k>now.d)bullishAge=age;
+  const last=kdSeries.at(-1);
+  const empty=(reason:string):Entry1Evaluation=>({entry1Long:false,entry1Short:false,entry1:false,direction:null,crossDetected:null,crossAge:null,crossAgeInCandles:null,case:null,sizeMultiplier:1,thresholdPassed:false,reason,crossPrice:null,priceMovePct:null,kInRange:false,notExtended:false});
+  if(!aligned||!last||kdSeries.length<2)return empty("insufficient_stoch_history");
+  const scanStart=Math.max(0,kdSeries.length-7);
+  let bearishAge:number|null=null,bullishAge:number|null=null,bearishIndex:number|null=null,bullishIndex:number|null=null;
+  for(let i=kdSeries.length-1;i>scanStart;i--){
+    const before=kdSeries[i-1],now=kdSeries[i],age=kdSeries.length-1-i;
+    if(bearishAge===null&&before.k>=before.d&&now.k<now.d){bearishAge=age;bearishIndex=i;}
+    if(bullishAge===null&&before.k<=before.d&&now.k>now.d){bullishAge=age;bullishIndex=i;}
   }
-  const age=aligned==="SHORT"?bearishAge:bullishAge;
-  const latestCrossAge=bearishAge===null?bullishAge:bullishAge===null?bearishAge:Math.min(bearishAge,bullishAge);
-  const crossDetected=bearishAge!==null&& (bullishAge===null||bearishAge<=bullishAge)?"bearish":bullishAge!==null?"bullish":bearishAge!==null?"bearish":null;
+  const isShort=aligned==="SHORT",age=isShort?bearishAge:bullishAge,crossIndex=isShort?bearishIndex:bullishIndex;
+  const crossDetected=age===null?null:isShort?"bearish":"bullish";
+  const crossPriceIndex=crossIndex===null?null:Math.max(0,closed4h.length-kdSeries.length)+crossIndex;
+  const crossPrice=crossPriceIndex!==null&&closed4h[crossPriceIndex]?Number(closed4h[crossPriceIndex].close):null;
+  const currentPrice=price??closed4h.at(-1)?.close??null;
+  const priceMovePct=crossPrice!==null&&crossPrice>0&&currentPrice!==null&&Number.isFinite(currentPrice)?Math.abs((currentPrice-crossPrice)/crossPrice)*100:null;
+  const notExtended=priceMovePct!==null&&priceMovePct<=2;
   const freshCross=age!==null&&age<=1;
-  const shortFresh=aligned==="SHORT"&&freshCross&&last.k<last.d&&last.k>30;
-  const longFresh=aligned==="LONG"&&freshCross&&last.k>last.d&&last.k<70;
-  if(shortFresh||longFresh){
-    return{entry1Long:longFresh,entry1Short:shortFresh,entry1:true,direction:aligned,crossDetected:aligned==="SHORT"?"bearish":"bullish",crossAge:age===0?"last candle":"previous candle",crossAgeInCandles:age,case:"fresh",sizeMultiplier:1,thresholdPassed:true,reason:"fresh 4H Stoch RSI crossover within early-entry range"};
-  }
-  // A failed fresh trigger must not be re-admitted as a recent setup at the looser continuation threshold.
-  const recentAge=age!==null&&age>=2&&age<=6?age:null;
-  const p=price??closed4h.at(-1)?.close??0;
-  const window=closed4h.slice(-6);
-  const localHigh=window.length?Math.max(...window.map(x=>x.high)):NaN;
-  const localLow=window.length?Math.min(...window.map(x=>x.low)):NaN;
-  const notExtendedShort=Number.isFinite(localHigh)&&localHigh>0&&(localHigh-p)/localHigh<=0.02;
-  const notExtendedLong=Number.isFinite(localLow)&&localLow>0&&(p-localLow)/localLow<=0.02;
-  const shortKRange=last.k>20&&last.k<70,longKRange=last.k>30&&last.k<80;
-  const shortRecent=aligned==="SHORT"&&recentAge!==null&&shortKRange&&last.k<last.d&&notExtendedShort;
-  const longRecent=aligned==="LONG"&&recentAge!==null&&longKRange&&last.k>last.d&&notExtendedLong;
+  const shortFresh=isShort&&freshCross&&last.k<last.d&&last.k>30;
+  const longFresh=!isShort&&freshCross&&last.k>last.d&&last.k<70;
+  const kInRange=isShort?(last.k>20&&last.k<70):(last.k>30&&last.k<80);
+  if(shortFresh||longFresh)return{entry1Long:longFresh,entry1Short:shortFresh,entry1:true,direction:aligned,crossDetected:crossDetected!,crossAge:age===0?"last candle":"previous candle",crossAgeInCandles:age,case:"fresh",sizeMultiplier:1,thresholdPassed:true,reason:"fresh 4H Stoch RSI crossover within early-entry range",crossPrice,priceMovePct,kInRange:isShort?last.k>30:last.k<70,notExtended};
+  const recentCross=age!==null&&age>=2&&age<=6,kdCorrect=isShort?last.k<last.d:last.k>last.d;
+  const shortRecent=isShort&&recentCross&&kInRange&&kdCorrect&&notExtended;
+  const longRecent=!isShort&&recentCross&&kInRange&&kdCorrect&&notExtended;
   const entry1Short=shortFresh||shortRecent,entry1Long=longFresh||longRecent,entry1=entry1Short||entry1Long;
-  const thresholdPassed=aligned==="SHORT"?last.k>30:aligned==="LONG"?last.k<70:false;
+  const thresholdPassed=isShort?last.k>30:last.k<70;
   let reason="no_qualifying_cross_within_6_closed_candles";
-  if(age!==null&&age<=1)reason=aligned==="SHORT"&&last.k<=30?"fresh_bearish_cross_k_not_above_30":aligned==="LONG"&&last.k>=70?"fresh_bullish_cross_k_not_below_70":"fresh_cross_conditions_not_met";
+  if(age!==null&&age<=1)reason=isShort&&last.k<=30?"fresh_bearish_cross_k_not_above_30":!isShort&&last.k>=70?"fresh_bullish_cross_k_not_below_70":"fresh_cross_conditions_not_met";
   else if(age!==null&&age>6)reason="cross_too_old";
-  else if(aligned==="SHORT"&&last.k<=20)reason="K<20 blocked";
-  else if(aligned==="SHORT"&&last.k>=70)reason="K>=70 blocked";
-  else if(aligned==="LONG"&&last.k<=30)reason="K<=30 blocked";
-  else if(aligned==="LONG"&&last.k>=80)reason="K>=80 blocked";
-  else if(age!==null&&age>=2&&age<=6&&!(aligned==="SHORT"?notExtendedShort:notExtendedLong))reason="price_extended_more_than_2pct";
-  else if(age!==null&&age>=2&&age<=6&&!(aligned==="SHORT"?last.k<last.d:last.k>last.d))reason="wrong_stoch_direction";
-  else if(entry1)reason="recent 4H Stoch RSI crossover ("+recentAge+" candles ago, price not extended)";
-  const chosenAge=entry1?recentAge:latestCrossAge;
-  const chosenCross=entry1?(aligned==="SHORT"?"bearish":"bullish"):crossDetected;
-  return{entry1Long,entry1Short,entry1,direction:entry1?aligned:null,crossDetected:chosenCross,crossAge:chosenAge===0?"last candle":chosenAge===1?"previous candle":null,crossAgeInCandles:chosenAge,case:entry1?(shortRecent||longRecent?"recent":"fresh"):null,sizeMultiplier:entry1&&(shortRecent||longRecent)?0.5:1,thresholdPassed,reason};
+  else if(isShort&&last.k<=20)reason="K<20 blocked";
+  else if(isShort&&last.k>=70)reason="K>=70 blocked";
+  else if(!isShort&&last.k<=30)reason="K<=30 blocked";
+  else if(!isShort&&last.k>=80)reason="K>=80 blocked";
+  else if(recentCross&&!notExtended)reason=priceMovePct===null?"cross_price_unavailable":"price_extended_more_than_2pct_since_cross";
+  else if(recentCross&&!kdCorrect)reason="wrong_stoch_direction";
+  else if(recentCross&&!kInRange)reason="K_outside_recent_cross_range";
+  else if(entry1)reason="recent 4H Stoch RSI crossover ("+age+" candles ago, price within 2% of cross price)";
+  return{entry1Long,entry1Short,entry1,direction:entry1?aligned:null,crossDetected,crossAge:age===0?"last candle":age===1?"previous candle":null,crossAgeInCandles:age,case:entry1?(shortRecent||longRecent?"recent":"fresh"):null,sizeMultiplier:entry1&&(shortRecent||longRecent)?0.5:1,thresholdPassed,reason,crossPrice,priceMovePct,kInRange,notExtended};
 }
 export function entry2RetestConditions(direction:Direction,entry:number,price:number,firstWavePrice:number,ema8:number,st:StochSnapshot,adverseCross:boolean,alreadyFired=false){
   const waveMoved=direction==="LONG"?firstWavePrice>=entry*1.015:firstWavePrice<=entry*0.985;
@@ -253,7 +247,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push("[4H CONTEXT] EMA5="+r(alignment.fourHE5)+" EMA13="+r(alignment.fourHE13)+" "+(alignment.fourH??"NEUTRAL")+" | direction is regime-only");
   debug.push("[GATES] "+JSON.stringify(evaluation));
   const closed4hForTrigger=c.slice(0,-1),stClosed=stoch(closedCloses),entry1Debug=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses),closed4hForTrigger,p);
-  debug.push("[TRIGGER] "+pair+" — K="+stClosed.k+" D="+stClosed.d+" | cross="+(entry1Debug.crossDetected??"none")+(entry1Debug.crossAgeInCandles===null?"":" | crossAge="+entry1Debug.crossAgeInCandles+" candle"+(entry1Debug.crossAgeInCandles===1?"":"s"))+" | "+(entry1Debug.case==="fresh"?"size=100% (fresh)":entry1Debug.case==="recent"?"size=50% (recent)":entry1Debug.reason)+" | entry1="+evaluation.trigger.entry1);
+  debug.push("[TRIGGER] "+pair+" — K="+stClosed.k+" D="+stClosed.d+" | crossAge="+(entry1Debug.crossAgeInCandles===null?"none":entry1Debug.crossAgeInCandles)+" | crossPrice="+(entry1Debug.crossPrice===null?"unknown":r(entry1Debug.crossPrice,5))+" | currentPrice="+r(p,5)+" | priceMovePct="+(entry1Debug.priceMovePct===null?"unknown":r(entry1Debug.priceMovePct,2)+"%")+" | kInRange="+(entry1Debug.kInRange?"YES":"NO")+" | notExtended="+(entry1Debug.notExtended?"YES":"NO")+" | crossDirection="+(entry1Debug.crossDetected??"NONE").toUpperCase()+" | "+(entry1Debug.case==="fresh"?"size=100% (fresh)":entry1Debug.case==="recent"?"size=50% (recent)":entry1Debug.reason)+" | entry1="+(evaluation.trigger.entry1?"YES":"NO"));
   debug.push("[EXHAUST] "+(evaluation.exhaustion??"clear"));
   if(!evaluation.allPassed){
     debug.push(alignment.regime==="CHOP"?"[WAIT] daily regime CHOP — no directional entry until the daily regime is directional":"[WAIT] "+evaluation.missing.join(", "));
