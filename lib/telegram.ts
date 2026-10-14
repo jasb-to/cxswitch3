@@ -50,20 +50,25 @@ export async function sendAlert(signal:any){
     ? `JARVIS: ${jarvis.verdict} · ${jarvis.reason||""}`
     : "JARVIS: —";
 
+  const sizeText=Number(sizeMultiplier??1)===0.25?"25% (recent cross + low regime)":Number(sizeMultiplier??1)===0.5?(signal.context?.entryCrossType==="recent"?"50% (recent cross)":signal.context?.entryCrossType==="fresh"?"50% (low regime)":signalClass==="REVERSAL"?"50% (counter-trend)":"50% (reduced size)"):"100%";
+  const reasonText=signal.context?.entryCrossType==="recent"
+    ? "Reason: recent 4H Stoch RSI cross ("+(signal.context?.crossAgeInCandles??"?")+" candles ago)"
+    : signal.context?.entryCrossType==="fresh"
+      ? "Reason: fresh 4H Stoch RSI cross"
+      : signal.reason||"";
   const lines=[
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type}`,"",
-    `${dir} ${signal.symbol} — ${signal.bias}`,"",
+    `${dir} ${signal.symbol} — ${signal.bias}`,
     `Entry: ${formatPrice(entry)} · MARKET`,
-    `SL: ${formatPrice(stop)}`,`Risk: ${riskDistance>0 ? formatPoints(riskDistance)+" pts ("+(signal.context?.stopCalc?.riskPct?.toFixed(2)??"-")+"%)" : "-"}`,`Liquidation: ${formatPrice(signal.context?.liquidationPrice??signal.context?.stopCalc?.liquidationPrice)}`,`Stop-to-liq buffer: ${bufferText}`,
+    `SL: ${formatPrice(stop)}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
     `RR (TP1): ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
     `RR (TP2): ${rrTp2==null?"-":rrTp2.toFixed(2)+"R"}`,
-    `Size: ${signal.context?.entryCrossType==="recent" ? Math.round(Number(sizeMultiplier??1)*100)+"% (recent cross"+(Number(sizeMultiplier)<0.5?"; regime-reduced":"")+")" : Number(sizeMultiplier??1)===0.25 ? "25% (regime-reduced; recent cross)" : Number(sizeMultiplier??1)===0.5 ? (signal.context?.entryCrossType==="fresh" ? "50% (regime-reduced)" : signalClass==="REVERSAL" ? "50% (counter-trend)" : buffer!=null&&Number.isFinite(buffer)&&buffer<0.5 ? "50% (⚠️ reduced size does NOT remove liquidation risk)" : "50% (risk-reduced sizing; liquidation risk remains)") : "100%"}`,
-    jarvisLine,
-    `Expected Move: ${expectedMove}%`,
-    signal.reason||""
-  ].join("\n");
+    `Size: ${sizeText}`,
+    jarvis?.verdict ? `JARVIS: ${jarvis.verdict}` : "",
+    reasonText
+  ].filter(Boolean).join("\n");
 
   if(Number.isFinite(tp1)&&Number.isFinite(tp2)&&tp1===tp2){
     throw new Error(`Telegram alert refused: TP1 and TP2 are identical (${formatPrice(tp1)}).`);
