@@ -250,8 +250,15 @@ export async function GET(request:Request){
  })); }
  const marketPersistStarted=Date.now();
  console.log(`[PERF] Stage setMarketData started rows=${marketData.length}`);
- await setMarketData(marketData);
- console.log(`[PERF] Stage setMarketData completed in ${Date.now()-marketPersistStarted}ms`);
+ try {
+   await setMarketData(marketData);
+   console.log(`[PERF] Stage setMarketData completed in ${Date.now()-marketPersistStarted}ms`);
+ } catch(error) {
+   // Signal evaluation and trade management use the in-memory marketData array. A failed
+   // dashboard snapshot write must not prevent those safety-critical stages from running.
+   console.error(`[PERF] Stage setMarketData failed after ${Date.now()-marketPersistStarted}ms; continuing with in-memory market data (dashboard snapshot may be stale)`,error);
+   alerts.push({status:"market_data_persist_failed",reason:"dashboard_snapshot_write_failed"});
+ }
  // Jarvis refresh completes before management.
  const jarvisStarted=Date.now();
  console.log(`[PERF] Stage JARVIS started`);
