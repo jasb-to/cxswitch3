@@ -13,11 +13,6 @@ function formatPrice(value:any):string{
   return n.toFixed(6);
 }
 
-function formatPoints(risk:number):string{
-  const formatted=risk>=1?risk.toFixed(2):risk>=0.01?risk.toFixed(4):risk.toFixed(6);
-  return formatted.replace(/0+$/,"").replace(/\.$/,"");
-}
-
 export async function sendAlert(signal:any){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
@@ -30,18 +25,9 @@ export async function sendAlert(signal:any){
   const entry=Number(signal.price??signal.entry);
   const tp1=Number(signal.takeProfit1??signal.tp1);
   const tp2=Number(signal.takeProfit2??signal.tp2);
-  const expectedMove=Number.isFinite(entry)&&Number.isFinite(tp2)&&entry!==0
-    ? Math.round((Math.abs(tp2-entry)/Math.abs(entry))*1000)/10
-    : signal.expectedMove??"-";
   const stop=Number(signal.stopLoss??signal.stop);
-  const riskDistance=Number.isFinite(entry)&&Number.isFinite(stop)?Math.abs(entry-stop):0;
   const rrTp1=riskDistance>0&&Number.isFinite(tp1)?Math.abs(tp1-entry)/riskDistance:null;
   const rrTp2=riskDistance>0&&Number.isFinite(tp2)?Math.abs(tp2-entry)/riskDistance:null;
-  const bufferValue=signal.context?.stopToLiquidationBufferPct??signal.context?.stopCalc?.liquidationBufferPct;
-  const buffer=bufferValue==null?null:Number(bufferValue);
-  const bufferText=buffer!=null&&Number.isFinite(buffer)
-    ? `${buffer.toFixed(2)}%${buffer<0?" ⚠️ STOP BEYOND MODELLED LIQUIDATION":buffer<0.5?" ⚠️ BELOW 0.50% MINIMUM BUFFER":""}`
-    : "-";
 
   const signalClass=signal.signalClass??signal.context?.signalClass;
   const sizeMultiplier=signal.sizeMultiplier??signal.context?.sizeMultiplier;
