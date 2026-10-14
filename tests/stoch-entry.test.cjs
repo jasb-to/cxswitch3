@@ -67,7 +67,7 @@ test("EMA8/21 remaining bullish after ENTRY_1 does not invalidate a LONG retest"
 
 test("ENTRY_1 recent cross sizing and extension filters mirror for LONG and SHORT", () => {
   const step=4*60*60*1000,start=Date.UTC(2026,0,1);
-  const candles=(high=100,low=90)=>Array.from({length:6},(_,i)=>({timestamp:start+i*step,open:95,high,low,close:95,volume:1}));
+  const candles=(high=100,low=90)=>Array.from({length:6},(_,i)=>({timestamp:start+i*step,open:100,high,low,close:100,volume:1}));
   const bearishRecent=[{k:45,d:40},{k:44,d:40},{k:43,d:40},{k:39,d:42},{k:38,d:43},{k:37,d:44},{k:35,d:45}];
   const freshLast=[{k:50,d:45},{k:45,d:50}];
   const freshPrev=[{k:50,d:45},{k:45,d:50},{k:40,d:45}];
@@ -109,4 +109,11 @@ test("ENTRY_1 recent cross sizing and extension filters mirror for LONG and SHOR
   assert.equal(strategy.evaluateEntry1("LONG",longRecent,candles(110,100),104).entry1,false);
   const longK25=longRecent.map(x=>({...x}));longK25[6]={k:25,d:20};
   assert.equal(strategy.evaluateEntry1("LONG",longK25,candles(110,100),101).entry1,false);
+  const hypeRising=[{k:25,d:20},{k:18,d:22},{k:25,d:24},{k:30,d:28},{k:40,d:35},{k:45,d:38},{k:51.5,d:39.8}];
+  const hypeBlocked=strategy.evaluateEntry1("SHORT",hypeRising,candles(),99);
+  assert.equal(hypeBlocked.entry1,false);
+  assert.equal(hypeBlocked.crossDetected,"bullish");
+  const priceExtended=strategy.evaluateEntry1("SHORT",bearishRecent,candles(),96);
+  assert.equal(priceExtended.entry1,false);
+  assert.equal(priceExtended.reason,"price_extended_more_than_2pct_since_cross");
 });
