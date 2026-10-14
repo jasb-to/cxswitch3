@@ -104,7 +104,8 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
   const entry1Short=shortFresh||shortRecent,entry1Long=longFresh||longRecent,entry1=entry1Short||entry1Long;
   const thresholdPassed=isShort?last.k>30:last.k<70;
   let reason="no_qualifying_cross_within_6_closed_candles";
-  if(age!==null&&age<=1)reason=isShort&&last.k<=30?"fresh_bearish_cross_k_not_above_30":!isShort&&last.k>=70?"fresh_bullish_cross_k_not_below_70":"fresh_cross_conditions_not_met";
+  if(!liveCorrect)reason="live_stoch_direction_mismatch";
+  else if(age!==null&&age<=1)reason=isShort&&last.k<=30?"fresh_bearish_cross_k_not_above_30":!isShort&&last.k>=70?"fresh_bullish_cross_k_not_below_70":"fresh_cross_conditions_not_met";
   else if(age!==null&&age>6)reason="cross_too_old";
   else if(isShort&&last.k<=20)reason="K<20 blocked";
   else if(isShort&&last.k>=70)reason="K>=70 blocked";
