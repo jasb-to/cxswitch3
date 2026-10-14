@@ -25,7 +25,7 @@ function stoch4hStatus(m?:Market){if(typeof m?.stochK4h!=="number"||typeof m?.st
 function formatStrategyStatus(value?:string,m?:Market){
   const raw=String(value||"WAIT — awaiting market data");
   const prefix=raw.startsWith("FIRED")?"FIRED":"WAIT";
-  const payload=raw.replace(/^(?:WAIT|FIRED)\\s*[—-]\\s*/,"");
+  const payload=raw.replace(/^(?:WAIT|FIRED)\s*[—-]\s*/,"");
   let detail="";
   try{
     const d=JSON.parse(payload);
@@ -33,13 +33,13 @@ function formatStrategyStatus(value?:string,m?:Market){
     const regime=typeof d.alignment?.regime==="string"?d.alignment.regime:(m?.regime||"—");
     const trigger=d.trigger?.entry1Reason;
     const triggerLabel=typeof trigger==="string"&&trigger.toLowerCase().includes("stoch")?"Fresh 4H Stoch RSI cross":d.trigger?.entry1?"Entry 1 detected":"Entry conditions pending";
-    if(prefix==="FIRED")return [raw.split(/\\s*[—-]\\s*/)[0]+" — "+(d.trigger?.signalType||"signal"),direction+" · "+regime+" · Signal generated"].join("\\n");
+    if(prefix==="FIRED")return [raw.split(/\s*[—-]\s*/)[0]+" — "+(d.trigger?.signalType||"signal"),direction+" · "+regime+" · Signal generated"].join("\n");
     detail=[direction,regime,triggerLabel].filter(Boolean).join(" · ");
-    return ["WAIT — setup not confirmed",detail].join("\\n");
+    return ["WAIT — setup not confirmed",detail].join("\n");
   }catch{
     const compact=payload.length>72?payload.slice(0,69)+"…":payload;
-    if(prefix==="FIRED")return [raw.split(/\\s*[—-]\\s*/)[0],m?.regime?m.regime+" · Signal generated":"Signal generated"].join("\\n");
-    return [compact?("WAIT — "+compact):"WAIT — awaiting market data",m?.regime?m.regime+" · Monitoring setup":"Monitoring setup"].join("\\n");
+    if(prefix==="FIRED")return [raw.split(/\s*[—-]\s*/)[0],m?.regime?m.regime+" · Signal generated":"Signal generated"].join("\n");
+    return [compact?("WAIT — "+compact):"WAIT — awaiting market data",m?.regime?m.regime+" · Monitoring setup":"Monitoring setup"].join("\n");
   }
 }
 
