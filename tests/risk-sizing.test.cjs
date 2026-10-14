@@ -2,16 +2,13 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const vm = require("node:vm");
 const ts = require("typescript");
-
-const source = fs.readFileSync(path.join(__dirname, "../lib/strategy.ts"), "utf8");
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText;
-const moduleRef = { exports: {} };
-vm.runInNewContext(compiled, { exports: moduleRef.exports, module: moduleRef, require });
-const { calculateRiskSizeMultiplier } = moduleRef.exports;
+require.extensions[".ts"] = (module, filename) => {
+  const source = fs.readFileSync(filename, "utf8");
+  const output = ts.transpileModule(source, { fileName: filename, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+  module._compile(output, filename);
+};
+const { calculateRiskSizeMultiplier } = require("../lib/strategy.ts");
 
 test("risk sizing: 3.4% risk keeps full size", () => {
   assert.equal(calculateRiskSizeMultiplier(3.4), 1);
