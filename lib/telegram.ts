@@ -34,7 +34,17 @@ export async function sendAlert(signal:any){
   const sizeMultiplier=signal.sizeMultiplier??signal.context?.sizeMultiplier;
   const jarvis=signal.jarvis;
 
-  const sizeText=Number(sizeMultiplier??1)===0.25?"25% (recent cross + low regime)":Number(sizeMultiplier??1)===0.5?(signal.context?.entryCrossType==="recent"?"50% (recent cross)":signal.context?.entryCrossType==="fresh"?"50% (low regime)":signalClass==="REVERSAL"?"50% (counter-trend)":"50% (reduced size)"):"100%";
+  const ctx=signal.context??{};
+  const regimePct=Math.round(Number(ctx.regimeSizeMultiplier??1)*100);
+  const entryPct=Math.round(Number(ctx.entrySizeMultiplier??1)*100);
+  const riskPct=Math.round(Number(ctx.riskSizeMultiplier??1)*100);
+  const sizePct=Math.round(Number(sizeMultiplier??1)*100);
+  const riskAdjusted=Number(ctx.riskSizeMultiplier??1)<1;
+  const sizeText=riskAdjusted
+    ? `${sizePct}% (regime ${regimePct}% × entry ${entryPct}% × risk ${riskPct}%)`
+    : sizePct===25 ? "25% (recent cross + low regime)"
+    : sizePct===50 ? (ctx.entryCrossType==="recent"?"50% (recent cross)":ctx.entryCrossType==="fresh"?"50% (low regime)":signalClass==="REVERSAL"?"50% (counter-trend)":"50% (reduced size)")
+    : `${sizePct}%`;
   const reasonText=signal.context?.entryCrossType==="recent"
     ? "Reason: recent 4H Stoch RSI cross ("+(signal.context?.crossAgeInCandles??"?")+" candles ago)"
     : signal.context?.entryCrossType==="fresh"
