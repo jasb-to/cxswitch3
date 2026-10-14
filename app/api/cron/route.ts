@@ -72,14 +72,14 @@ async function observeAlertManagement(active:any[],marketData:any[]){
       const key=`management:${alert.id}:trail:${round(Number(hold.newStop))}`;
       if(await claimTelegramAlert(key)){
         await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"TRAIL",stop:Number(hold.newStop)});
-        console.log(`[ALERT] CX — ${alert.pair} ${alert.direction}. Trail stop raised to ${round(Number(hold.newStop))}.`);
+        console.log(`[MANAGEMENT ALERT] CX — ${alert.pair} ${alert.direction}. Trail stop raised to ${round(Number(hold.newStop))}.`);
       }
     }else if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
       const kind=hold.reason==="1d_ema_reversal_confirmed"?"1D_REVERSAL":hold.reason==="4h_rsi_extreme_opposite"?"RSI_EXTREME":hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
       if(await claimTelegramAlert(key)){
         await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind});
-        console.log(`[ALERT] CX — ${alert.pair} ${alert.direction}. ${hold.reason} confirmed. EXIT TRADE.`);
+        console.log(`[MANAGEMENT ALERT] CX — ${alert.pair} ${alert.direction}. ${hold.reason} confirmed. EXIT TRADE.`);
       }
     }
   }
