@@ -154,7 +154,7 @@ export async function GET(request:Request){
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[];
 
 
- for(const batch of [PAIRS.slice(0,4),PAIRS.slice(4)]){ await Promise.all(batch.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;try{
+ for(const batch of [PAIRS.slice(0,4),PAIRS.slice(4)]){ await Promise.all(batch.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;try{
   const [c1,c4,c15]=await Promise.all([
     getCandles(krakenPairFormat(pair+"/USD"),60),
     getCandles(krakenPairFormat(pair+"/USD"),240),
@@ -186,12 +186,14 @@ export async function GET(request:Request){
   const triggerDebug=dbg.find(x=>x.startsWith("[TRIGGER]"));
   if(triggerDebug)console.log(`[PAIR] ${pair} — ${triggerDebug}`);
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
-  if(VERBOSE_CRON_LOGS&&gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
+  if(gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
   if(VERBOSE_CRON_LOGS)dbg.filter(x=>x.startsWith("[SWINGS]")||x.startsWith("[TL]")||x.startsWith("[TL POINTS]")).forEach(x=>console.log(x));
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
   const signal=result.signal;
-  if(signal)snapshot.strategyStatus=`FIRED — ${signal.type} ${signal.direction}`;
+  dispatchPairSignal=signal;
+  if(signal){snapshot.strategyStatus=`FIRED — ${signal.type} ${signal.direction}`;console.log(`[SIGNAL DECISION] ${pair} status=fired type=${signal.type} direction=${signal.direction} id=${signal.id}`);}
+  else {const blocked=dbg.find((x:string)=>x.startsWith("[SIGNAL BLOCKED]"))||dbg.find((x:string)=>x.startsWith("[WAIT]"))||gateDebug;snapshot.strategyStatus=blocked?`WAIT — ${blocked.replace(/^\[[^\]]+\]\s*/, "")}`:"WAIT — no Signal object returned";console.log(`[SIGNAL DECISION] ${pair} status=not_fired reason=${snapshot.strategyStatus}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${snapshot.alignedDirection||"NONE"} status=suppressed reason=no_signal_object`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=no_signal_object`);}
   if(!signal){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
@@ -212,35 +214,43 @@ export async function GET(request:Request){
   }
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2} | RR ${signal.rr}`);
   const entry2Continuation=!!existing&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2"&&existing.direction===signal.direction;
-  if(existing&&!entry2Continuation){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);return;}
+  if(existing&&!entry2Continuation){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=active_position_exists`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=active_position_exists`);return;}
   const history=historyAtStart;
-  if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
-  if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently`);return;}
+  if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=pair_paused`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=pair_paused`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
+  if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=recent_signal_dedupe`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=recent_signal_dedupe`);return;}
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];
-  if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);return;}
+  if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=cooldown_until_${cd}`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=cooldown`);return;}
   const cardResets=await getCardResets();
   const alertKey=telegramAlertKey(signal,cardResets[pair]);
   const claimed=await claimTelegramAlert(alertKey);
-  if(!claimed){console.log(`[PAIR] ${pair} — ${signal.type} blocked: lifecycle alert already claimed (${alertKey})`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"telegram_deduped_blocked"});return;}
+  if(!claimed){console.log(`[PAIR] ${pair} — ${signal.type} blocked: lifecycle alert already claimed (${alertKey})`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=lifecycle_alert_already_claimed key=${alertKey}`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=lifecycle_alert_already_claimed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"telegram_deduped_blocked"});return;}
   const jarvisReview=await reviewFiredSignal(signal,snapshot);
   if(jarvisReview?.verdict==="VETO"){
     await releaseTelegramAlert(alertKey);
+    console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=jarvis_veto`);
+    console.log(`[STATE ADD] pair=${pair} status=skipped reason=jarvis_veto`);
     console.log(`[JARVIS] ${pair} — ${signal.type} ${signal.direction} vetoed: ${jarvisReview.reason}`);
     alerts.push({pair,direction:signal.direction,type:signal.type,status:"jarvis_veto",reason:jarvisReview.reason});
     return;
   }
+  dispatchStage="telegram_send";
   try{
     await sendAlert({symbol:signal.pair,state:"ENTRY",price:signal.entry,bias:signal.direction,stopLoss:signal.stop,takeProfit:signal.tp2,takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,signalClass:signal.signalClass,sizeMultiplier:signal.sizeMultiplier,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",context:signal.context,jarvis:jarvisReview});
-  }catch(e){await releaseTelegramAlert(alertKey);throw e;}
-  await appendSignalHistory(signal);  stateSignal=signal;
-  newSignals.push(signal);
-  alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
-  console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
-  await addActiveSignal(signal);
-  active=await getActiveSignals();
+    alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
+    newSignals.push(signal);
+    console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
+    console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=sent reason=telegram_api_accepted`);
+  }catch(e){await releaseTelegramAlert(alertKey);console.error(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=failed reason=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"alert_failed",reason:String(e)});throw e;}
+  stateSignal=signal;
+  dispatchStage="signal_history_append";
+  try{await appendSignalHistory(signal);console.log(`[STATE ADD] pair=${pair} status=history_appended id=${signal.id}`);}catch(e){console.error(`[STATE ADD] pair=${pair} status=failed reason=history_append_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"history_append_failed",reason:String(e)});}
+  dispatchStage="active_state_add";stateAddAttempted=true;
+  try{await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE ADD] pair=${pair} status=added id=${signal.id} activeCount=${active.length}`);}catch(e){console.error(`[STATE ADD] pair=${pair} status=failed reason=active_state_write_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"active_state_add_failed",reason:String(e)});}
+  dispatchStage="complete";
  } catch(e){
-    console.error(`[PAIR] ${pair} — ERROR`,e);
-    alerts.push({pair,status:"error",error:String(e)});
+    console.error(`[PAIR] ${pair} — ERROR at stage=${dispatchStage}`,e);
+    if(dispatchPairSignal){if(dispatchStage!=="telegram_send"&&dispatchStage!=="signal_history_append"&&dispatchStage!=="active_state_add"&&dispatchStage!=="complete")console.error(`[ALERT DISPATCH] pair=${pair} direction=${dispatchPairSignal.direction} status=failed reason=exception_at_${dispatchStage}: ${String(e)}`);if(!stateAddAttempted&&dispatchStage!=="telegram_send")console.error(`[STATE ADD] pair=${pair} status=skipped reason=exception_before_state_add stage=${dispatchStage}`);}
+    alerts.push({pair,status:"error",stage:dispatchStage,error:String(e)});
   } finally {
     const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);
     if(stateMarket)stateMarket.jarvisState=jarvisState;
@@ -282,7 +292,8 @@ export async function GET(request:Request){
  active=await reconcileAlertOutcomes(active,marketData,alerts);
  console.log(`[PERF] Stage reconcileAlertOutcomes completed in ${Date.now()-reconcileStarted}ms`);
  const finalActive=await getActiveSignals();
- console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
+ const entryAlertsSent=alerts.filter((x:any)=>x.status==="sent").length;
+ console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${entryAlertsSent} alertOutcomes=${alerts.length}`);
  console.log(`[PERF] Total cron duration ${Date.now()-started}ms`);
  console.log("========================================");
  return NextResponse.json({success:true,version:CXSWITCH_VERSION,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});}
