@@ -15,14 +15,15 @@ test("ENTRY_1 LONG fires on fresh bullish Stoch RSI cross at K=30",()=>{
   assert.equal(result.entry1,true);
   assert.equal(result.direction,"LONG");
 });
-test("ENTRY_1 LONG does not fire when K=55",()=>{
+test("ENTRY_1 LONG fires on a fresh bullish cross at K=55 under the <70 threshold",()=>{
   const result=strategy.evaluateEntry1("LONG",{pk:20,pd:25,k:55,d:28});
-  assert.equal(result.entry1Long,false);
-  assert.equal(result.entry1,false);
+  assert.equal(result.entry1Long,true);
+  assert.equal(result.entry1,true);
 });
-test("ENTRY_1 SHORT requires K above 60 and fresh bearish cross",()=>{
+test("ENTRY_1 SHORT fires on a fresh bearish cross at K=55 under the >30 threshold",()=>{
   assert.equal(strategy.evaluateEntry1("SHORT",{pk:80,pd:75,k:70,d:72}).entry1Short,true);
-  assert.equal(strategy.evaluateEntry1("SHORT",{pk:80,pd:75,k:55,d:72}).entry1Short,false);
+  assert.equal(strategy.evaluateEntry1("SHORT",{pk:80,pd:75,k:55,d:72}).entry1Short,true);
+  assert.equal(strategy.evaluateEntry1("SHORT",{pk:80,pd:75,k:30,d:32}).entry1Short,false);
 });
 test("ENTRY_2 retest qualifies after a 1.5% first wave, pullback within 1%, EMA8 support and a fresh cross at K=45",()=>{
   assert.equal(strategy.entry2RetestConditions("LONG",100,100.5,102,99.8,{pk:30,pd:35,k:45,d:40},false,false),true);
