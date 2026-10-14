@@ -1,7 +1,7 @@
 // lib/supabase-kv.ts
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-type SetOptions = { nx?: boolean; ex?: number };
+type SetOptions = { nx?: boolean; ex?: number; timeoutMs?: number };
 type Row = { key: string; value: unknown; expires_at: string | null };
 
 let client: SupabaseClient | null = null;
@@ -50,7 +50,11 @@ export class Redis {
       if (error) throw new Error(`Supabase KV claim failed for ${key}: ${error.message}`);
       return data === true ? "OK" : null;
     }
-    const { error } = await this.db.from("cxswitch_kv").upsert({ key, value, expires_at: expiresAt }, { onConflict: "key" });
+    let query = this.db.from("cxswitch_kv").upsert({ key, value, expires_at: expiresAt }, { onConflict: "key" });
+    if (options.timeoutMs !== undefined && options.timeoutMs > 0) {
+      query = query.abortSignal(AbortSignal.timeout(options.timeoutMs));
+    }
+    const { error } = await query;
     if (error) throw new Error(`Supabase KV set failed for ${key}: ${error.message}`);
     return "OK";
   }
