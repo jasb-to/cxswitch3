@@ -26,15 +26,13 @@ export async function sendAlert(signal:any){
   const tp1=Number(signal.takeProfit1??signal.tp1);
   const tp2=Number(signal.takeProfit2??signal.tp2);
   const stop=Number(signal.stopLoss??signal.stop);
+  const riskDistance=Number.isFinite(entry)&&Number.isFinite(stop)?Math.abs(entry-stop):0;
   const rrTp1=riskDistance>0&&Number.isFinite(tp1)?Math.abs(tp1-entry)/riskDistance:null;
   const rrTp2=riskDistance>0&&Number.isFinite(tp2)?Math.abs(tp2-entry)/riskDistance:null;
 
   const signalClass=signal.signalClass??signal.context?.signalClass;
   const sizeMultiplier=signal.sizeMultiplier??signal.context?.sizeMultiplier;
   const jarvis=signal.jarvis;
-  const jarvisLine=jarvis?.verdict
-    ? `JARVIS: ${jarvis.verdict} · ${jarvis.reason||""}`
-    : "JARVIS: —";
 
   const sizeText=Number(sizeMultiplier??1)===0.25?"25% (recent cross + low regime)":Number(sizeMultiplier??1)===0.5?(signal.context?.entryCrossType==="recent"?"50% (recent cross)":signal.context?.entryCrossType==="fresh"?"50% (low regime)":signalClass==="REVERSAL"?"50% (counter-trend)":"50% (reduced size)"):"100%";
   const reasonText=signal.context?.entryCrossType==="recent"
