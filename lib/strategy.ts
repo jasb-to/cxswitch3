@@ -70,7 +70,7 @@ export function trendAlignment(c:Candle[]):TrendAlignment{
 export interface Entry1State { pair:string; direction:Direction; entry:number; timestamp:number; context?:any }
 type StochSnapshot={k:number;d:number;pk:number;pd:number};
 type Entry1Evaluation={entry1Long:boolean;entry1Short:boolean;entry1:boolean;direction:Direction|null;crossDetected:"bullish"|"bearish"|null;crossAge:"last candle"|"previous candle"|null;crossAgeInCandles:number|null;case:"fresh"|"recent"|null;sizeMultiplier:1|0.5;thresholdPassed:boolean;reason:string;crossPrice:number|null;priceMovePct:number|null;kInRange:boolean;notExtended:boolean};
-export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSnapshot,closed4h:Candle[]=[],price?:number):Entry1Evaluation{
+export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSnapshot,closed4h:Candle[]=[],price?:number,liveStoch?:StochPoint):Entry1Evaluation{
   const kdSeries=Array.isArray(input)?input:[{k:input.pk,d:input.pd},{k:input.k,d:input.d}];
   const last=kdSeries.at(-1);
   const empty=(reason:string):Entry1Evaluation=>({entry1Long:false,entry1Short:false,entry1:false,direction:null,crossDetected:null,crossAge:null,crossAgeInCandles:null,case:null,sizeMultiplier:1,thresholdPassed:false,reason,crossPrice:null,priceMovePct:null,kInRange:false,notExtended:false});
