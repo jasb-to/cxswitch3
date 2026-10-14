@@ -218,12 +218,15 @@ export async function GET(request:Request){
   const history=historyAtStart;
   if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=pair_paused`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=pair_paused`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
   if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=recent_signal_dedupe`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=recent_signal_dedupe`);return;}
+  dispatchStage="cooldown_check";
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];
   if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=cooldown_until_${cd}`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=cooldown`);return;}
   const cardResets=await getCardResets();
   const alertKey=telegramAlertKey(signal,cardResets[pair]);
+  dispatchStage="claim_telegram_alert";
   const claimed=await claimTelegramAlert(alertKey);
   if(!claimed){console.log(`[PAIR] ${pair} — ${signal.type} blocked: lifecycle alert already claimed (${alertKey})`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=lifecycle_alert_already_claimed key=${alertKey}`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=lifecycle_alert_already_claimed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"telegram_deduped_blocked"});return;}
+  dispatchStage="jarvis_review";
   const jarvisReview=await reviewFiredSignal(signal,snapshot);
   if(jarvisReview?.verdict==="VETO"){
     await releaseTelegramAlert(alertKey);
@@ -249,7 +252,7 @@ export async function GET(request:Request){
   dispatchStage="complete";
  } catch(e){
     console.error(`[PAIR] ${pair} — ERROR at stage=${dispatchStage}`,e);
-    if(dispatchPairSignal){if(dispatchStage!=="telegram_send"&&dispatchStage!=="signal_history_append"&&dispatchStage!=="active_state_add"&&dispatchStage!=="complete")console.error(`[ALERT DISPATCH] pair=${pair} direction=${dispatchPairSignal.direction} status=failed reason=exception_at_${dispatchStage}: ${String(e)}`);if(!stateAddAttempted&&dispatchStage!=="telegram_send")console.error(`[STATE ADD] pair=${pair} status=skipped reason=exception_before_state_add stage=${dispatchStage}`);}
+    if(dispatchPairSignal){if(dispatchStage!=="telegram_send"&&dispatchStage!=="signal_history_append"&&dispatchStage!=="active_state_add"&&dispatchStage!=="complete")console.error(`[ALERT DISPATCH] pair=${pair} direction=${dispatchPairSignal.direction} status=failed reason=exception_at_${dispatchStage}: ${String(e)}`);if(!stateAddAttempted)console.error(`[STATE ADD] pair=${pair} status=skipped reason=exception_before_state_add stage=${dispatchStage}`);}
     alerts.push({pair,status:"error",stage:dispatchStage,error:String(e)});
   } finally {
     const jarvisState=narratePairState(pair,stateMarket,stateCandles4h,stateSignal,stateCandles15m);
