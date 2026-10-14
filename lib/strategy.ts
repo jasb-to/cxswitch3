@@ -176,6 +176,12 @@ export interface GateEvaluation {
   breakoutRecord?:BreakoutRecord;
 }
 export interface StopCalc { structuralAnchor:number; atrMultiplier:number; riskPct:number; liquidationBufferPct:number; liquidationPrice:number; marginUsagePct:number }
+export function calculateRiskSizeMultiplier(riskPct:number):0.5|1|null{
+  if(!Number.isFinite(riskPct)||riskPct<0)return null;
+  if(riskPct<=3.5)return 1;
+  if(riskPct<=5.0)return 0.5;
+  return null;
+}
 export function calculateLiquidationBufferPct(direction:Direction,entry:number,stop:number,leverage=MAX_LEVERAGE):number{
   const liquidationPrice=direction==="LONG"?entry*(1-1/leverage+MAINTENANCE_MARGIN_RATE):entry*(1+1/leverage-MAINTENANCE_MARGIN_RATE);
   return direction==="LONG"?(stop-liquidationPrice)/Math.max(liquidationPrice,EPS)*100:(liquidationPrice-stop)/Math.max(liquidationPrice,EPS)*100;
@@ -268,16 +274,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
   const riskPct=Math.abs(entry-stopResult.stop)/Math.max(entry,EPS)*100;
-  let riskSizeMultiplier:0.5|1;
-  if(riskPct<=3.5){
-    riskSizeMultiplier=1;
-  }else if(riskPct<=5.0){
-    riskSizeMultiplier=0.5;
-    debug.push("[RISK SIZE] "+pair+" | stop risk "+r(riskPct,2)+"% in 3.5–5.0% band | risk size=50%");
-  }else{
+  const riskSizeMultiplier=calculateRiskSizeMultiplier(riskPct);
+  if(riskSizeMultiplier===null){
     debug.push("[SIGNAL BLOCKED] "+pair+" | risk_too_wide | stop risk "+r(riskPct,2)+"% exceeds 5.0%");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
+  if(riskSizeMultiplier===0.5)debug.push("[RISK SIZE] "+pair+" | stop risk "+r(riskPct,2)+"% in 3.5–5.0% band | risk size=50%");
   const targets=calculateTargets(direction,entry,stopResult.stop,c);
   const tp1=targets.tp1,tp2=targets.tp2;
   const risk=Math.abs(entry-stopResult.stop),actualRr=Math.abs(tp2-entry)/Math.max(risk,EPS);
