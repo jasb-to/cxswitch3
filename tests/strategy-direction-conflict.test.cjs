@@ -113,7 +113,7 @@ test("ENTRY_1 accepts a crossover on either of the last two candle transitions",
     { k: 45, d: 50 }, { k: 42.8, d: 50.3 }, { k: 36, d: 44.7 },
   ]);
   assert.equal(noRecentCross.entry1Short, false);
-  assert.equal(noRecentCross.reason, "no_fresh_bearish_cross");
+  assert.equal(noRecentCross.reason, "no_qualifying_cross_within_6_closed_candles");
 });
 
 test("structural stop uses the last five candles and the 1.5 ATR floor", () => {
