@@ -59,7 +59,7 @@ export async function sendAlert(signal:any){
     `TP2: ${formatPrice(tp2)}`,
     `RR (TP1): ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
     `RR (TP2): ${rrTp2==null?"-":rrTp2.toFixed(2)+"R"}`,
-    `Size: ${sizeMultiplier===0.5 ? "50%"+(signalClass==="REVERSAL" ? " (counter-trend)" : buffer!=null&&Number.isFinite(buffer)&&buffer<0.5 ? " (⚠️ reduced size does NOT remove liquidation risk)" : " (risk-reduced sizing; liquidation risk remains)") : "100%"}`,
+    `Size: ${signal.context?.entryCrossType==="recent" ? Math.round(Number(sizeMultiplier??1)*100)+"% (recent cross"+(Number(sizeMultiplier)<0.5?"; regime-reduced":"")+")" : Number(sizeMultiplier??1)===0.25 ? "25% (regime-reduced; recent cross)" : Number(sizeMultiplier??1)===0.5 ? (signal.context?.entryCrossType==="fresh" ? "50% (regime-reduced)" : signalClass==="REVERSAL" ? "50% (counter-trend)" : buffer!=null&&Number.isFinite(buffer)&&buffer<0.5 ? "50% (⚠️ reduced size does NOT remove liquidation risk)" : "50% (risk-reduced sizing; liquidation risk remains)") : "100%"}`,
     jarvisLine,
     `Expected Move: ${expectedMove}%`,
     signal.reason||""
