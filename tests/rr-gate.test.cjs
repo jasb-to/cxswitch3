@@ -14,7 +14,7 @@ test("RR is informational and targets use pivot structure with minimum R distanc
  assert.match(source,/minTp1Distance=1\.5\*riskDistance/);
  assert.match(source,/minTp2Distance=2\.0\*riskDistance/);
  assert.match(source,/calculateTargets\(direction,entry,stopResult\.stop,c\)/);
- assert.match(source,/riskPct>3\.5/);
+ assert.match(source,/calculateRiskSizeMultiplier\(riskPct\)/);
  assert.doesNotMatch(source,/rr\s*<\s*\d|minimumRR|rrGate|R:R gate/i);
 });
 test("15x leverage is used for modelled liquidation diagnostics",()=>{
