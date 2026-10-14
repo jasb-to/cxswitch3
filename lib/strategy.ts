@@ -235,15 +235,20 @@ function swings(c:Candle[],highs:boolean):SwingPivot[]{
 export function calculateTargetsFromPivots(direction:Direction,entry:number,stop:number,pivots:SwingPivot[]){
   const riskDistance=Math.abs(entry-stop);
   const minTp1Distance=1.5*riskDistance,minTp2Distance=2.0*riskDistance;
+  // Reject distant historical pivots: they are directional, but not useful near-term targets.
+  // Valid structural targets may extend TP1 to 3R and TP2 to 4R.
+  const maxTp1Distance=3.0*riskDistance,maxTp2Distance=4.0*riskDistance;
   const forwardPivots=pivots
     .filter(x=>direction==="LONG"?x.price>entry:x.price<entry)
     .sort((a,b)=>direction==="LONG"?a.price-b.price:b.price-a.price);
-  const tp1Pivot=forwardPivots.find(x=>Math.abs(x.price-entry)>=minTp1Distance);
+  const distanceFromEntry=(x:SwingPivot)=>Math.abs(x.price-entry);
+  const tp1Pivot=forwardPivots.find(x=>distanceFromEntry(x)>=minTp1Distance&&distanceFromEntry(x)<=maxTp1Distance);
   const tp1=tp1Pivot?.price??(direction==="LONG"?entry+minTp1Distance:entry-minTp1Distance);
-  const tp2Pivot=forwardPivots.find(x=>direction==="LONG"?x.price>tp1&&(x.price-entry)>=minTp2Distance:x.price<tp1&&(entry-x.price)>=minTp2Distance);
+  const tp2Pivot=forwardPivots.find(x=>(direction==="LONG"?x.price>tp1:x.price<tp1)&&distanceFromEntry(x)>=minTp2Distance&&distanceFromEntry(x)<=maxTp2Distance);
+  // TP2 must remain beyond TP1 when TP1 uses a more distant valid pivot.
   const tp2FallbackDistance=Math.max(minTp2Distance,Math.abs(tp1-entry)+0.5*riskDistance);
   const tp2=tp2Pivot?.price??(direction==="LONG"?entry+tp2FallbackDistance:entry-tp2FallbackDistance);
-  return{tp1,tp2};
+  return{tp1,tp2,forwardPivots,tp1Source:tp1Pivot?"pivot":"fallback 1.5R",tp2Source:tp2Pivot?"pivot":tp2FallbackDistance===minTp2Distance?"fallback 2R":"fallback beyond TP1"};
 }
 export function calculateTargets(direction:Direction,entry:number,stop:number,c:Candle[]){
   const closed4h=c.slice(0,-1);
@@ -282,6 +287,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   if(riskSizeMultiplier===0.5)debug.push("[RISK SIZE] "+pair+" | stop risk "+r(riskPct,2)+"% in 3.5–5.0% band | risk size=50%");
   const targets=calculateTargets(direction,entry,stopResult.stop,c);
   const tp1=targets.tp1,tp2=targets.tp2;
+  const targetPivotList=targets.forwardPivots.map(x=>priceRound(x.price)+"@"+x.index).join(", ")||"none";
+  debug.push("[TARGETS] "+pair+" "+direction+" | risk="+r(Math.abs(entry-stopResult.stop))+" | forward pivots: ["+targetPivotList+"] | TP1="+priceRound(tp1)+" ("+targets.tp1Source+") | TP2="+priceRound(tp2)+" ("+targets.tp2Source+")");
   const risk=Math.abs(entry-stopResult.stop),actualRr=Math.abs(tp2-entry)/Math.max(risk,EPS);
   const closed4hTimestamp=closed.at(-1)?.timestamp??0,ema8_4h=ema(closedCloses,8).at(-1)??0,ema21_4h=ema(closedCloses,21).at(-1)??0;
   const regimeSizeMultiplier=alignment.sizeMultiplier===0.5?0.5:1,entrySizeMultiplier:1|0.5=signalType==="ENTRY_1"?evaluation.trigger.entry1SizeMultiplier:1;
@@ -301,7 +308,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
   debug.push("[STOP] "+direction+" | SL "+s.stop+" | "+stopResult.calc.riskPct+"% risk | 1.5 ATR floor");
-  debug.push("[TARGETS] TP1 "+s.tp1+" ("+r(Math.abs(s.tp1-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | TP2 "+s.tp2+" ("+r(Math.abs(s.tp2-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | 4H swing pivots / minimum 1.5R and 2.0R | RR "+s.rr);
+  debug.push("[TARGETS SUMMARY] TP1 "+s.tp1+" ("+r(Math.abs(s.tp1-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | TP2 "+s.tp2+" ("+r(Math.abs(s.tp2-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | pivot cap TP1 3R / TP2 4R; fallback minimum 1.5R / 2.0R | RR "+s.rr);
   debug.push("[SIGNAL] "+s.direction+" "+s.type+" | entry "+s.entry+" | SL "+s.stop+" | TP1 "+s.tp1+" | TP2 "+s.tp2);
   debug.push("[JARVIS] trade conditions passed — execution remains separate from opportunity guidance");
   debug.push("[ALERT] SURFACE");
