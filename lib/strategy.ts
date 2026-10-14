@@ -92,7 +92,7 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
   }
   // A failed fresh trigger must not be re-admitted as a recent setup at the looser continuation threshold.
   const recentAge=age!==null&&age>=2&&age<=6?age:null;
-  const p=price??closed4h.at(-1)?.close??last.close;
+  const p=price??closed4h.at(-1)?.close??0;
   const window=closed4h.slice(-6);
   const localHigh=window.length?Math.max(...window.map(x=>x.high)):NaN;
   const localLow=window.length?Math.min(...window.map(x=>x.low)):NaN;
