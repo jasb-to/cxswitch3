@@ -41,7 +41,7 @@ export async function sendAlert(signal:any){
     ? "Reason: recent 4H Stoch RSI cross ("+(signal.context?.crossAgeInCandles??"?")+" candles ago)"
     : signal.context?.entryCrossType==="fresh"
       ? "Reason: fresh 4H Stoch RSI cross"
-      : signal.reason||"";
+      : type==="ENTRY_2"?"Reason: ENTRY_2 retest confirmed":"";
   const lines=[
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type}`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,
