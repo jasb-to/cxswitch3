@@ -70,13 +70,15 @@ export function trendAlignment(c:Candle[]):TrendAlignment{
 export interface Entry1State { pair:string; direction:Direction; entry:number; timestamp:number; context?:any }
 type StochSnapshot={k:number;d:number;pk:number;pd:number};
 type Entry1Evaluation={entry1Long:boolean;entry1Short:boolean;entry1:boolean;direction:Direction|null;crossDetected:"bullish"|"bearish"|null;crossAge:"last candle"|"previous candle"|null;thresholdPassed:boolean;reason:string};
-export function evaluateEntry1(aligned:Direction|null,kdSeries:StochPoint[]):Entry1Evaluation{
+export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSnapshot):Entry1Evaluation{
+  const kdSeries=Array.isArray(input)?input:[{k:input.pk,d:input.pd},{k:input.k,d:input.d}];
   const last=kdSeries.at(-1),prev=kdSeries.at(-2),prev2=kdSeries.at(-3);
-  if(!aligned||!last||!prev||!prev2)return{entry1Long:false,entry1Short:false,entry1:false,direction:null,crossDetected:null,crossAge:null,thresholdPassed:false,reason:"insufficient_stoch_history"};
+  if(!aligned||!last||!prev)return{entry1Long:false,entry1Short:false,entry1:false,direction:null,crossDetected:null,crossAge:null,thresholdPassed:false,reason:"insufficient_stoch_history"};
+  const prior=prev2??prev;
   const bearishLast=prev.k>=prev.d&&last.k<last.d;
-  const bearishPrevious=prev2.k>=prev2.d&&prev.k<prev.d;
+  const bearishPrevious=prior.k>=prior.d&&prev.k<prev.d;
   const bullishLast=prev.k<=prev.d&&last.k>last.d;
-  const bullishPrevious=prev2.k<=prev2.d&&prev.k>prev.d;
+  const bullishPrevious=prior.k<=prior.d&&prev.k>prev.d;
   const bearishCross=bearishLast||bearishPrevious,bullishCross=bullishLast||bullishPrevious;
   const entry1Long=aligned==="LONG"&&bullishCross&&last.k<70;
   const entry1Short=aligned==="SHORT"&&bearishCross&&last.k>30;
