@@ -99,7 +99,7 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
   const kInRange=isShort?(last.k>20&&last.k<70):(last.k>30&&last.k<80);
   if(shortFresh||longFresh)return{entry1Long:longFresh,entry1Short:shortFresh,entry1:true,direction:aligned,crossDetected:crossDetected!,crossAge:age===0?"last candle":"previous candle",crossAgeInCandles:age,case:"fresh",sizeMultiplier:1,thresholdPassed:true,reason:"fresh 4H Stoch RSI crossover within early-entry range",crossPrice,priceMovePct,kInRange:isShort?last.k>30:last.k<70,notExtended};
   const recentCross=age!==null&&age>=2&&age<=6,kdCorrect=isShort?last.k<last.d:last.k>last.d;
-  const shortRecent=isShort&&recentCross&&kInRange&&kdCorrect&&notExtended;
+  const shortRecent=isShort&&recentCross&&kInRange&&kdCorrect&&liveCorrect&&notExtended;
   const longRecent=!isShort&&recentCross&&kInRange&&kdCorrect&&notExtended;
   const entry1Short=shortFresh||shortRecent,entry1Long=longFresh||longRecent,entry1=entry1Short||entry1Long;
   const thresholdPassed=isShort?last.k>30:last.k<70;
