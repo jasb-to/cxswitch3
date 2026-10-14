@@ -83,7 +83,8 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
     if(bullishAge===null&&before.k<=before.d&&now.k>now.d){bullishAge=age;bullishIndex=i;}
   }
   const isShort=aligned==="SHORT",age=isShort?bearishAge:bullishAge,crossIndex=isShort?bearishIndex:bullishIndex;
-  const crossDetected=age===null?null:isShort?"bearish":"bullish";
+  const latestCrossAge=bearishAge===null?bullishAge:bullishAge===null?bearishAge:Math.min(bearishAge,bullishAge);
+  const crossDetected=latestCrossAge===null?null:bearishAge!==null&&(bullishAge===null||bearishAge<=bullishAge)?"bearish":"bullish";
   const crossPriceIndex=crossIndex===null?null:Math.max(0,closed4h.length-kdSeries.length)+crossIndex;
   const crossPrice=crossPriceIndex!==null&&closed4h[crossPriceIndex]?Number(closed4h[crossPriceIndex].close):null;
   const currentPrice=price??closed4h.at(-1)?.close??null;
