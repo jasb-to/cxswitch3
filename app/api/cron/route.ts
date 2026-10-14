@@ -12,7 +12,8 @@ import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 export const dynamic="force-dynamic";
 export const revalidate=0;
 // Give transient market-data/API latency room without relying on the platform default.
-export const maxDuration=30;
+// Kraken OHLC can require a retry across two bounded batches; allow transient upstream latency.
+export const maxDuration=60;
 const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC"] as const;
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
