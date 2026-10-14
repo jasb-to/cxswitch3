@@ -192,7 +192,9 @@ export async function setCooldowns(cooldowns:Record<string,number>):Promise<void
 export async function getExitAlertCooldowns():Promise<Record<string,number>>{return(await redis.get<Record<string,number>>(EXIT_ALERT_COOLDOWNS_KEY))||{};}
 export async function setExitAlertCooldowns(cooldowns:Record<string,number>):Promise<void>{await redis.set(EXIT_ALERT_COOLDOWNS_KEY,cooldowns);}
 export async function getMarketData():Promise<any[]>{return(await redis.get<any[]>(MARKET_KEY))||[];}
-export async function setMarketData(data:any[]):Promise<void>{await redis.set(MARKET_KEY,data);}
+// Market data is a dashboard snapshot, not the source of truth for signal calculations.
+ // Bound this relatively large write so a transient Supabase/network stall cannot consume the cron budget.
+export async function setMarketData(data:any[]):Promise<void>{await redis.set(MARKET_KEY,data,{timeoutMs:8000});}
 export async function getLastCronRun():Promise<number>{const data=await redis.get<{timestamp:number}>(CRON_KEY);return data?.timestamp||0;}
 export async function setLastCronRun(ts:number):Promise<void>{await redis.set(CRON_KEY,{timestamp:ts});}
 export async function saveDashboardSnapshot(snapshot:any):Promise<void>{await redis.set(SNAPSHOT_KEY,{...snapshot,timestamp:Date.now()});}
