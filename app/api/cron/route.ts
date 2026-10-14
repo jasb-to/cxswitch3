@@ -8,6 +8,7 @@ import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
+import { createSerialQueue } from "@/lib/serial-queue";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
@@ -18,6 +19,8 @@ const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC"] as const;
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
 const MIN_CRON_INTERVAL_MS=2*60*1000;
+// Serialize active-list read/modify/write operations within this runtime instance.
+const serializeActiveStateWrite=createSerialQueue();
 const SIGNAL_DEDUP_MS=45*60*1000;
 const SIGNAL_DEDUP_ENTRY_PCT=0.004;
 const VERBOSE_CRON_LOGS=process.env.CRON_VERBOSE_LOGS==="true";
@@ -248,7 +251,7 @@ export async function GET(request:Request){
   dispatchStage="signal_history_append";
   try{await appendSignalHistory(signal);console.log(`[STATE ADD] pair=${pair} status=history_appended id=${signal.id}`);}catch(e){console.error(`[STATE ADD] pair=${pair} status=failed reason=history_append_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"history_append_failed",reason:String(e)});}
   dispatchStage="active_state_add";stateAddAttempted=true;
-  try{await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE ADD] pair=${pair} status=added id=${signal.id} activeCount=${active.length}`);}catch(e){console.error(`[STATE ADD] pair=${pair} status=failed reason=active_state_write_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"active_state_add_failed",reason:String(e)});}
+  try{await serializeActiveStateWrite(async()=>{await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE ADD] pair=${pair} status=added id=${signal.id} activeCount=${active.length}`);});}catch(e){console.error(`[STATE ADD] pair=${pair} status=failed reason=active_state_write_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"active_state_add_failed",reason:String(e)});}
   dispatchStage="complete";
  } catch(e){
     console.error(`[PAIR] ${pair} — ERROR at stage=${dispatchStage}`,e);
