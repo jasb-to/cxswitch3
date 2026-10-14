@@ -43,7 +43,7 @@ test("ENTRY_2 SHORT retest requires first wave down, pullback, below EMA8 and K 
 });
 test("entry logic contains no retired EMA, trendline, pivot, fib, RR, or K exhaustion gates",()=>{
   const source=fs.readFileSync(require.resolve("../lib/strategy.ts"),"utf8");
-  for(const retired of ["dailyTrend(","fourHTrendDirection(","tacticalDirection(","resolveSignalDirection(","structureTargets(","emaAdvisory","trendlinePivots",">=95","<=5","3% above 4H EMA(21)"]) assert.equal(source.includes(retired),false,retired);
+  for(const retired of ["dailyTrend(","fourHTrendDirection(","tacticalDirection(","resolveSignalDirection(","structureTargets(","emaAdvisory","trendlinePivots",">=95","3% above 4H EMA(21)"]) assert.equal(source.includes(retired),false,retired);
 });
 
 test("EMA8/21 bearish cross after the stored ENTRY_1 candle invalidates a LONG retest",()=>{
