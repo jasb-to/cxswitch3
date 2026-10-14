@@ -251,7 +251,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push("[REGIME] "+alignment.regime+" | 1D close="+r(alignment.dailyClose)+" EMA21="+r(alignment.dailyE21)+" EMA5/13="+r(alignment.dailyE5)+"/"+r(alignment.dailyE13)+" | spread="+r(alignment.dailySpread3dPct,3)+"% -> "+r(alignment.dailySpreadPct,3)+"% ("+(Math.abs(alignment.dailySpreadPct)<Math.abs(alignment.dailySpread3dPct)?"narrowing":Math.abs(alignment.dailySpreadPct)>Math.abs(alignment.dailySpread3dPct)?"widening":"flat")+") | size="+Math.round(alignment.sizeMultiplier*100)+"%");
   debug.push("[4H CONTEXT] EMA5="+r(alignment.fourHE5)+" EMA13="+r(alignment.fourHE13)+" "+(alignment.fourH??"NEUTRAL")+" | direction is regime-only");
   debug.push("[GATES] "+JSON.stringify(evaluation));
-  const closed4h=c.slice(0,-1),closedCloses=closed4h.map(x=>x.close),stClosed=stoch(closedCloses),entry1Debug=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses),closed4h,p);
+  const closed4hForTrigger=c.slice(0,-1),stClosed=stoch(closedCloses),entry1Debug=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses),closed4hForTrigger,p);
   debug.push("[TRIGGER] "+pair+" — K="+stClosed.k+" D="+stClosed.d+" | cross="+(entry1Debug.crossDetected??"none")+(entry1Debug.crossAgeInCandles===null?"":" | crossAge="+entry1Debug.crossAgeInCandles+" candle"+(entry1Debug.crossAgeInCandles===1?"":"s"))+" | "+(entry1Debug.case==="fresh"?"size=100% (fresh)":entry1Debug.case==="recent"?"size=50% (recent)":entry1Debug.reason)+" | entry1="+evaluation.trigger.entry1);
   debug.push("[EXHAUST] "+(evaluation.exhaustion??"clear"));
   if(!evaluation.allPassed){
