@@ -83,6 +83,7 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
     if(bullishAge===null&&before.k<=before.d&&now.k>now.d)bullishAge=age;
   }
   const age=aligned==="SHORT"?bearishAge:bullishAge;
+  const latestCrossAge=bearishAge===null?bullishAge:bullishAge===null?bearishAge:Math.min(bearishAge,bullishAge);
   const crossDetected=bearishAge!==null&& (bullishAge===null||bearishAge<=bullishAge)?"bearish":bullishAge!==null?"bullish":bearishAge!==null?"bearish":null;
   const freshCross=age!==null&&age<=1;
   const shortFresh=aligned==="SHORT"&&freshCross&&last.k<last.d&&last.k>30;
@@ -113,7 +114,7 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
   else if(age!==null&&age>=2&&age<=6&&!(aligned==="SHORT"?notExtendedShort:notExtendedLong))reason="price_extended_more_than_2pct";
   else if(age!==null&&age>=2&&age<=6&&!(aligned==="SHORT"?last.k<last.d:last.k>last.d))reason="wrong_stoch_direction";
   else if(entry1)reason="recent 4H Stoch RSI crossover ("+recentAge+" candles ago, price not extended)";
-  const chosenAge=entry1?recentAge:age;
+  const chosenAge=entry1?recentAge:latestCrossAge;
   const chosenCross=entry1?(aligned==="SHORT"?"bearish":"bullish"):crossDetected;
   return{entry1Long,entry1Short,entry1,direction:entry1?aligned:null,crossDetected:chosenCross,crossAge:chosenAge===0?"last candle":chosenAge===1?"previous candle":null,crossAgeInCandles:chosenAge,case:entry1?(shortRecent||longRecent?"recent":"fresh"):null,sizeMultiplier:entry1&&(shortRecent||longRecent)?0.5:1,thresholdPassed,reason};
 }
