@@ -113,6 +113,7 @@ test("ENTRY_1 recent cross sizing and extension filters mirror for LONG and SHOR
   const hypeBlocked=strategy.evaluateEntry1("SHORT",hypeRising,candles(),99);
   assert.equal(hypeBlocked.entry1,false);
   assert.equal(hypeBlocked.crossDetected,"bullish");
+  assert.equal(strategy.evaluateEntry1("SHORT",bearishRecent,candles(),99,{k:51.5,d:39.8}).entry1,false);
   const priceExtended=strategy.evaluateEntry1("SHORT",bearishRecent,candles(),96);
   assert.equal(priceExtended.entry1,false);
   assert.equal(priceExtended.reason,"price_extended_more_than_2pct_since_cross");
