@@ -1,13 +1,13 @@
 export interface Candle { timestamp:number; open:number; high:number; low:number; close:number; volume:number }
 export interface Signal {
-  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"REVERSAL_SHORT"|"REVERSAL_LONG"; signalClass:"TREND"|"REVERSAL"; sizeMultiplier:1|0.5;
+  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"REVERSAL_SHORT"|"REVERSAL_LONG"; signalClass:"TREND"|"REVERSAL"; sizeMultiplier:0.25|0.5|1;
   entry:number; stop:number; tp1:number; tp2:number; rr:number;
   adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number;
   reason:string; timestamp:number; version:number; context?:any;
 }
 export interface BreakoutRecord { direction:Direction; price:number; timestamp:number; candleIndex:number }
 export interface SignalResult { signal?:Signal; market?:any; debug:string[]; breakoutRecord?:BreakoutRecord }
-export const CURRENT_SIGNAL_VERSION=31;
+export const CURRENT_SIGNAL_VERSION=32;
 type Direction="LONG"|"SHORT";
 const VERBOSE_CRON_LOGS=process.env.CRON_VERBOSE_LOGS==="true";
 const TTL=24*60*60*1000, EPS=1e-12;
@@ -69,24 +69,53 @@ export function trendAlignment(c:Candle[]):TrendAlignment{
 }
 export interface Entry1State { pair:string; direction:Direction; entry:number; timestamp:number; context?:any }
 type StochSnapshot={k:number;d:number;pk:number;pd:number};
-type Entry1Evaluation={entry1Long:boolean;entry1Short:boolean;entry1:boolean;direction:Direction|null;crossDetected:"bullish"|"bearish"|null;crossAge:"last candle"|"previous candle"|null;thresholdPassed:boolean;reason:string};
-export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSnapshot):Entry1Evaluation{
+type Entry1Evaluation={entry1Long:boolean;entry1Short:boolean;entry1:boolean;direction:Direction|null;crossDetected:"bullish"|"bearish"|null;crossAge:"last candle"|"previous candle"|null;crossAgeInCandles:number|null;case:"fresh"|"recent"|null;sizeMultiplier:1|0.5;thresholdPassed:boolean;reason:string};
+export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSnapshot,closed4h:Candle[]=[],price?:number):Entry1Evaluation{
   const kdSeries=Array.isArray(input)?input:[{k:input.pk,d:input.pd},{k:input.k,d:input.d}];
-  const last=kdSeries.at(-1),prev=kdSeries.at(-2),prev2=kdSeries.at(-3);
-  if(!aligned||!last||!prev)return{entry1Long:false,entry1Short:false,entry1:false,direction:null,crossDetected:null,crossAge:null,thresholdPassed:false,reason:"insufficient_stoch_history"};
-  const prior=prev2??prev;
-  const bearishLast=prev.k>=prev.d&&last.k<last.d;
-  const bearishPrevious=prior.k>=prior.d&&prev.k<prev.d;
-  const bullishLast=prev.k<=prev.d&&last.k>last.d;
-  const bullishPrevious=prior.k<=prior.d&&prev.k>prev.d;
-  const bearishCross=bearishLast||bearishPrevious,bullishCross=bullishLast||bullishPrevious;
-  const entry1Long=aligned==="LONG"&&bullishCross&&last.k<70;
-  const entry1Short=aligned==="SHORT"&&bearishCross&&last.k>30;
-  const crossDetected=bearishCross?"bearish":bullishCross?"bullish":null;
-  const crossAge=bearishLast||bullishLast?"last candle":bearishPrevious||bullishPrevious?"previous candle":null;
+  const last=kdSeries.at(-1),prev=kdSeries.at(-2);
+  const empty=(reason:string):Entry1Evaluation=>({entry1Long:false,entry1Short:false,entry1:false,direction:null,crossDetected:null,crossAge:null,crossAgeInCandles:null,case:null,sizeMultiplier:1,thresholdPassed:false,reason});
+  if(!aligned||!last||!prev)return empty("insufficient_stoch_history");
+  const scan=kdSeries.slice(-7);
+  let bearishAge:number|null=null,bullishAge:number|null=null;
+  for(let i=scan.length-1;i>=1;i--){
+    const before=scan[i-1],now=scan[i],age=scan.length-1-i;
+    if(bearishAge===null&&before.k>=before.d&&now.k<now.d)bearishAge=age;
+    if(bullishAge===null&&before.k<=before.d&&now.k>now.d)bullishAge=age;
+  }
+  const age=aligned==="SHORT"?bearishAge:bullishAge;
+  const crossDetected=bearishAge!==null&& (bullishAge===null||bearishAge<=bullishAge)?"bearish":bullishAge!==null?"bullish":bearishAge!==null?"bearish":null;
+  const freshCross=age!==null&&age<=1;
+  const shortFresh=aligned==="SHORT"&&freshCross&&last.k<last.d&&last.k>30;
+  const longFresh=aligned==="LONG"&&freshCross&&last.k>last.d&&last.k<70;
+  if(shortFresh||longFresh){
+    return{entry1Long:longFresh,entry1Short:shortFresh,entry1:true,direction:aligned,crossDetected:aligned==="SHORT"?"bearish":"bullish",crossAge:age===0?"last candle":"previous candle",crossAgeInCandles:age,case:"fresh",sizeMultiplier:1,thresholdPassed:true,reason:"fresh 4H Stoch RSI crossover within early-entry range"};
+  }
+  // A failed fresh trigger must not be re-admitted as a recent setup at the looser continuation threshold.
+  const recentAge=age!==null&&age>=2&&age<=6?age:null;
+  const p=price??closed4h.at(-1)?.close??last.close;
+  const window=closed4h.slice(-6);
+  const localHigh=window.length?Math.max(...window.map(x=>x.high)):NaN;
+  const localLow=window.length?Math.min(...window.map(x=>x.low)):NaN;
+  const notExtendedShort=Number.isFinite(localHigh)&&localHigh>0&&(localHigh-p)/localHigh<=0.02;
+  const notExtendedLong=Number.isFinite(localLow)&&localLow>0&&(p-localLow)/localLow<=0.02;
+  const shortKRange=last.k>20&&last.k<70,longKRange=last.k>30&&last.k<80;
+  const shortRecent=aligned==="SHORT"&&recentAge!==null&&shortKRange&&last.k<last.d&&notExtendedShort;
+  const longRecent=aligned==="LONG"&&recentAge!==null&&longKRange&&last.k>last.d&&notExtendedLong;
+  const entry1Short=shortFresh||shortRecent,entry1Long=longFresh||longRecent,entry1=entry1Short||entry1Long;
   const thresholdPassed=aligned==="SHORT"?last.k>30:aligned==="LONG"?last.k<70:false;
-  const reason=aligned==="SHORT"?!bearishCross?"no_fresh_bearish_cross":!thresholdPassed?"bearish_cross_k_not_above_30":"trigger_met":aligned==="LONG"?!bullishCross?"no_fresh_bullish_cross":!thresholdPassed?"bullish_cross_k_not_below_70":"trigger_met":"alignment_missing";
-  return{entry1Long,entry1Short,entry1:entry1Long||entry1Short,direction:entry1Long?"LONG":entry1Short?"SHORT":null,crossDetected,crossAge,thresholdPassed,reason};
+  let reason="no_qualifying_cross_within_6_closed_candles";
+  if(age!==null&&age<=1)reason=aligned==="SHORT"&&last.k<=30?"fresh_bearish_cross_k_not_above_30":aligned==="LONG"&&last.k>=70?"fresh_bullish_cross_k_not_below_70":"fresh_cross_conditions_not_met";
+  else if(age!==null&&age>6)reason="cross_too_old";
+  else if(aligned==="SHORT"&&last.k<=20)reason="K<20 blocked";
+  else if(aligned==="SHORT"&&last.k>=70)reason="K>=70 blocked";
+  else if(aligned==="LONG"&&last.k<=30)reason="K<=30 blocked";
+  else if(aligned==="LONG"&&last.k>=80)reason="K>=80 blocked";
+  else if(age!==null&&age>=2&&age<=6&&!(aligned==="SHORT"?notExtendedShort:notExtendedLong))reason="price_extended_more_than_2pct";
+  else if(age!==null&&age>=2&&age<=6&&!(aligned==="SHORT"?last.k<last.d:last.k>last.d))reason="wrong_stoch_direction";
+  else if(entry1)reason="recent 4H Stoch RSI crossover ("+recentAge+" candles ago, price not extended)";
+  const chosenAge=entry1?recentAge:age;
+  const chosenCross=entry1?(aligned==="SHORT"?"bearish":"bullish"):crossDetected;
+  return{entry1Long,entry1Short,entry1,direction:entry1?aligned:null,crossDetected:chosenCross,crossAge:chosenAge===0?"last candle":chosenAge===1?"previous candle":null,crossAgeInCandles:chosenAge,case:entry1?(shortRecent||longRecent?"recent":"fresh"):null,sizeMultiplier:entry1&&(shortRecent||longRecent)?0.5:1,thresholdPassed,reason};
 }
 export function entry2RetestConditions(direction:Direction,entry:number,price:number,firstWavePrice:number,ema8:number,st:StochSnapshot,adverseCross:boolean,alreadyFired=false){
   const waveMoved=direction==="LONG"?firstWavePrice>=entry*1.015:firstWavePrice<=entry*0.985;
@@ -137,7 +166,7 @@ export interface GateEvaluation {
   zone:{valid:boolean;type:string;price:number;distancePct:number}|null;
   trendlineSlope:number;
   alignment:TrendAlignment;
-  trigger:{entry1:boolean;entry2:boolean;signalType:"ENTRY_1"|"ENTRY_2"|null;entry1Reason:string;entry2Reason:string};
+  trigger:{entry1:boolean;entry2:boolean;signalType:"ENTRY_1"|"ENTRY_2"|null;entry1Reason:string;entry2Reason:string;entry1SizeMultiplier:1|0.5;entry1CrossAgeInCandles:number|null;entry1Case:"fresh"|"recent"|null};
   exhaustion:string|null;
   stopCalc:StopCalc|null;
   missing:string[];
@@ -171,8 +200,8 @@ function exhaustion(direction:Direction,rv:number):string|null{
 }
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,entry1State?:Entry1State,entry2AlreadyFired=false):GateEvaluation{
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,alignment=trendAlignment(c),direction=alignment.aligned;
-  const closes=c.map(x=>x.close),st=stoch(closes),stSeries=getStochSeries(closes),rv=rsi(closes),a=atr(c);
-  const e1=evaluateEntry1(direction,stSeries),entry1=!!e1.entry1;
+  const closed4h=c.slice(0,-1),closedCloses=closed4h.map(x=>x.close),closes=c.map(x=>x.close),st=stoch(closes),stSeries=getStochSeries(closedCloses),rv=rsi(closes),a=atr(c);
+  const e1=evaluateEntry1(direction,stSeries,closed4h,p),entry1=!!e1.entry1;
   const entry2Check=direction?entry2Ready(pair,direction,entry1State,c,p,st,entry2AlreadyFired):{ready:false,reason:"regime_chop"};
   const entry2=entry2Check.ready,signalType:"ENTRY_1"|"ENTRY_2"|null=entry2?"ENTRY_2":entry1?"ENTRY_1":null;
   const exhausted=direction?exhaustion(direction,rv):null,missing:string[]=[];
@@ -182,7 +211,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   let stopCalc:StopCalc|null=null;
   if(direction&&signalType&&a>0)stopCalc=calculateStop(direction,p,a,c).calc;
   const deduped=[...new Set(missing)];
-  return{direction,zone:null,trendlineSlope:0,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"trigger_met":alignment.regime==="CHOP"?"regime_chop":entry1WaitReason(direction,e1),entry2Reason:entry2?"trigger_met":entry2Check.reason},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!signalType&&!exhausted,dailyTransition:alignment.regime==="CHOP",breakoutRecord:undefined};
+  return{direction,zone:null,trendlineSlope:0,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?e1.reason:alignment.regime==="CHOP"?"regime_chop":entry1WaitReason(direction,e1),entry2Reason:entry2?"trigger_met":entry2Check.reason,entry1SizeMultiplier:e1.sizeMultiplier,entry1CrossAgeInCandles:e1.crossAgeInCandles,entry1Case:e1.case},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!signalType&&!exhausted,dailyTransition:alignment.regime==="CHOP",breakoutRecord:undefined};
 }
 type SwingPivot={price:number;index:number};
 function swings(c:Candle[],highs:boolean):SwingPivot[]{
@@ -217,13 +246,13 @@ export function calculateTargets(direction:Direction,entry:number,stop:number,c:
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord,entry1State?:Entry1State,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:Direction}>=[]){
   void candles1h;void candles15m;void lastBreakout;
   const debug:string[]=[],c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
-  const closed=c,closedCloses=closed.map(x=>x.close),a=atr(closed),av=adx(closed),rv=rsi(closedCloses),st=stoch(closedCloses);
+  const closed=c.slice(0,-1),closedCloses=closed.map(x=>x.close),a=atr(c),av=adx(c),rv=rsi(c.map(x=>x.close)),st=stoch(closedCloses);
   const evaluation=evaluateGates(pair,c,p,entry1State,entry2AlreadyFired),alignment=evaluation.alignment;
   debug.push("[REGIME] "+alignment.regime+" | 1D close="+r(alignment.dailyClose)+" EMA21="+r(alignment.dailyE21)+" EMA5/13="+r(alignment.dailyE5)+"/"+r(alignment.dailyE13)+" | spread="+r(alignment.dailySpread3dPct,3)+"% -> "+r(alignment.dailySpreadPct,3)+"% ("+(Math.abs(alignment.dailySpreadPct)<Math.abs(alignment.dailySpread3dPct)?"narrowing":Math.abs(alignment.dailySpreadPct)>Math.abs(alignment.dailySpread3dPct)?"widening":"flat")+") | size="+Math.round(alignment.sizeMultiplier*100)+"%");
   debug.push("[4H CONTEXT] EMA5="+r(alignment.fourHE5)+" EMA13="+r(alignment.fourHE13)+" "+(alignment.fourH??"NEUTRAL")+" | direction is regime-only");
   debug.push("[GATES] "+JSON.stringify(evaluation));
-  const entry1Debug=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses));
-  debug.push("[TRIGGER] ENTRY_1="+evaluation.trigger.entry1+" ("+evaluation.trigger.entry1Reason+") | ENTRY_2="+evaluation.trigger.entry2+" ("+evaluation.trigger.entry2Reason+") | Stoch K/D prev="+st.pk+"/"+st.pd+" now="+st.k+"/"+st.d+" | crossDetected="+(entry1Debug.crossDetected?entry1Debug.crossDetected+" ("+entry1Debug.crossAge+")":"none")+" | K threshold "+(alignment.aligned==="SHORT"?">30":alignment.aligned==="LONG"?"<70":"n/a")+" "+(entry1Debug.thresholdPassed?"passed":"not passed"));
+  const closed4h=c.slice(0,-1),closedCloses=closed4h.map(x=>x.close),stClosed=stoch(closedCloses),entry1Debug=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses),closed4h,p);
+  debug.push("[TRIGGER] "+pair+" — K="+stClosed.k+" D="+stClosed.d+" | cross="+(entry1Debug.crossDetected??"none")+(entry1Debug.crossAgeInCandles===null?"":" | crossAge="+entry1Debug.crossAgeInCandles+" candle"+(entry1Debug.crossAgeInCandles===1?"":"s"))+" | "+(entry1Debug.case==="fresh"?"size=100% (fresh)":entry1Debug.case==="recent"?"size=50% (recent)":entry1Debug.reason)+" | entry1="+evaluation.trigger.entry1);
   debug.push("[EXHAUST] "+(evaluation.exhaustion??"clear"));
   if(!evaluation.allPassed){
     debug.push(alignment.regime==="CHOP"?"[WAIT] daily regime CHOP — no directional entry until the daily regime is directional":"[WAIT] "+evaluation.missing.join(", "));
@@ -246,13 +275,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tp1=targets.tp1,tp2=targets.tp2;
   const risk=Math.abs(entry-stopResult.stop),actualRr=Math.abs(tp2-entry)/Math.max(risk,EPS);
   const closed4hTimestamp=closed.at(-1)?.timestamp??0,ema8_4h=ema(closedCloses,8).at(-1)??0,ema21_4h=ema(closedCloses,21).at(-1)??0;
-  const sizeMultiplier:1|0.5=alignment.sizeMultiplier===0.5?0.5:1;
+  const regimeSizeMultiplier=alignment.sizeMultiplier===0.5?0.5:1,entrySizeMultiplier:1|0.5=signalType==="ENTRY_1"?evaluation.trigger.entry1SizeMultiplier:1;
+  const sizeMultiplier:0.25|0.5|1=(regimeSizeMultiplier*entrySizeMultiplier) as 0.25|0.5|1;
   const s:Signal={
     id:pair+"_"+signalType+"_"+now,pair,direction,type:signalType,entry:priceRound(entry),signalClass:"TREND",sizeMultiplier,
     stop:priceRound(stopResult.stop),tp1:priceRound(tp1),tp2:priceRound(tp2),rr:r(actualRr,2),expectedMove:6,adx:r(av,1),rsi:r(rv,1),stochK:st.k,stochD:st.d,
-    reason:direction+" "+signalType+" | daily "+alignment.regime+" regime | "+Math.round(sizeMultiplier*100)+"% size | "+(signalType==="ENTRY_1"?"fresh 4H Stoch RSI crossover within early-entry range":"ENTRY_1 retest: first wave, pullback, EMA8 side and second 4H Stoch RSI crossover"),
+    reason:direction+" "+signalType+" | daily "+alignment.regime+" regime | "+Math.round(sizeMultiplier*100)+"% size | "+(signalType==="ENTRY_1"?(evaluation.trigger.entry1Case==="recent"?"recent 4H Stoch RSI crossover ("+evaluation.trigger.entry1CrossAgeInCandles+" candles ago, price not extended)":"fresh 4H Stoch RSI crossover within early-entry range"):"ENTRY_1 retest: first wave, pullback, EMA8 side and second 4H Stoch RSI crossover"),
     timestamp:now,version:CURRENT_SIGNAL_VERSION,
-    context:{entryAnchor:"current price",signalClass:"TREND",sizeMultiplier,structuralAnchor:stopResult.calc.structuralAnchor,liquidationPrice:stopResult.calc.liquidationPrice,stopToLiquidationBufferPct:stopResult.calc.liquidationBufferPct,stopCalc:stopResult.calc,regime:alignment.regime,dailySpreadPct:alignment.dailySpreadPct,dailySpread3dPct:alignment.dailySpread3dPct,dailySpreadDelta:alignment.dailySpreadDelta,ema5_1d:alignment.dailyE5,ema13_1d:alignment.dailyE13,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,ema8_4h:ema8_4h,ema21_4h:ema21_4h,closed4hTimestamp,stochK_4h:st.k,stochD_4h:st.d}
+    context:{entryAnchor:"current price",signalClass:"TREND",sizeMultiplier,regimeSizeMultiplier,entrySizeMultiplier,entryCrossType:signalType==="ENTRY_1"?evaluation.trigger.entry1Case:null,crossAgeInCandles:signalType==="ENTRY_1"?evaluation.trigger.entry1CrossAgeInCandles:null,structuralAnchor:stopResult.calc.structuralAnchor,liquidationPrice:stopResult.calc.liquidationPrice,stopToLiquidationBufferPct:stopResult.calc.liquidationBufferPct,stopCalc:stopResult.calc,regime:alignment.regime,dailySpreadPct:alignment.dailySpreadPct,dailySpread3dPct:alignment.dailySpread3dPct,dailySpreadDelta:alignment.dailySpreadDelta,ema5_1d:alignment.dailyE5,ema13_1d:alignment.dailyE13,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,ema8_4h:ema8_4h,ema21_4h:ema21_4h,closed4hTimestamp,stochK_4h:st.k,stochD_4h:st.d}
   };
   const activeMatch=activeSignals.find(active=>active.pair===pair&&active.direction===s.direction);
   if(activeMatch){
@@ -351,11 +381,11 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
   void candles1h;void candles15m;
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),dailyCandles=daily(c).slice(0,-1),dailyCloses=dailyCandles.map(x=>x.close),alignment=trendAlignment(c);
   const e8d=ema(dailyCloses,8).at(-1)??0,e21d=ema(dailyCloses,21).at(-1)??0;
-  const st=stoch(q),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;
+  const closed4h=c.slice(0,-1),closedCloses=closed4h.map(x=>x.close),st=stoch(closedCloses),st1d=stoch(dailyCloses),e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;
   const fourHDirection=e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL";
   const fourHTacticalDirection=alignment.fourH==="LONG"?"BULL":alignment.fourH==="SHORT"?"BEAR":"NEUTRAL";
   const fourHTacticalLabel="EMA5 "+r(alignment.fourHE5)+" "+(alignment.fourH==="LONG"?">":alignment.fourH==="SHORT"?"<":"=")+" EMA13 "+r(alignment.fourHE13);
-  const entry1=evaluateEntry1(alignment.aligned,getStochSeries(q)),exhausted=alignment.aligned?exhaustion(alignment.aligned,rsi(q)):null;
+  const entry1=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses),closed4h,c.at(-1)?.close),exhausted=alignment.aligned?exhaustion(alignment.aligned,rsi(q)):null;
   const strategyStatus=alignment.regime==="CHOP"?"WAIT — regime CHOP":exhausted?"WAIT — "+exhausted:entry1.entry1?"FIRED — ENTRY_1 "+entry1.direction:"READY — waiting for 4H Stoch RSI cross";
   return{pair,price:c.at(-1)?.close??0,trend:alignment.regime,regime:alignment.regime,dailyClose:alignment.dailyClose,dailyE21:alignment.dailyE21,adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:e8d,ema21_1d:e21d,ema5_1d:alignment.dailyE5,ema13_1d:alignment.dailyE13,dailyDirection:alignment.regime.startsWith("BULL")?"BULL":alignment.regime.startsWith("BEAR")?"BEAR":"CHOP",dailyStrength:alignment.dailyStrength,dailySpreadPct:alignment.dailySpreadPct,dailySpread3dPct:alignment.dailySpread3dPct,dailySpreadDelta:alignment.dailySpreadDelta,dailySlope:alignment.dailySlope,sizeMultiplier:alignment.sizeMultiplier,fourHDirection,fourHTacticalDirection,fourHTacticalLabel,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,alignedDirection:alignment.aligned,strategyStatus};
 }
