@@ -94,7 +94,7 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
   const priceMovePct=crossPrice!==null&&crossPrice>0&&currentPrice!==null&&Number.isFinite(currentPrice)?Math.abs((currentPrice-crossPrice)/crossPrice)*100:null;
   const notExtended=priceMovePct!==null&&priceMovePct<=2;
   const freshCross=age!==null&&age<=1;
-  const shortFresh=isShort&&freshCross&&last.k<last.d&&last.k>30;
+  const shortFresh=isShort&&freshCross&&last.k<last.d&&last.k>30&&liveCorrect;
   const longFresh=!isShort&&freshCross&&last.k>last.d&&last.k<70;
   const kInRange=isShort?(last.k>20&&last.k<70):(last.k>30&&last.k<80);
   if(shortFresh||longFresh)return{entry1Long:longFresh,entry1Short:shortFresh,entry1:true,direction:aligned,crossDetected:crossDetected!,crossAge:age===0?"last candle":"previous candle",crossAgeInCandles:age,case:"fresh",sizeMultiplier:1,thresholdPassed:true,reason:"fresh 4H Stoch RSI crossover within early-entry range",crossPrice,priceMovePct,kInRange:isShort?last.k>30:last.k<70,notExtended};
