@@ -29,7 +29,7 @@ async function waitForRequestSlot(): Promise<void> {
   }
 }
 
-async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
+async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000): Promise<Response> {
   // Never automatically retry private POSTs: a timed-out exchange order may
   // already have been accepted by the exchange.
   const retryable = (opts?.method ?? "GET").toUpperCase() === "GET";
@@ -38,7 +38,7 @@ async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
     try {
       const res = await fetch(url, {
         ...opts,
-        signal: opts?.signal ?? AbortSignal.timeout(6000),
+        signal: opts?.signal ?? AbortSignal.timeout(timeoutMs),
       });
       if (retryable && res.status === 429 && attempt === 0) {
         console.warn("[KRAKEN] HTTP 429; retrying once after backoff");
@@ -65,7 +65,7 @@ export async function getCandles(pair: string, interval: number = 60, since?: nu
   url.searchParams.set("pair", pair);
   url.searchParams.set("interval", String(interval));
   url.searchParams.set("since", String(since ?? defaultSince));
-  const res = await rateFetch(url.toString());
+  const res = await rateFetch(url.toString(), undefined, 4000);
   if (!res.ok) throw new Error(`Kraken OHLC HTTP ${res.status}`);
   const data = await res.json();
   if (data.error?.length > 0) throw new Error(`Kraken OHLC error: ${data.error.join(", ")}`);
