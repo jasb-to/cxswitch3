@@ -263,20 +263,7 @@ export async function GET(request:Request){
     if(VERBOSE_CRON_LOGS)console.log(jarvisState);
     console.log(`[PERF] ${pair} processed in ${Date.now()-pairStarted}ms`);
   }
- })); }
- const marketPersistStarted=Date.now();
- console.log(`[PERF] Stage setMarketData started rows=${marketData.length}`);
- try {
-   await setMarketData(marketData);
-   console.log(`[PERF] Stage setMarketData completed in ${Date.now()-marketPersistStarted}ms`);
- } catch(error) {
-   // Signal evaluation and trade management use the in-memory marketData array. A failed
-   // dashboard snapshot write must not prevent those safety-critical stages from running.
-   console.error(`[PERF] Stage setMarketData failed after ${Date.now()-marketPersistStarted}ms; continuing with in-memory market data (dashboard snapshot may be stale)`,error);
-   alerts.push({status:"market_data_persist_failed",reason:"dashboard_snapshot_write_failed"});
- }
- // Safety-critical active-position management runs before dashboard persistence
- // and Jarvis. Ancillary stages must not delay stop/target reconciliation.
+ }));
  const managementStarted=Date.now();
  console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
  try {
