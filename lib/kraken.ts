@@ -29,16 +29,35 @@ async function waitForRequestSlot(): Promise<void> {
   }
 }
 
-async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
+const MAX_IN_FLIGHT_REQUESTS = 8;
+let inFlightRequests = 0;
+const inFlightWaiters: Array<() => void> = [];
+async function acquireInFlightSlot(): Promise<void> {
+  if (inFlightRequests < MAX_IN_FLIGHT_REQUESTS) {
+    inFlightRequests++;
+    return;
+  }
+  await new Promise<void>(resolve => inFlightWaiters.push(resolve));
+}
+function releaseInFlightSlot(): void {
+  const next = inFlightWaiters.shift();
+  if (next) next();
+  else inFlightRequests = Math.max(0, inFlightRequests - 1);
+}
+
+async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000): Promise<Response> {
   // Never automatically retry private POSTs: a timed-out exchange order may
   // already have been accepted by the exchange.
   const retryable = (opts?.method ?? "GET").toUpperCase() === "GET";
   for (let attempt = 0; attempt < (retryable ? 2 : 1); attempt++) {
-    await waitForRequestSlot();
+    await acquireInFlightSlot();
     try {
+      await waitForRequestSlot();
       const res = await fetch(url, {
         ...opts,
-        signal: opts?.signal ?? AbortSignal.timeout(6000),
+        // Build a fresh timeout for each attempt; an aborted first attempt must
+        // not cause the retry to fail immediately using the same signal.
+        signal: opts?.signal ?? AbortSignal.timeout(timeoutMs),
       });
       if (retryable && res.status === 429 && attempt === 0) {
         console.warn("[KRAKEN] HTTP 429; retrying once after backoff");
@@ -54,6 +73,8 @@ async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
         continue;
       }
       throw error;
+    } finally {
+      releaseInFlightSlot();
     }
   }
   throw new Error("Kraken request failed after retry");
@@ -65,7 +86,7 @@ export async function getCandles(pair: string, interval: number = 60, since?: nu
   url.searchParams.set("pair", pair);
   url.searchParams.set("interval", String(interval));
   url.searchParams.set("since", String(since ?? defaultSince));
-  const res = await rateFetch(url.toString());
+  const res = await rateFetch(url.toString(), undefined, 4000);
   if (!res.ok) throw new Error(`Kraken OHLC HTTP ${res.status}`);
   const data = await res.json();
   if (data.error?.length > 0) throw new Error(`Kraken OHLC error: ${data.error.join(", ")}`);
