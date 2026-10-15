@@ -90,7 +90,7 @@ async function observeAlertManagement(active:any[],marketData:any[]){
       console.error(`[MANAGEMENT] ${alert.pair} ${alert.direction} failed; continuing other positions`,error);
     }
   }
-}}
+}
 
 async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], alerts:any[]){
   let active=[...initialActive];
