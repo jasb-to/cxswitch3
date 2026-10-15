@@ -157,7 +157,7 @@ export async function GET(request:Request){
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[];
 
 
- for(const batch of [PAIRS.slice(0,4),PAIRS.slice(4)]){ await Promise.all(batch.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;try{
+ await Promise.all(PAIRS.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;try{
   const [c1,c4,c15]=await Promise.all([
     getCandles(krakenPairFormat(pair+"/USD"),60),
     getCandles(krakenPairFormat(pair+"/USD"),240),
@@ -275,28 +275,45 @@ export async function GET(request:Request){
    console.error(`[PERF] Stage setMarketData failed after ${Date.now()-marketPersistStarted}ms; continuing with in-memory market data (dashboard snapshot may be stale)`,error);
    alerts.push({status:"market_data_persist_failed",reason:"dashboard_snapshot_write_failed"});
  }
- // Jarvis refresh completes before management.
+ // Safety-critical active-position management runs before dashboard persistence
+ // and Jarvis. Ancillary stages must not delay stop/target reconciliation.
+ const managementStarted=Date.now();
+ console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
+ try {
+   await observeAlertManagement(active,marketData);
+   console.log(`[PERF] Stage observeAlertManagement completed in ${Date.now()-managementStarted}ms`);
+ } catch(error) {
+   console.error(`[PERF] Stage observeAlertManagement failed after ${Date.now()-managementStarted}ms`,error);
+   alerts.push({status:"management_stage_failed",reason:String(error)});
+ }
+ const reconcileStarted=Date.now();
+ console.log(`[PERF] Stage reconcileAlertOutcomes started`);
+ try {
+   active=await reconcileAlertOutcomes(active,marketData,alerts);
+   console.log(`[PERF] Stage reconcileAlertOutcomes completed in ${Date.now()-reconcileStarted}ms`);
+ } catch(error) {
+   console.error(`[PERF] Stage reconcileAlertOutcomes failed after ${Date.now()-reconcileStarted}ms`,error);
+   alerts.push({status:"reconcile_stage_failed",reason:String(error)});
+ }
+ const marketPersistStarted=Date.now();
+ console.log(`[PERF] Stage setMarketData started rows=${marketData.length}`);
+ try {
+   await setMarketData(marketData);
+   console.log(`[PERF] Stage setMarketData completed in ${Date.now()-marketPersistStarted}ms`);
+ } catch(error) {
+   console.error(`[PERF] Stage setMarketData failed after ${Date.now()-marketPersistStarted}ms; continuing with in-memory market data (dashboard snapshot may be stale)`,error);
+   alerts.push({status:"market_data_persist_failed",reason:"dashboard_snapshot_write_failed"});
+ }
+ // Jarvis is advisory only; run it after position management and market persistence.
  const jarvisStarted=Date.now();
  console.log(`[PERF] Stage JARVIS started`);
- try{
+ try {
    const jarvis=await runJarvis(marketData,await getActiveSignals());
    console.log(`[JARVIS] Portfolio ${jarvis.portfolioState} | ${jarvis.whatChanged}`);
    console.log(`[PERF] Stage JARVIS completed in ${Date.now()-jarvisStarted}ms`);
-   // Jarvis is dashboard guidance only. Telegram stays strictly actionable:
-   // V28 ENTRY_1/ENTRY_2 alerts and position-management alerts are the only
-   // strategy notifications sent to Telegram. 4H turns and Jarvis opportunities
-   // remain visible in the dashboard but never create Telegram noise.
- }catch(error){
+ } catch(error) {
    console.error(`[JARVIS] State refresh failed after ${Date.now()-jarvisStarted}ms; existing strategy continues unchanged`,error);
  }
- const managementStarted=Date.now();
- console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
- await observeAlertManagement(active,marketData);
- console.log(`[PERF] Stage observeAlertManagement completed in ${Date.now()-managementStarted}ms`);
- const reconcileStarted=Date.now();
- console.log(`[PERF] Stage reconcileAlertOutcomes started`);
- active=await reconcileAlertOutcomes(active,marketData,alerts);
- console.log(`[PERF] Stage reconcileAlertOutcomes completed in ${Date.now()-reconcileStarted}ms`);
  const finalActive=await getActiveSignals();
  const entryAlertsSent=alerts.filter((x:any)=>x.status==="sent").length;
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${entryAlertsSent} alertOutcomes=${alerts.length}`);
