@@ -61,6 +61,7 @@ function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK
 
 async function observeAlertManagement(active:any[],marketData:any[]){
   for(const alert of active){
+    try {
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
     const candles=Array.isArray(market?.momentumCandles4h)?market.momentumCandles4h:[];
     const price=Number(market?.currentPrice??market?.price);
@@ -85,12 +86,16 @@ async function observeAlertManagement(active:any[],marketData:any[]){
         console.log(`[MANAGEMENT ALERT] CX — ${alert.pair} ${alert.direction}. ${hold.reason} confirmed. EXIT TRADE.`);
       }
     }
+    } catch(error) {
+      console.error(`[MANAGEMENT] ${alert.pair} ${alert.direction} failed; continuing other positions`,error);
+    }
   }
-}
+}}
 
 async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], alerts:any[]){
   let active=[...initialActive];
   for(const alert of [...active]){
+    try {
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
     const price=Number(market?.currentPrice??market?.price);
     if(!Number.isFinite(price)||price<=0)continue;
@@ -109,6 +114,10 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
       active=active.filter((item:any)=>item.id!==alert.id);
       alerts.push({pair:alert.pair,status:"tp_hit",price,level:target});
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — TP_HIT @ ${price} (TP2 ${target})`);
+    }
+    } catch(error) {
+      console.error(`[RECONCILE] ${alert.pair} ${alert.direction} failed; retaining position for next run`,error);
+      alerts.push({pair:alert.pair,status:"reconcile_failed",reason:String(error)});
     }
   }
   await setActiveSignals(active);
