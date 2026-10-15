@@ -29,15 +29,34 @@ async function waitForRequestSlot(): Promise<void> {
   }
 }
 
+const MAX_IN_FLIGHT_REQUESTS = 8;
+let inFlightRequests = 0;
+const inFlightWaiters: Array<() => void> = [];
+async function acquireInFlightSlot(): Promise<void> {
+  if (inFlightRequests < MAX_IN_FLIGHT_REQUESTS) {
+    inFlightRequests++;
+    return;
+  }
+  await new Promise<void>(resolve => inFlightWaiters.push(resolve));
+}
+function releaseInFlightSlot(): void {
+  const next = inFlightWaiters.shift();
+  if (next) next();
+  else inFlightRequests = Math.max(0, inFlightRequests - 1);
+}
+
 async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000): Promise<Response> {
   // Never automatically retry private POSTs: a timed-out exchange order may
   // already have been accepted by the exchange.
   const retryable = (opts?.method ?? "GET").toUpperCase() === "GET";
   for (let attempt = 0; attempt < (retryable ? 2 : 1); attempt++) {
-    await waitForRequestSlot();
+    await acquireInFlightSlot();
     try {
+      await waitForRequestSlot();
       const res = await fetch(url, {
         ...opts,
+        // Build a fresh timeout for each attempt; an aborted first attempt must
+        // not cause the retry to fail immediately using the same signal.
         signal: opts?.signal ?? AbortSignal.timeout(timeoutMs),
       });
       if (retryable && res.status === 429 && attempt === 0) {
@@ -54,6 +73,8 @@ async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000): Pro
         continue;
       }
       throw error;
+    } finally {
+      releaseInFlightSlot();
     }
   }
   throw new Error("Kraken request failed after retry");
