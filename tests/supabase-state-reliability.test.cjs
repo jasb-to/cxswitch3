@@ -24,6 +24,7 @@ test("active state removes bulky context, preserves size, and logs payload bytes
   assert.ok(state.includes("new TextEncoder().encode(JSON.stringify(compact)).length"));
   assert.ok(state.includes("sizeMultiplier:signal.sizeMultiplier"));
   assert.ok(!state.includes("timeoutMs:8000"));
+  assert.ok(!state.includes("redis.set(ACTIVE_SIGNALS_KEY, active)"), "legacy cleanup must use the compacting setter");
 });
 
 test("cron batches new positions and commits active state once during reconciliation", () => {

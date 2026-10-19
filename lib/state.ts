@@ -64,7 +64,7 @@ export async function getActiveSignals(): Promise<ActiveTrade[]> {
     const bad = active.filter(t => t.pair === "BTC" && t.direction === "SHORT");
     if (bad.length) {
       active = active.filter(t => !(t.pair === "BTC" && t.direction === "SHORT"));
-      await redis.set(ACTIVE_SIGNALS_KEY, active);
+      await setActiveSignals(active);
       const history = (await redis.get<SignalHistoryEntry[]>(SIGNAL_HISTORY_KEY)) || [];
       const badIds = new Set(bad.map(t => t.id));
       for (const h of history) {
