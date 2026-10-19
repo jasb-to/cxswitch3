@@ -62,21 +62,21 @@ export class Redis {
     return getClient();
   }
 
-  async get<T = unknown>(key: string): Promise<T | null> {
+  async get<T = unknown>(key: string, maxRetries = MAX_OPERATION_RETRIES): Promise<T | null> {
     return withRetry(`get:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async signal => {
       const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).abortSignal(signal).maybeSingle();
       if (error) throw new Error(`Supabase KV get failed for ${key}: ${error.message}`);
       if (!data) return null;
       if (data.expires_at && new Date(data.expires_at).getTime() <= Date.now()) {
         void withRetry(`delete-expired:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async deleteSignal => {
-          const { error: deleteError } = await this.db.from("cxswitch_kv").delete().eq("key", key).abortSignal(deleteSignal);
+          const { error: deleteError } = await this.db.from("cxswitch_kv").delete().eq("key", key).lte("expires_at", new Date().toISOString()).abortSignal(deleteSignal);
           if (deleteError) throw new Error(`Supabase KV expired delete failed for ${key}: ${deleteError.message}`);
           return true;
         }).catch(cleanupError => console.warn(`[KV] Expired-key cleanup skipped for ${key}: ${String(cleanupError)}`));
         return null;
       }
       return data.value as T;
-    });
+    }, maxRetries);
   }
 
   async set(key: string, value: unknown, options: SetOptions = {}): Promise<"OK" | null> {
@@ -85,13 +85,13 @@ export class Redis {
     if (options.nx) {
       // NX claims are one-shot. Do not retry an ambiguous timeout as that could
       // blur the difference between our claim and another caller's successful claim.
-      return withRetry(`claim:${key}`, timeoutMs, async signal => {
+      return withRetry<"OK" | null>(`claim:${key}`, timeoutMs, async signal => {
         const { data, error } = await this.db.rpc("cxswitch_kv_claim", { p_key: key, p_value: value, p_expires_at: expiresAt }).abortSignal(signal);
         if (error) throw new Error(`Supabase KV claim failed for ${key}: ${error.message}`);
         return data === true ? "OK" : null;
       }, 0);
     }
-    return withRetry(`set:${key}`, timeoutMs, async signal => {
+    return withRetry<"OK" | null>(`set:${key}`, timeoutMs, async signal => {
       const { error } = await this.db.from("cxswitch_kv").upsert({ key, value, expires_at: expiresAt }, { onConflict: "key" }).abortSignal(signal);
       if (error) throw new Error(`Supabase KV set failed for ${key}: ${error.message}`);
       return "OK";
@@ -121,11 +121,11 @@ export class Redis {
     });
   }
 
-  async del(key: string): Promise<number> {
+  async del(key: string, maxRetries = MAX_OPERATION_RETRIES): Promise<number> {
     return withRetry(`delete:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async signal => {
       const { data, error } = await this.db.from("cxswitch_kv").delete().eq("key", key).select("key").abortSignal(signal);
       if (error) throw new Error(`Supabase KV delete failed for ${key}: ${error.message}`);
       return data?.length ?? 0;
-    });
+    }, maxRetries);
   }
 }

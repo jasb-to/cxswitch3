@@ -37,11 +37,15 @@ test("cron batches new positions and commits active state once during reconcilia
 test("cron uses a shared lock and safely reports state-store degradation", () => {
   assert.ok(state.includes("claimCronLock(token:string)"));
   assert.ok(state.includes("releaseCronLock(token:string)"));
+  assert.ok(state.includes("CRON_LOCK_KEY,0"));
+  assert.ok(state.includes("redis.del(CRON_LOCK_KEY,0)"));
   assert.ok(cron.includes("await claimCronLock(lockToken)"));
   assert.ok(cron.includes("await releaseCronLock(lockToken)"));
   assert.ok(cron.includes('"state_unavailable":"cron_failed"'));
   assert.ok(cron.includes("Distributed lock unavailable; refusing to evaluate signals without a lock"));
   assert.ok(cron.includes("success:!stateDegraded,degraded:stateDegraded"));
+  assert.ok(cron.includes("Stage setMarketData skipped because state store is already degraded"));
+  assert.ok(cron.includes("Skipped because the state store is already degraded this cycle"));
 });
 
 test("dashboard restores active-trade context from history rather than active KV", () => {

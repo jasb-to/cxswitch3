@@ -69,7 +69,8 @@ function mergeNewSignalsIntoActive(current:any[],signals:Signal[]):any[]{
   return merged;
 }
 
-async function observeAlertManagement(active:any[],marketData:any[]){
+async function observeAlertManagement(active:any[],marketData:any[]):Promise<boolean>{
+  let stateStoreFailed=false;
   for(const alert of active){
     try {
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
@@ -97,9 +98,11 @@ async function observeAlertManagement(active:any[],marketData:any[]){
       }
     }
     } catch(error) {
+      if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(error)))stateStoreFailed=true;
       console.error(`[MANAGEMENT] ${alert.pair} ${alert.direction} failed; continuing other positions`,error);
     }
   }
+  return stateStoreFailed;
 }
 
 async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], alerts:any[]){
@@ -312,7 +315,7 @@ export async function GET(request:Request){
  const managementStarted=Date.now();
  console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
  try {
-   await observeAlertManagement(active,marketData);
+   if(await observeAlertManagement(active,marketData))stateDegraded=true;
    console.log(`[PERF] Stage observeAlertManagement completed in ${Date.now()-managementStarted}ms`);
  } catch(error) {
    console.error(`[PERF] Stage observeAlertManagement failed after ${Date.now()-managementStarted}ms`,error);
@@ -328,29 +331,42 @@ export async function GET(request:Request){
    console.error(`[PERF] Stage reconcileAlertOutcomes failed after ${Date.now()-reconcileStarted}ms`,error);
    alerts.push({status:"reconcile_stage_failed",reason:String(error)});
  }
- const marketPersistStarted=Date.now();
- console.log(`[PERF] Stage setMarketData started rows=${marketData.length}`);
- try {
-   await setMarketData(marketData);
-   console.log(`[PERF] Stage setMarketData completed in ${Date.now()-marketPersistStarted}ms`);
- } catch(error) {
-   stateDegraded=true;
-   console.error(`[PERF] Stage setMarketData failed after ${Date.now()-marketPersistStarted}ms; continuing with in-memory market data (dashboard snapshot may be stale)`,error);
-   alerts.push({status:"market_data_persist_failed",reason:"dashboard_snapshot_write_failed"});
+ if(stateDegraded){
+   console.warn("[PERF] Stage setMarketData skipped because state store is already degraded");
+ }else{
+   const marketPersistStarted=Date.now();
+   console.log(`[PERF] Stage setMarketData started rows=${marketData.length}`);
+   try{
+     await setMarketData(marketData);
+     console.log(`[PERF] Stage setMarketData completed in ${Date.now()-marketPersistStarted}ms`);
+   }catch(error){
+     stateDegraded=true;
+     console.error(`[PERF] Stage setMarketData failed after ${Date.now()-marketPersistStarted}ms; continuing with in-memory market data (dashboard snapshot may be stale)`,error);
+     alerts.push({status:"market_data_persist_failed",reason:"dashboard_snapshot_write_failed"});
+   }
  }
- // Jarvis is advisory only; run it after position management and market persistence.
- const jarvisStarted=Date.now();
- console.log(`[PERF] Stage JARVIS started`);
- try {
-   const jarvis=await runJarvis(marketData,await getActiveSignals());
-   console.log(`[JARVIS] Portfolio ${jarvis.portfolioState} | ${jarvis.whatChanged}`);
-   console.log(`[PERF] Stage JARVIS completed in ${Date.now()-jarvisStarted}ms`);
- } catch(error) {
-   console.error(`[JARVIS] State refresh failed after ${Date.now()-jarvisStarted}ms; existing strategy continues unchanged`,error);
+ // Jarvis is advisory only; skip optional KV reads once persistence has failed.
+ if(stateDegraded){
+   console.warn("[JARVIS] Skipped because the state store is already degraded this cycle");
+ }else{
+   const jarvisStarted=Date.now();
+   console.log(`[PERF] Stage JARVIS started`);
+   try{
+     const jarvis=await runJarvis(marketData,await getActiveSignals());
+     console.log(`[JARVIS] Portfolio ${jarvis.portfolioState} | ${jarvis.whatChanged}`);
+     console.log(`[PERF] Stage JARVIS completed in ${Date.now()-jarvisStarted}ms`);
+   }catch(error){
+     if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(error)))stateDegraded=true;
+     console.error(`[JARVIS] State refresh failed after ${Date.now()-jarvisStarted}ms; existing strategy continues unchanged`,error);
+   }
  }
  let finalActive=active;
- try{finalActive=await getActiveSignals();}
- catch(error){stateDegraded=true;console.error("[STATE] Final active-state read failed; using in-memory positions for this response only",error);alerts.push({status:"final_active_state_read_failed",reason:"active_state_unavailable"});}
+ if(!stateDegraded){
+   try{finalActive=await getActiveSignals();}
+   catch(error){stateDegraded=true;console.error("[STATE] Final active-state read failed; using in-memory positions for this response only",error);alerts.push({status:"final_active_state_read_failed",reason:"active_state_unavailable"});}
+ }else{
+   console.warn("[STATE] Skipped final active-state read because persistence already degraded; using in-memory state for this response");
+ }
  const entryAlertsSent=alerts.filter((x:any)=>x.status==="sent").length;
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${entryAlertsSent} alertOutcomes=${alerts.length}`);
  console.log(`[PERF] Total cron duration ${Date.now()-started}ms`);
