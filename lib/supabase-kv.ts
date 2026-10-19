@@ -66,7 +66,8 @@ export class Redis {
     return withRetry(`get:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async signal => {
       const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).abortSignal(signal).maybeSingle();
       if (error) throw new Error(`Supabase KV get failed for ${key}: ${error.message}`);
-      if (!data) return null;
+      if (!data) { console.log(`[KV SIZE] ${key}: 0 bytes (missing)`); return null; }
+      console.log(`[KV SIZE] ${key}: ${new TextEncoder().encode(JSON.stringify(data.value) ?? "").length} bytes`);
       if (data.expires_at && new Date(data.expires_at).getTime() <= Date.now()) {
         void withRetry(`delete-expired:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async deleteSignal => {
           const { error: deleteError } = await this.db.from("cxswitch_kv").delete().eq("key", key).lte("expires_at", new Date().toISOString()).abortSignal(deleteSignal);
@@ -82,6 +83,7 @@ export class Redis {
   async set(key: string, value: unknown, options: SetOptions = {}): Promise<"OK" | null> {
     const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS));
     const expiresAt = expiry(options.ex);
+    if (!options.nx) console.log(`[KV SIZE] ${key}: ${new TextEncoder().encode(JSON.stringify(value) ?? "").length} bytes (write)`);
     if (options.nx) {
       // NX claims are one-shot. Do not retry an ambiguous timeout as that could
       // blur the difference between our claim and another caller's successful claim.
