@@ -119,9 +119,13 @@ export async function getSignalHistory():Promise<SignalHistoryEntry[]>{
   const compact=history.slice(-SIGNAL_HISTORY_MAX).map(entry=>{const stored={...entry};delete stored.context;return stored;});
   const changed=compact.length!==history.length||history.some(entry=>Object.prototype.hasOwnProperty.call(entry,"context"));
   if(changed){
-    await redis.set(SIGNAL_HISTORY_KEY,compact);
     const bytes=new TextEncoder().encode(JSON.stringify(compact)).length;
-    console.log(`[STATE CLEANUP] Compacted signal_history count=${history.length}->${compact.length} bytes=${bytes}`);
+    try {
+      await redis.set(SIGNAL_HISTORY_KEY,compact);
+      console.log(`[STATE CLEANUP] Compacted signal_history count=${history.length}->${compact.length} bytes=${bytes}`);
+    } catch (error) {
+      console.warn(`[STATE CLEANUP] signal_history compaction write failed; continuing with compact in-memory history bytes=${bytes}: ${String(error)}`);
+    }
   }
   const cleaned=await redis.get<boolean>(CLEANUP_KEY);
   if(!cleaned){
