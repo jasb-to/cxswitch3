@@ -230,8 +230,27 @@ export async function setLastCronRun(ts:number):Promise<void>{await redis.set(CR
 
 // Shared atomic lock prevents overlapping cron executions across Vercel instances.
 export async function claimCronLock(token:string):Promise<boolean>{
-  const result=await redis.set(CRON_LOCK_KEY,{token,startedAt:Date.now()},{nx:true,ex:CRON_LOCK_TTL_SECONDS});
-  return result==="OK";
+  try {
+    const result=await redis.set(CRON_LOCK_KEY,{token,startedAt:Date.now()},{nx:true,ex:CRON_LOCK_TTL_SECONDS});
+    return result==="OK";
+  } catch (claimError) {
+    // A client timeout is ambiguous: Postgres may have committed the atomic NX
+    // insert even though Vercel never received its response. Verify ownership
+    // with a single read before failing closed; never retry the claim itself.
+    const message=claimError instanceof Error?claimError.message:String(claimError);
+    if(!/TimeoutError|AbortError|aborted due to timeout/i.test(message)) throw claimError;
+    try {
+      const lock=await redis.get<{token?:string}>(CRON_LOCK_KEY,0);
+      if(lock?.token===token) {
+        console.warn("[CRON LOCK] Claim response timed out, but ownership was verified by token; proceeding with the acquired lock");
+        return true;
+      }
+      console.warn("[CRON LOCK] Claim response timed out and ownership could not be verified; refusing to evaluate signals");
+    } catch (verifyError) {
+      console.warn(`[CRON LOCK] Ownership verification failed after ambiguous claim timeout: ${String(verifyError)}`);
+    }
+    throw claimError;
+  }
 }
 export async function releaseCronLock(token:string):Promise<void>{
   const lock=await redis.get<{token?:string}>(CRON_LOCK_KEY,0);
