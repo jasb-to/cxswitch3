@@ -59,10 +59,13 @@ function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK
 
 function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean{
   const message=error instanceof Error?error.message:String(error);
-  return message.startsWith("Telegram alerting is not configured:")||
-    message.startsWith("Only ENTRY_1 and ENTRY_2 alerts are permitted:")||
-    message.startsWith("Telegram alert refused:")||
-    /^Telegram sendMessage failed \\(4\\d{2}\\):/.test(message);
+  if(message.startsWith("Telegram alerting is not configured:")||
+     message.startsWith("Only ENTRY_1 and ENTRY_2 alerts are permitted:")||
+     message.startsWith("Telegram alert refused:"))return true;
+  const statusPrefix="Telegram sendMessage failed (";
+  if(!message.startsWith(statusPrefix))return false;
+  const status=Number(message.slice(statusPrefix.length,statusPrefix.length+3));
+  return status>=400&&status<500&&message.charAt(statusPrefix.length+3)===")";
 }
 
 function mergeNewSignalsIntoActive(current:any[],signals:Signal[]):any[]{

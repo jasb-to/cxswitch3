@@ -56,6 +56,8 @@ test("Telegram send is bounded and ambiguous delivery keeps the dedupe claim", (
   assert.ok(cron.includes("function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean"));
   assert.ok(cron.includes("status=ambiguous_delivery; retaining lifecycle claim to prevent a duplicate alert"));
   assert.ok(cron.includes("if(isDefinitivelyRejectedBeforeDelivery(e))"));
+  assert.ok(cron.includes('const statusPrefix="Telegram sendMessage failed ("'));
+  assert.ok(cron.includes('return status>=400&&status<500&&message.charAt(statusPrefix.length+3)===")"'));
   assert.ok(!cron.includes("catch(e){await releaseTelegramAlert(alertKey);"));
 });
 
