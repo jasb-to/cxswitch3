@@ -4,6 +4,11 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 type SetOptions = { nx?: boolean; ex?: number; timeoutMs?: number };
 type Row = { key: string; value: unknown; expires_at: string | null };
 
+// Bound every persistence request so Supabase stalls fail fast instead of
+// consuming the entire Vercel cron execution window.
+const DEFAULT_QUERY_TIMEOUT_MS = 3000;
+const CLEANUP_QUERY_TIMEOUT_MS = 1500;
+
 let client: SupabaseClient | null = null;
 
 function getClient() {
@@ -33,11 +38,11 @@ export class Redis {
   }
 
   async get<T = unknown>(key: string): Promise<T | null> {
-    const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).maybeSingle();
+    const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).abortSignal(AbortSignal.timeout(DEFAULT_QUERY_TIMEOUT_MS)).maybeSingle();
     if (error) throw new Error(`Supabase KV get failed for ${key}: ${error.message}`);
     if (!data) return null;
     if (data.expires_at && new Date(data.expires_at).getTime() <= Date.now()) {
-      await this.db.from("cxswitch_kv").delete().eq("key", key);
+      await this.db.from("cxswitch_kv").delete().eq("key", key).abortSignal(AbortSignal.timeout(DEFAULT_QUERY_TIMEOUT_MS));
       return null;
     }
     return data.value as T;
@@ -46,21 +51,19 @@ export class Redis {
   async set(key: string, value: unknown, options: SetOptions = {}): Promise<"OK" | null> {
     const expiresAt = expiry(options.ex);
     if (options.nx) {
-      const { data, error } = await this.db.rpc("cxswitch_kv_claim", { p_key: key, p_value: value, p_expires_at: expiresAt });
+      const { data, error } = await this.db.rpc("cxswitch_kv_claim", { p_key: key, p_value: value, p_expires_at: expiresAt }).abortSignal(AbortSignal.timeout(options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS));
       if (error) throw new Error(`Supabase KV claim failed for ${key}: ${error.message}`);
       return data === true ? "OK" : null;
     }
     let query = this.db.from("cxswitch_kv").upsert({ key, value, expires_at: expiresAt }, { onConflict: "key" });
-    if (options.timeoutMs !== undefined && options.timeoutMs > 0) {
-      query = query.abortSignal(AbortSignal.timeout(options.timeoutMs));
-    }
+    query = query.abortSignal(AbortSignal.timeout(options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS));
     const { error } = await query;
     if (error) throw new Error(`Supabase KV set failed for ${key}: ${error.message}`);
     return "OK";
   }
 
   async cleanupExpired(): Promise<number> {
-    const { data, error } = await this.db.rpc("cxswitch_kv_cleanup_expired");
+    const { data, error } = await this.db.rpc("cxswitch_kv_cleanup_expired").abortSignal(AbortSignal.timeout(CLEANUP_QUERY_TIMEOUT_MS));
     if (error) throw new Error(`Supabase KV cleanup failed: ${error.message}`);
     return Number(data ?? 0);
   }
@@ -70,17 +73,18 @@ export class Redis {
       .from("cxswitch_kv")
       .select("key,updated_at")
       .like("key", `${prefix}%`)
-      .order("updated_at", { ascending: false });
+      .order("updated_at", { ascending: false })
+      .abortSignal(AbortSignal.timeout(CLEANUP_QUERY_TIMEOUT_MS));
     if (error) throw new Error(`Supabase KV prune failed for ${prefix}: ${error.message}`);
     const stale = (data ?? []).slice(Math.max(0, keep)).map((row: { key: string }) => row.key);
     if (!stale.length) return 0;
-    const { error: deleteError } = await this.db.from("cxswitch_kv").delete().in("key", stale);
+    const { error: deleteError } = await this.db.from("cxswitch_kv").delete().in("key", stale).abortSignal(AbortSignal.timeout(CLEANUP_QUERY_TIMEOUT_MS));
     if (deleteError) throw new Error(`Supabase KV prune delete failed for ${prefix}: ${deleteError.message}`);
     return stale.length;
   }
 
   async del(key: string): Promise<number> {
-    const { data, error } = await this.db.from("cxswitch_kv").delete().eq("key", key).select("key");
+    const { data, error } = await this.db.from("cxswitch_kv").delete().eq("key", key).select("key").abortSignal(AbortSignal.timeout(DEFAULT_QUERY_TIMEOUT_MS));
     if (error) throw new Error(`Supabase KV delete failed for ${key}: ${error.message}`);
     return data?.length ?? 0;
   }

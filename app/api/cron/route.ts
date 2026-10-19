@@ -5,7 +5,7 @@ import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, runPersistenceCleanup, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 import { createSerialQueue } from "@/lib/serial-queue";
@@ -127,16 +127,30 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
 export async function GET(request:Request){
  const started=Date.now(),url=new URL(request.url),secret=url.searchParams.get("secret"),auth=request.headers.get("authorization");
  if(secret!==process.env.CRON_SECRET&&auth!==`Bearer ${process.env.CRON_SECRET}`)return NextResponse.json({error:"Unauthorized"},{status:401});
+ console.log(`[CRON v${CXSWITCH_VERSION}] Request accepted at ${new Date(started).toISOString()}`);
+ const guardStarted=Date.now();
+ console.log("[PERF] startup getLastCronRun started");
  const last=await getLastCronRun();
+ console.log(`[PERF] startup getLastCronRun completed in ${Date.now()-guardStarted}ms`);
  if(started-last<MIN_CRON_INTERVAL_MS){console.log(`[CRON v${CXSWITCH_VERSION}] Guard: run skipped; previous run ${Math.round((started-last)/1000)}s ago`);return NextResponse.json({success:true,skipped:true,reason:"concurrency_guard"});}
+ const lockStarted=Date.now();
+ console.log("[PERF] startup setLastCronRun started");
  await setLastCronRun(started);
- try{await runPersistenceCleanup();}catch(error){console.error("[STATE CLEANUP] persistence cleanup failed; continuing",error);}
+ console.log(`[PERF] startup setLastCronRun completed in ${Date.now()-lockStarted}ms`);
+ // Retention cleanup is intentionally excluded from the trading path. It is
+ // non-critical housekeeping and must never delay signal/position management.
  console.log("========================================");console.log(`[CRON v${CXSWITCH_VERSION}] Started at ${new Date(started).toISOString()}`);
+ const activeReadStarted=Date.now();
+ console.log("[PERF] startup getActiveSignals started");
  let active=await getActiveSignals();
+ console.log(`[PERF] startup getActiveSignals completed in ${Date.now()-activeReadStarted}ms`);
  // Reconcile the persistent position store against ACTIVE history before any
  // management runs. This recovers a live position if the active-state key was
  // lost/reset while its corresponding history entry remained ACTIVE.
+ const historyReadStarted=Date.now();
+ console.log("[PERF] startup getSignalHistory started");
  const historyAtStart=await getSignalHistory();
+ console.log(`[PERF] startup getSignalHistory completed in ${Date.now()-historyReadStarted}ms`);
  const activeKeys=new Set(active.map((x:any)=>`${x.pair}|${x.direction}`));
  const recoverable=historyAtStart
    .filter((h:any)=>h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2")&&Number.isFinite(Number(h.tp1))&&Number.isFinite(Number(h.tp2))&&!activeKeys.has(`${h.pair}|${h.direction}`))
