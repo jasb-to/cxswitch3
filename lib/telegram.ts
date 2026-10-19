@@ -68,7 +68,7 @@ export async function sendAlert(signal:any){
     throw new Error(`Telegram alert refused: TP1 and TP2 are identical (${formatPrice(tp1)}).`);
   }
 
-  const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
+  const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines}),signal:AbortSignal.timeout(6000)});
   if(!response.ok){
     const body=await response.text().catch(()=>"");
     throw new Error(`Telegram sendMessage failed (${response.status}): ${body.slice(0,300)}`);

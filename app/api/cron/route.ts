@@ -57,6 +57,14 @@ const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_revers
 async function persistExitCooldown(pair:string,reason:string){if(!INDICATOR_EXIT_REASONS.has(reason))return;const cooldowns=await getExitAlertCooldowns();cooldowns[pair]=Date.now();await setExitAlertCooldowns(cooldowns);}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 
+function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean{
+  const message=error instanceof Error?error.message:String(error);
+  return message.startsWith("Telegram alerting is not configured:")||
+    message.startsWith("Only ENTRY_1 and ENTRY_2 alerts are permitted:")||
+    message.startsWith("Telegram alert refused:")||
+    /^Telegram sendMessage failed \\(4\\d{2}\\):/.test(message);
+}
+
 function mergeNewSignalsIntoActive(current:any[],signals:Signal[]):any[]{
   const merged=current.map((trade:any)=>({...trade}));
   for(const signal of signals){
@@ -290,7 +298,19 @@ export async function GET(request:Request){
     newSignals.push(signal);
     console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
     console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=sent reason=telegram_api_accepted`);
-  }catch(e){await releaseTelegramAlert(alertKey);console.error(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=failed reason=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"alert_failed",reason:String(e)});throw e;}
+  }catch(e){
+    if(isDefinitivelyRejectedBeforeDelivery(e)){
+      try{await releaseTelegramAlert(alertKey);}
+      catch(releaseError){console.error(`[ALERT DISPATCH] pair=${pair} could not release rejected-delivery claim: ${String(releaseError)}`);}
+    }else{
+      // Telegram may have accepted the message even though the client never received
+      // a response. Keep the claim until its TTL expires rather than risk a duplicate.
+      console.error(`[ALERT DISPATCH] pair=${pair} status=ambiguous_delivery; retaining lifecycle claim to prevent a duplicate alert`);
+    }
+    console.error(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=failed reason=${String(e)}`);
+    alerts.push({pair,direction:signal.direction,type:signal.type,status:"alert_failed",reason:String(e)});
+    throw e;
+  }
   stateSignal=signal;
   dispatchStage="signal_history_append";
   try{await appendSignalHistory(signal);console.log(`[STATE ADD] pair=${pair} status=history_appended id=${signal.id}`);}catch(e){stateDegraded=true;console.error(`[STATE ADD] pair=${pair} status=failed reason=history_append_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"history_append_failed",reason:String(e)});}

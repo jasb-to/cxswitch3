@@ -6,6 +6,7 @@ const kv = fs.readFileSync("lib/supabase-kv.ts", "utf8");
 const state = fs.readFileSync("lib/state.ts", "utf8");
 const cron = fs.readFileSync("app/api/cron/route.ts", "utf8");
 const signals = fs.readFileSync("app/api/signals/route.ts", "utf8");
+const telegram = fs.readFileSync("lib/telegram.ts", "utf8");
 
 test("regular KV operations use two-second timeouts, one retry, and timing logs", () => {
   assert.ok(kv.includes("const DEFAULT_QUERY_TIMEOUT_MS = 2000"));
@@ -48,6 +49,14 @@ test("cron uses a shared lock and safely reports state-store degradation", () =>
   assert.ok(cron.includes("Stage setMarketData skipped because state store is already degraded"));
   assert.ok(cron.includes("Skipped because the state store is already degraded this cycle"));
   assert.ok(cron.includes("if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(e)))stateDegraded=true;"));
+});
+
+test("Telegram send is bounded and ambiguous delivery keeps the dedupe claim", () => {
+  assert.ok(telegram.includes("signal:AbortSignal.timeout(6000)"));
+  assert.ok(cron.includes("function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean"));
+  assert.ok(cron.includes("status=ambiguous_delivery; retaining lifecycle claim to prevent a duplicate alert"));
+  assert.ok(cron.includes("if(isDefinitivelyRejectedBeforeDelivery(e))"));
+  assert.ok(!cron.includes("catch(e){await releaseTelegramAlert(alertKey);"));
 });
 
 test("dashboard restores active-trade context from history rather than active KV", () => {
