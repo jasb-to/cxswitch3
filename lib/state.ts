@@ -14,6 +14,8 @@ const LATEST_ALERTS_KEY = "cxswitch:latest_alerts";
 const CARD_RESETS_KEY = "cxswitch:card_resets";
 const MARKET_KEY = "cxswitch:market";
 const CRON_KEY = "cxswitch:last_cron";
+const CRON_LOCK_KEY = "cxswitch:cron_lock";
+const CRON_LOCK_TTL_SECONDS = 120;
 const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
 const MIGRATION_FLAG_KEY = "cxswitch:migrated_v01";
 const COOLDOWN_KEY = "cxswitch:cooldowns";
@@ -29,7 +31,7 @@ export interface ActiveTrade {
   id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ENTRY" | "REVERSAL_SHORT" | "REVERSAL_LONG";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number;
   tp1HitAt?: number; tp2HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
-  status: "ACTIVE"; context: any; version: number;
+  status: "ACTIVE"; context?: any; sizeMultiplier?: number; version: number;
   holdAdvice?: { status: "healthy" | "warning" | "failed"; reason: string; newStop?: number; checkedAt: number };
 }
 
@@ -62,7 +64,7 @@ export async function getActiveSignals(): Promise<ActiveTrade[]> {
     const bad = active.filter(t => t.pair === "BTC" && t.direction === "SHORT");
     if (bad.length) {
       active = active.filter(t => !(t.pair === "BTC" && t.direction === "SHORT"));
-      await redis.set(ACTIVE_SIGNALS_KEY, active);
+      await setActiveSignals(active);
       const history = (await redis.get<SignalHistoryEntry[]>(SIGNAL_HISTORY_KEY)) || [];
       const badIds = new Set(bad.map(t => t.id));
       for (const h of history) {
@@ -86,12 +88,26 @@ export async function getActiveSignals(): Promise<ActiveTrade[]> {
   }
   return active;
 }
-export async function setActiveSignals(signals: ActiveTrade[]): Promise<void> { await redis.set(ACTIVE_SIGNALS_KEY, signals); }
+export async function setActiveSignals(signals: ActiveTrade[]): Promise<void> {
+  const compact = signals.map(signal => {
+    const stored = { ...signal };
+    delete stored.context;
+    return stored;
+  });
+  const payloadBytes = new TextEncoder().encode(JSON.stringify(compact)).length;
+  console.log(`[STATE] active_signals payload count=${compact.length} bytes=${payloadBytes}`);
+  if (payloadBytes > 10 * 1024) console.warn(`[STATE] active_signals payload exceeds 10KB: ${payloadBytes} bytes`);
+  await redis.set(ACTIVE_SIGNALS_KEY, compact);
+}
 export async function addActiveSignal(signal: Signal): Promise<void> {
   const active = await getActiveSignals();
-  const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? 0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",context:signal.context,version:signal.version};
+  const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? 0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",sizeMultiplier:signal.sizeMultiplier,version:signal.version};
   const idx = active.findIndex(a => a.pair === signal.pair && a.direction === signal.direction);
-  if (idx >= 0) active[idx] = {...active[idx],...trade}; else active.push(trade);
+  if (idx >= 0) {
+    const previous = { ...active[idx] };
+    delete previous.context;
+    active[idx] = {...previous,...trade};
+  } else active.push(trade);
   await setActiveSignals(active);
   console.log(`[ACTIVE] Added ${signal.pair} ${signal.direction} ${signal.type} | TP1 ${trade.tp1 ?? "—"} | TP2 ${trade.tp2 ?? "—"}`);
 }
@@ -194,9 +210,20 @@ export async function setExitAlertCooldowns(cooldowns:Record<string,number>):Pro
 export async function getMarketData():Promise<any[]>{return(await redis.get<any[]>(MARKET_KEY))||[];}
 // Market data is a dashboard snapshot, not the source of truth for signal calculations.
  // Bound this relatively large write so a transient Supabase/network stall cannot consume the cron budget.
-export async function setMarketData(data:any[]):Promise<void>{await redis.set(MARKET_KEY,data,{timeoutMs:8000});}
+export async function setMarketData(data:any[]):Promise<void>{await redis.set(MARKET_KEY,data);}
 export async function getLastCronRun():Promise<number>{const data=await redis.get<{timestamp:number}>(CRON_KEY);return data?.timestamp||0;}
 export async function setLastCronRun(ts:number):Promise<void>{await redis.set(CRON_KEY,{timestamp:ts});}
+
+// Shared atomic lock prevents overlapping cron executions across Vercel instances.
+export async function claimCronLock(token:string):Promise<boolean>{
+  const result=await redis.set(CRON_LOCK_KEY,{token,startedAt:Date.now()},{nx:true,ex:CRON_LOCK_TTL_SECONDS});
+  return result==="OK";
+}
+export async function releaseCronLock(token:string):Promise<void>{
+  const lock=await redis.get<{token?:string}>(CRON_LOCK_KEY,0);
+  if(lock?.token!==token)return;
+  await redis.del(CRON_LOCK_KEY,0);
+}
 export async function saveDashboardSnapshot(snapshot:any):Promise<void>{await redis.set(SNAPSHOT_KEY,{...snapshot,timestamp:Date.now()});}
 export async function loadDashboardSnapshot():Promise<any|null>{const data=await redis.get<any>(SNAPSHOT_KEY);if(!data)return null;const age=Date.now()-(data?.timestamp||0);if(age>20*60*1000)console.warn(`[SNAPSHOT] Stale — ${Math.round(age/60000)}min old`);return data;}
 
