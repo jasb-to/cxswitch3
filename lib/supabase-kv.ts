@@ -8,8 +8,6 @@ type Row = { key: string; value: unknown; expires_at: string | null };
 // consuming the entire Vercel cron execution window.
 const DEFAULT_QUERY_TIMEOUT_MS = 2000;
 const CLEANUP_QUERY_TIMEOUT_MS = 2000;
-const KEY_QUERY_TIMEOUTS: Record<string, number> = { "cxswitch:signal_history": 4000, "cxswitch:signal_history_archive": 4000, "cxswitch:market": 4000 };
-const timeoutFor = (key: string) => KEY_QUERY_TIMEOUTS[key] ?? DEFAULT_QUERY_TIMEOUT_MS;
 const MAX_OPERATION_RETRIES = 1;
 const RETRY_DELAY_MS = 200;
 
@@ -65,7 +63,7 @@ export class Redis {
   }
 
   async get<T = unknown>(key: string, maxRetries = MAX_OPERATION_RETRIES): Promise<T | null> {
-    return withRetry(`get:${key}`, timeoutFor(key), async signal => {
+    return withRetry(`get:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async signal => {
       const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).abortSignal(signal).maybeSingle();
       if (error) throw new Error(`Supabase KV get failed for ${key}: ${error.message}`);
       if (!data) { console.log(`[KV SIZE] ${key}: 0 bytes (missing)`); return null; }
@@ -83,7 +81,7 @@ export class Redis {
   }
 
   async set(key: string, value: unknown, options: SetOptions = {}): Promise<"OK" | null> {
-    const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? timeoutFor(key), Math.max(DEFAULT_QUERY_TIMEOUT_MS, ...Object.values(KEY_QUERY_TIMEOUTS))));
+    const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS));
     const expiresAt = expiry(options.ex);
     if (!options.nx) console.log(`[KV SIZE] ${key}: ${new TextEncoder().encode(JSON.stringify(value) ?? "").length} bytes (write)`);
     if (options.nx) {
