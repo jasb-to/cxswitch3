@@ -5,10 +5,9 @@ import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
-import { createSerialQueue } from "@/lib/serial-queue";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
@@ -20,7 +19,6 @@ const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC"] as const;
 const PAUSED_ALERT_PAIRS=new Set<string>();
 const MIN_CRON_INTERVAL_MS=2*60*1000;
 // Serialize active-list read/modify/write operations within this runtime instance.
-const serializeActiveStateWrite=createSerialQueue();
 const SIGNAL_DEDUP_MS=45*60*1000;
 const SIGNAL_DEDUP_ENTRY_PCT=0.004;
 const VERBOSE_CRON_LOGS=process.env.CRON_VERBOSE_LOGS==="true";
@@ -58,6 +56,18 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
 const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
 async function persistExitCooldown(pair:string,reason:string){if(!INDICATOR_EXIT_REASONS.has(reason))return;const cooldowns=await getExitAlertCooldowns();cooldowns[pair]=Date.now();await setExitAlertCooldowns(cooldowns);}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
+
+function mergeNewSignalsIntoActive(current:any[],signals:Signal[]):any[]{
+  const merged=current.map((trade:any)=>({...trade}));
+  for(const signal of signals){
+    const trade:any={id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2??0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",sizeMultiplier:signal.sizeMultiplier,version:signal.version};
+    const index=merged.findIndex((item:any)=>item.pair===signal.pair&&item.direction===signal.direction);
+    if(index>=0){const previous={...merged[index]};delete previous.context;merged[index]={...previous,...trade};}
+    else merged.push(trade);
+    console.log(`[STATE ADD] pair=${signal.pair} status=queued_for_batch id=${signal.id}`);
+  }
+  return merged;
+}
 
 async function observeAlertManagement(active:any[],marketData:any[]){
   for(const alert of active){
@@ -127,6 +137,15 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
 export async function GET(request:Request){
  const started=Date.now(),url=new URL(request.url),secret=url.searchParams.get("secret"),auth=request.headers.get("authorization");
  if(secret!==process.env.CRON_SECRET&&auth!==`Bearer ${process.env.CRON_SECRET}`)return NextResponse.json({error:"Unauthorized"},{status:401});
+ const lockToken=`${started}:${Math.random().toString(36).slice(2)}`;
+ try{
+   const acquired=await claimCronLock(lockToken);
+   if(!acquired)return NextResponse.json({success:true,skipped:true,reason:"distributed_lock_held"});
+ }catch(error){
+   console.error("[CRON] Distributed lock unavailable; refusing to evaluate signals without a lock",error);
+   return NextResponse.json({success:false,skipped:true,reason:"cron_lock_unavailable",error:String(error)});
+ }
+ try{
  console.log(`[CRON v${CXSWITCH_VERSION}] Request accepted at ${new Date(started).toISOString()}`);
  const guardStarted=Date.now();
  console.log("[PERF] startup getLastCronRun started");
@@ -163,7 +182,7 @@ export async function GET(request:Request){
      active.push({...h,status:"ACTIVE",scale:h.type,});
      console.log(`[STATE] Recovered ACTIVE position from history: ${h.pair}_${h.direction}_${h.type}`);
    }
-   await setActiveSignals(active);
+   console.log(`[STATE] Queued ${recoverable.size} recovered ACTIVE position(s) for the end-of-cycle state commit`);
  }
  // PAID has been retired. Remove any legacy active PAID state so the cron can
  // never try to manage the deleted GeckoTerminal market after the migration.
@@ -173,11 +192,10 @@ export async function GET(request:Request){
      await updateSignalHistoryStatus(trade.id,"EXPIRED","manual_symbol_reset",undefined);
    }
    active=active.filter(x=>x.pair!=="PAID");
-   await setActiveSignals(active);
-   console.log(`[STATE] Retired PAID legacy positions=${retiredPaid.length}`);
+   console.log(`[STATE] Retired PAID legacy positions=${retiredPaid.length}; removal queued for reconciliation commit`);
  }
  console.log(`[STATE] Active signals on entry: ${active.map(a=>`${a.pair}_${a.direction}_${a.type}`).join(", ")||"none"}`);
- let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[];
+ let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],stateDegraded=false;
 
 
  await Promise.all(PAIRS.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;try{
@@ -272,9 +290,9 @@ export async function GET(request:Request){
   }catch(e){await releaseTelegramAlert(alertKey);console.error(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=failed reason=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"alert_failed",reason:String(e)});throw e;}
   stateSignal=signal;
   dispatchStage="signal_history_append";
-  try{await appendSignalHistory(signal);console.log(`[STATE ADD] pair=${pair} status=history_appended id=${signal.id}`);}catch(e){console.error(`[STATE ADD] pair=${pair} status=failed reason=history_append_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"history_append_failed",reason:String(e)});}
+  try{await appendSignalHistory(signal);console.log(`[STATE ADD] pair=${pair} status=history_appended id=${signal.id}`);}catch(e){stateDegraded=true;console.error(`[STATE ADD] pair=${pair} status=failed reason=history_append_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"history_append_failed",reason:String(e)});}
   dispatchStage="active_state_add";stateAddAttempted=true;
-  try{await serializeActiveStateWrite(async()=>{await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE ADD] pair=${pair} status=added id=${signal.id} activeCount=${active.length}`);});}catch(e){console.error(`[STATE ADD] pair=${pair} status=failed reason=active_state_write_error error=${String(e)}`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"active_state_add_failed",reason:String(e)});}
+  console.log(`[STATE ADD] pair=${pair} status=queued_for_batch id=${signal.id}`);
   dispatchStage="complete";
  } catch(e){
     console.error(`[PAIR] ${pair} — ERROR at stage=${dispatchStage}`,e);
@@ -287,6 +305,10 @@ export async function GET(request:Request){
     console.log(`[PERF] ${pair} processed in ${Date.now()-pairStarted}ms`);
   }
  }));
+ if(newSignals.length){
+   active=mergeNewSignalsIntoActive(active,newSignals);
+   console.log(`[STATE ADD] Batched ${newSignals.length} new signal(s) into active state; one compact write will occur after reconciliation`);
+ }
  const managementStarted=Date.now();
  console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
  try {
@@ -302,6 +324,7 @@ export async function GET(request:Request){
    active=await reconcileAlertOutcomes(active,marketData,alerts);
    console.log(`[PERF] Stage reconcileAlertOutcomes completed in ${Date.now()-reconcileStarted}ms`);
  } catch(error) {
+   stateDegraded=true;
    console.error(`[PERF] Stage reconcileAlertOutcomes failed after ${Date.now()-reconcileStarted}ms`,error);
    alerts.push({status:"reconcile_stage_failed",reason:String(error)});
  }
@@ -311,6 +334,7 @@ export async function GET(request:Request){
    await setMarketData(marketData);
    console.log(`[PERF] Stage setMarketData completed in ${Date.now()-marketPersistStarted}ms`);
  } catch(error) {
+   stateDegraded=true;
    console.error(`[PERF] Stage setMarketData failed after ${Date.now()-marketPersistStarted}ms; continuing with in-memory market data (dashboard snapshot may be stale)`,error);
    alerts.push({status:"market_data_persist_failed",reason:"dashboard_snapshot_write_failed"});
  }
@@ -324,9 +348,21 @@ export async function GET(request:Request){
  } catch(error) {
    console.error(`[JARVIS] State refresh failed after ${Date.now()-jarvisStarted}ms; existing strategy continues unchanged`,error);
  }
- const finalActive=await getActiveSignals();
+ let finalActive=active;
+ try{finalActive=await getActiveSignals();}
+ catch(error){stateDegraded=true;console.error("[STATE] Final active-state read failed; using in-memory positions for this response only",error);alerts.push({status:"final_active_state_read_failed",reason:"active_state_unavailable"});}
  const entryAlertsSent=alerts.filter((x:any)=>x.status==="sent").length;
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${entryAlertsSent} alertOutcomes=${alerts.length}`);
  console.log(`[PERF] Total cron duration ${Date.now()-started}ms`);
  console.log("========================================");
- return NextResponse.json({success:true,version:CXSWITCH_VERSION,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});}
+ return NextResponse.json({success:!stateDegraded,degraded:stateDegraded,version:CXSWITCH_VERSION,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});
+ }catch(error){
+   const message=String(error);
+   const stateUnavailable=/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(message);
+   console.error(`[CRON] ${stateUnavailable?"Aborted safely because persistence is unavailable":"Execution failed"}: ${message}`,error);
+   return NextResponse.json({success:false,skipped:stateUnavailable,reason:stateUnavailable?"state_unavailable":"cron_failed",error:message},{status:stateUnavailable?200:500});
+ }finally{
+   try{await releaseCronLock(lockToken);}
+   catch(error){console.error("[CRON] Could not release distributed lock; TTL will clear it",error);}
+ }
+}

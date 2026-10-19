@@ -17,7 +17,8 @@ test("CXSwitch tracks alert lifecycle without a manual confirmation mode", () =>
 
 test("every sent entry alert is tracked without confirming a user-entered trade", () => {
   assert.ok(cron.includes("await appendSignalHistory(signal);"));
-  assert.ok(cron.includes("await addActiveSignal(signal);"));
+  assert.ok(cron.includes("active=mergeNewSignalsIntoActive(active,newSignals);"));
+  assert.ok(!cron.includes("await addActiveSignal(signal);"));
   assert.ok(cron.includes('h.status==="ACTIVE"&&(h.type==="ENTRY_1"||h.type==="ENTRY_2")'));
   assert.ok(!cron.includes("confirmedManually===true"));
   assert.ok(!cron.includes("/api/confirm-trade"));
