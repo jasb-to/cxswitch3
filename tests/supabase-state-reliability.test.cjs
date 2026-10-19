@@ -47,6 +47,7 @@ test("cron uses a shared lock and safely reports state-store degradation", () =>
   assert.ok(cron.includes("success:!stateDegraded,degraded:stateDegraded"));
   assert.ok(cron.includes("Stage setMarketData skipped because state store is already degraded"));
   assert.ok(cron.includes("Skipped because the state store is already degraded this cycle"));
+  assert.ok(cron.includes("if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(e)))stateDegraded=true;"));
 });
 
 test("dashboard restores active-trade context from history rather than active KV", () => {

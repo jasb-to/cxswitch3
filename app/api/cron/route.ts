@@ -298,6 +298,7 @@ export async function GET(request:Request){
   console.log(`[STATE ADD] pair=${pair} status=queued_for_batch id=${signal.id}`);
   dispatchStage="complete";
  } catch(e){
+    if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(e)))stateDegraded=true;
     console.error(`[PAIR] ${pair} — ERROR at stage=${dispatchStage}`,e);
     if(dispatchPairSignal){if(dispatchStage!=="telegram_send"&&dispatchStage!=="signal_history_append"&&dispatchStage!=="active_state_add"&&dispatchStage!=="complete")console.error(`[ALERT DISPATCH] pair=${pair} direction=${dispatchPairSignal.direction} status=failed reason=exception_at_${dispatchStage}: ${String(e)}`);if(!stateAddAttempted)console.error(`[STATE ADD] pair=${pair} status=skipped reason=exception_before_state_add stage=${dispatchStage}`);}
     alerts.push({pair,status:"error",stage:dispatchStage,error:String(e)});
