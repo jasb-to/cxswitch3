@@ -38,7 +38,7 @@ export class Redis {
   }
 
   async get<T = unknown>(key: string): Promise<T | null> {
-    const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).maybeSingle().abortSignal(AbortSignal.timeout(DEFAULT_QUERY_TIMEOUT_MS));
+    const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).abortSignal(AbortSignal.timeout(DEFAULT_QUERY_TIMEOUT_MS)).maybeSingle();
     if (error) throw new Error(`Supabase KV get failed for ${key}: ${error.message}`);
     if (!data) return null;
     if (data.expires_at && new Date(data.expires_at).getTime() <= Date.now()) {
