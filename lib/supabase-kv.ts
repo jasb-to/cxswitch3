@@ -96,6 +96,13 @@ export class Redis {
     return 0;
   }
 
+  async compareAndDelete(key: string, expectedToken: string): Promise<number> {
+    // Atomically release a lock only when its owner token still matches.
+    const script = "local v=redis.call('GET',KEYS[1]); if not v then return 0 end; local ok,o=pcall(cjson.decode,v); if ok and o.token==ARGV[1] then return redis.call('DEL',KEYS[1]) end; return 0";
+    return withRetry(`compare-delete:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async () =>
+      Number(await command<number>(["EVAL", script, 1, key, expectedToken])), 0);
+  }
+
   async del(key: string, maxRetries = MAX_OPERATION_RETRIES): Promise<number> {
     return withRetry(`delete:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async () =>
       Number(await command<number>(["DEL", key])), maxRetries);
