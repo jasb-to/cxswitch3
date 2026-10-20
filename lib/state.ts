@@ -18,6 +18,7 @@ const CRON_LOCK_KEY = "cxswitch:cron_lock";
 const CRON_LOCK_TTL_SECONDS = 120;
 const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
 const MIGRATION_FLAG_KEY = "cxswitch:migrated_v01";
+const LAYERBASE_MIGRATION_FLAG_KEY = "cxswitch:migrated_to_layerbase_v1";
 const COOLDOWN_KEY = "cxswitch:cooldowns";
 const EXIT_ALERT_COOLDOWNS_KEY = "cxswitch:exit_alert_cooldowns";
 const TELEGRAM_ALERT_KEY_PREFIX = "cxswitch:telegram_alert:";
@@ -49,7 +50,93 @@ export interface SignalHistoryEntry {
 }
 
 
-export async function runMigrationIfNeeded(): Promise<void> { return; }
+export async function runMigrationIfNeeded(): Promise<void> {
+  if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY)) return;
+
+  const lockKey = "cxswitch:migration:layerbase_v1_lock";
+  const token = `migration-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let claimed = false;
+  try {
+    claimed = (await redis.set(lockKey, { token, startedAt: Date.now() }, { nx: true, ex: 120 })) === "OK";
+  } catch (claimError) {
+    // An NX write can time out after Redis accepted it. Verify ownership before failing closed.
+    const lock = await redis.get<{ token?: string }>(lockKey).catch(() => null);
+    if (lock?.token === token) claimed = true;
+    else throw claimError;
+  }
+  if (!claimed) {
+    for (let attempt = 0; attempt < 24; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY)) return;
+    }
+    throw new Error("Layerbase state migration is already running; refusing to read uninitialised state");
+  }
+
+  try {
+    if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY)) return;
+    const rawUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!rawUrl || !serviceKey) throw new Error("Layerbase migration requires the existing Supabase source credentials");
+    const url = rawUrl.trim().replace(/\/$/, "");
+    const dashboardMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9]+)(?:\/|$)/i);
+    const sourceUrl = dashboardMatch ? `https://${dashboardMatch[1]}.supabase.co` : url;
+    const { createClient } = await import("@supabase/supabase-js");
+    const source = createClient(sourceUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
+    const keys = [
+      ACTIVE_SIGNALS_KEY, SIGNAL_HISTORY_KEY, LATEST_ALERTS_KEY,
+      COOLDOWN_KEY, EXIT_ALERT_COOLDOWNS_KEY, CARD_RESETS_KEY, CRON_KEY,
+      "cxswitch:v28_breakout_state", ONE_TIME_BTC_SHORT_CLEANUP_KEY,
+      CLEANUP_KEY, MIGRATION_FLAG_KEY,
+    ];
+    const { data, error } = await source.from("cxswitch_kv")
+      .select("key,value,expires_at").in("key", keys)
+      .abortSignal(AbortSignal.timeout(8_000));
+    if (error) throw new Error(`Source-state migration read failed: ${error.message}`);
+    const rows = new Map((data ?? []).map((row: any) => [String(row.key), row]));
+    const activeRow: any = rows.get(ACTIVE_SIGNALS_KEY);
+    const historyRow: any = rows.get(SIGNAL_HISTORY_KEY);
+    if (!activeRow || !Array.isArray(activeRow.value)) throw new Error("Migration safety check failed: source active_signals is missing or invalid");
+    if (!historyRow || !Array.isArray(historyRow.value)) throw new Error("Migration safety check failed: source signal_history is missing or invalid");
+
+    const active = activeRow.value.map((signal: any) => {
+      const compact = { ...signal };
+      delete compact.context;
+      return compact;
+    });
+    const history = historyRow.value.slice(-SIGNAL_HISTORY_MAX).map((entry: any) => {
+      const compact = { ...entry };
+      delete compact.context;
+      return compact;
+    });
+    const payloads: Array<[string, unknown, string | null]> = [
+      [ACTIVE_SIGNALS_KEY, active, activeRow.expires_at ?? null],
+      [SIGNAL_HISTORY_KEY, history, historyRow.expires_at ?? null],
+    ];
+    for (const key of [LATEST_ALERTS_KEY, COOLDOWN_KEY, EXIT_ALERT_COOLDOWNS_KEY, CARD_RESETS_KEY, CRON_KEY, "cxswitch:v28_breakout_state", ONE_TIME_BTC_SHORT_CLEANUP_KEY, CLEANUP_KEY, MIGRATION_FLAG_KEY]) {
+      const row: any = rows.get(key);
+      if (row) payloads.push([key, row.value, row.expires_at ?? null]);
+    }
+
+    // Preserve the valid BTC SHORT in the migrated active list; never let the
+    // legacy one-time cleanup run against an empty destination marker.
+    if (active.some((signal: any) => signal.pair === "BTC" && signal.direction === "SHORT") &&
+        !rows.has(ONE_TIME_BTC_SHORT_CLEANUP_KEY)) {
+      payloads.push([ONE_TIME_BTC_SHORT_CLEANUP_KEY, true, null]);
+    }
+
+    await Promise.all(payloads.map(async ([key, value, expiresAt]) => {
+      const ttl = expiresAt ? Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000) : undefined;
+      if (ttl !== undefined && ttl <= 0) return;
+      const result = await redis.set(key, value, ttl ? { ex: ttl } : {});
+      if (result !== "OK") throw new Error(`Migration write did not confirm for ${key}`);
+    }));
+    await redis.set(LAYERBASE_MIGRATION_FLAG_KEY, { completedAt: Date.now(), migratedKeys: payloads.length });
+    console.log(`[STATE MIGRATION] Supabase -> Layerbase completed active=${active.length} history=${history.length} keys=${payloads.length}; caches and expiring Telegram dedupe keys intentionally not copied`);
+  } finally {
+    const lock = await redis.get<{ token?: string }>(lockKey, 0).catch(() => null);
+    if (lock?.token === token) await redis.del(lockKey, 0).catch(() => 0);
+  }
+}
 
 export async function runPersistenceCleanup(): Promise<{expired:number;telegramPruned:number}> {
   const expired=await redis.cleanupExpired();

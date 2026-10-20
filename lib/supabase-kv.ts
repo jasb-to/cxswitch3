@@ -1,27 +1,45 @@
 // lib/supabase-kv.ts
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-
+// Compatibility adapter for the existing state-store interface, backed by
+// Layerbase's Upstash-compatible Redis REST API. Filename retained to keep
+// this migration narrowly scoped and preserve all existing state call sites.
 type SetOptions = { nx?: boolean; ex?: number; timeoutMs?: number };
-type Row = { key: string; value: unknown; expires_at: string | null };
-
-// Bound every persistence request so Supabase stalls fail fast instead of
-// consuming the entire Vercel cron execution window.
-const DEFAULT_QUERY_TIMEOUT_MS = 2000;
-const CLEANUP_QUERY_TIMEOUT_MS = 2000;
+const DEFAULT_QUERY_TIMEOUT_MS = 8_000;
+const CLEANUP_QUERY_TIMEOUT_MS = 8_000;
 const MAX_OPERATION_RETRIES = 1;
-const RETRY_DELAY_MS = 200;
+const RETRY_DELAY_MS = 250;
+type RestResponse<T = unknown> = { result?: T; error?: string };
 
-async function withRetry<T>(
-  opName: string,
-  timeoutMs: number,
-  operation: (signal: AbortSignal) => Promise<T>,
-  maxRetries = MAX_OPERATION_RETRIES,
-): Promise<T> {
+function credentials() {
+  const url = process.env.REDIS_REST_URL?.trim().replace(/\/$/, "");
+  const token = process.env.REDIS_REST_TOKEN?.trim();
+  if (!url || !token) throw new Error("Layerbase Redis is not configured: set REDIS_REST_URL and REDIS_REST_TOKEN");
+  return { url, token };
+}
+
+async function command<T = unknown>(args: Array<string | number>, timeoutMs = DEFAULT_QUERY_TIMEOUT_MS): Promise<T> {
+  const { url, token } = credentials();
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(args),
+    signal: AbortSignal.timeout(timeoutMs),
+    cache: "no-store",
+  });
+  let payload: RestResponse<T>;
+  try { payload = await response.json() as RestResponse<T>; }
+  catch { throw new Error(`Layerbase Redis REST returned non-JSON response (HTTP ${response.status})`); }
+  if (!response.ok || payload.error) {
+    throw new Error(`Layerbase Redis command ${String(args[0]).toUpperCase()} failed (HTTP ${response.status}): ${payload.error ?? response.statusText}`);
+  }
+  return payload.result as T;
+}
+
+async function withRetry<T>(opName: string, timeoutMs: number, operation: () => Promise<T>, maxRetries = MAX_OPERATION_RETRIES): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const started = Date.now();
     try {
-      const result = await operation(AbortSignal.timeout(timeoutMs));
+      const result = await operation();
       console.log(`[KV] ${opName} took ${Date.now() - started}ms attempt=${attempt + 1} status=ok`);
       return result;
     } catch (error) {
@@ -31,103 +49,55 @@ async function withRetry<T>(
       if (attempt < maxRetries) await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
     }
   }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "Unknown KV error"));
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "Unknown Redis REST error"));
 }
 
-let client: SupabaseClient | null = null;
-
-function getClient() {
-  if (client) return client;
-  const rawUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!rawUrl || !key) throw new Error("Supabase persistence is not configured: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY");
-
-  // Accept the normal project API URL, or recover a dashboard URL copied from Supabase.
-  let url = rawUrl.trim().replace(/\/$/, "");
-  const dashboardMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9]+)(?:\/|$)/i);
-  if (dashboardMatch) url = "https://" + dashboardMatch[1] + ".supabase.co";
-
-  client = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
-  return client;
-}
-
-function expiry(ex?: number) {
-  return ex && ex > 0 ? new Date(Date.now() + ex * 1000).toISOString() : null;
+function encodeValue(value: unknown): string { return JSON.stringify(value); }
+function decodeValue<T>(value: unknown): T | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return value as T;
+  try { return JSON.parse(value) as T; } catch { return value as T; }
 }
 
 export class Redis {
-  // Resolve credentials on first database operation, not during module import/build-time route analysis.
-  // Runtime persistence calls still fail loudly if the required production credentials are absent.
-  private get db(): SupabaseClient {
-    return getClient();
-  }
-
   async get<T = unknown>(key: string, maxRetries = MAX_OPERATION_RETRIES): Promise<T | null> {
-    return withRetry(`get:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async signal => {
-      const { data, error } = await this.db.from("cxswitch_kv").select("key,value,expires_at").eq("key", key).abortSignal(signal).maybeSingle();
-      if (error) throw new Error(`Supabase KV get failed for ${key}: ${error.message}`);
-      if (!data) { console.log(`[KV SIZE] ${key}: 0 bytes (missing)`); return null; }
-      console.log(`[KV SIZE] ${key}: ${new TextEncoder().encode(JSON.stringify(data.value) ?? "").length} bytes`);
-      if (data.expires_at && new Date(data.expires_at).getTime() <= Date.now()) {
-        void withRetry(`delete-expired:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async deleteSignal => {
-          const { error: deleteError } = await this.db.from("cxswitch_kv").delete().eq("key", key).lte("expires_at", new Date().toISOString()).abortSignal(deleteSignal);
-          if (deleteError) throw new Error(`Supabase KV expired delete failed for ${key}: ${deleteError.message}`);
-          return true;
-        }).catch(cleanupError => console.warn(`[KV] Expired-key cleanup skipped for ${key}: ${String(cleanupError)}`));
-        return null;
-      }
-      return data.value as T;
+    return withRetry(`get:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async () => {
+      const value = await command<unknown>(["GET", key]);
+      const decoded = decodeValue<T>(value);
+      const bytes = value == null ? 0 : new TextEncoder().encode(typeof value === "string" ? value : JSON.stringify(value)).length;
+      console.log(`[KV SIZE] ${key}: ${bytes} bytes`);
+      return decoded;
     }, maxRetries);
   }
 
   async set(key: string, value: unknown, options: SetOptions = {}): Promise<"OK" | null> {
     const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS, DEFAULT_QUERY_TIMEOUT_MS));
-    const expiresAt = expiry(options.ex);
-    if (!options.nx) console.log(`[KV SIZE] ${key}: ${new TextEncoder().encode(JSON.stringify(value) ?? "").length} bytes (write)`);
-    if (options.nx) {
-      // NX claims are one-shot. Do not retry an ambiguous timeout as that could
-      // blur the difference between our claim and another caller's successful claim.
-      return withRetry<"OK" | null>(`claim:${key}`, timeoutMs, async signal => {
-        const { data, error } = await this.db.rpc("cxswitch_kv_claim", { p_key: key, p_value: value, p_expires_at: expiresAt }).abortSignal(signal);
-        if (error) throw new Error(`Supabase KV claim failed for ${key}: ${error.message}`);
-        return data === true ? "OK" : null;
-      }, 0);
-    }
-    return withRetry<"OK" | null>(`set:${key}`, timeoutMs, async signal => {
-      const { error } = await this.db.from("cxswitch_kv").upsert({ key, value, expires_at: expiresAt }, { onConflict: "key" }).abortSignal(signal);
-      if (error) throw new Error(`Supabase KV set failed for ${key}: ${error.message}`);
-      return "OK";
-    });
+    const args: Array<string | number> = ["SET", key, encodeValue(value)];
+    if (options.nx) args.push("NX");
+    if (options.ex && options.ex > 0) args.push("EX", options.ex);
+    if (!options.nx) console.log(`[KV SIZE] ${key}: ${new TextEncoder().encode(encodeValue(value)).length} bytes (write)`);
+    // NX claims are never retried: claimCronLock verifies token ownership after
+    // an ambiguous timeout and fails closed if ownership cannot be established.
+    return withRetry(options.nx ? `claim:${key}` : `set:${key}`, timeoutMs, async () => {
+      const result = await command<string | null>(args, timeoutMs);
+      return result === "OK" ? "OK" : null;
+    }, options.nx ? 0 : MAX_OPERATION_RETRIES);
   }
 
   async cleanupExpired(): Promise<number> {
-    return withRetry("cleanup-expired", CLEANUP_QUERY_TIMEOUT_MS, async signal => {
-      const { data, error } = await this.db.rpc("cxswitch_kv_cleanup_expired").abortSignal(signal);
-      if (error) throw new Error(`Supabase KV cleanup failed: ${error.message}`);
-      return Number(data ?? 0);
-    });
+    // Redis expires keys natively, so there is no database-wide cleanup query.
+    return 0;
   }
 
-  async prunePrefix(prefix: string, keep: number): Promise<number> {
-    const data = await withRetry(`prune-select:${prefix}`, CLEANUP_QUERY_TIMEOUT_MS, async signal => {
-      const { data, error } = await this.db.from("cxswitch_kv").select("key,updated_at").like("key", `${prefix}%`).order("updated_at", { ascending: false }).abortSignal(signal);
-      if (error) throw new Error(`Supabase KV prune failed for ${prefix}: ${error.message}`);
-      return data ?? [];
-    });
-    const stale = data.slice(Math.max(0, keep)).map((row: { key: string }) => row.key);
-    if (!stale.length) return 0;
-    return withRetry(`prune-delete:${prefix}`, CLEANUP_QUERY_TIMEOUT_MS, async signal => {
-      const { error } = await this.db.from("cxswitch_kv").delete().in("key", stale).abortSignal(signal);
-      if (error) throw new Error(`Supabase KV prune delete failed for ${prefix}: ${error.message}`);
-      return stale.length;
-    });
+  async prunePrefix(_prefix: string, _keep: number): Promise<number> {
+    // Telegram alert-deduplication keys are written with a six-hour EX TTL.
+    // Do not SCAN an unordered keyspace to guess which keys are oldest: TTL is
+    // the bounded-retention mechanism, and avoiding SCAN saves requests.
+    return 0;
   }
 
   async del(key: string, maxRetries = MAX_OPERATION_RETRIES): Promise<number> {
-    return withRetry(`delete:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async signal => {
-      const { data, error } = await this.db.from("cxswitch_kv").delete().eq("key", key).select("key").abortSignal(signal);
-      if (error) throw new Error(`Supabase KV delete failed for ${key}: ${error.message}`);
-      return data?.length ?? 0;
-    }, maxRetries);
+    return withRetry(`delete:${key}`, DEFAULT_QUERY_TIMEOUT_MS, async () =>
+      Number(await command<number>(["DEL", key])), maxRetries);
   }
 }
