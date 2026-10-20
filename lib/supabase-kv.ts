@@ -89,23 +89,11 @@ export class Redis {
     return 0;
   }
 
-  async prunePrefix(prefix: string, keep: number): Promise<number> {
-    const keys: string[] = [];
-    let cursor = "0";
-    for (let page = 0; page < 10; page++) {
-      const result = await withRetry(`scan:${prefix}`, CLEANUP_QUERY_TIMEOUT_MS, async () =>
-        command<[string, string[]]>(["SCAN", cursor, "MATCH", `${prefix}*`, "COUNT", 100], CLEANUP_QUERY_TIMEOUT_MS));
-      cursor = String(result?.[0] ?? "0");
-      if (Array.isArray(result?.[1])) keys.push(...result[1]);
-      if (cursor === "0") break;
-    }
-    const stale = [...new Set(keys)].slice(Math.max(0, keep));
-    let deleted = 0;
-    for (let i = 0; i < stale.length; i += 50) {
-      deleted += Number(await withRetry(`prune-delete:${prefix}`, CLEANUP_QUERY_TIMEOUT_MS, async () =>
-        command<number>(["DEL", ...stale.slice(i, i + 50)], CLEANUP_QUERY_TIMEOUT_MS)));
-    }
-    return deleted;
+  async prunePrefix(_prefix: string, _keep: number): Promise<number> {
+    // Telegram alert-deduplication keys are written with a six-hour EX TTL.
+    // Do not SCAN an unordered keyspace to guess which keys are oldest: TTL is
+    // the bounded-retention mechanism, and avoiding SCAN saves requests.
+    return 0;
   }
 
   async del(key: string, maxRetries = MAX_OPERATION_RETRIES): Promise<number> {
