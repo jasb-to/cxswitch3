@@ -375,9 +375,9 @@ export async function claimCronLock(token:string):Promise<boolean>{
   }
 }
 export async function releaseCronLock(token:string):Promise<void>{
-  const lock=await redis.get<{token?:string}>(CRON_LOCK_KEY,0);
-  if(lock?.token!==token)return;
-  await redis.del(CRON_LOCK_KEY,0);
+  // Atomic compare-and-delete prevents an expired lock's former owner from
+  // deleting a newer cron run's lock.
+  await redis.compareAndDelete(CRON_LOCK_KEY,token);
 }
 export async function saveDashboardSnapshot(snapshot:any):Promise<void>{await redis.set(SNAPSHOT_KEY,{...snapshot,timestamp:Date.now()});}
 export async function loadDashboardSnapshot():Promise<any|null>{const data=await redis.get<any>(SNAPSHOT_KEY);if(!data)return null;const age=Date.now()-(data?.timestamp||0);if(age>20*60*1000)console.warn(`[SNAPSHOT] Stale — ${Math.round(age/60000)}min old`);return data;}
