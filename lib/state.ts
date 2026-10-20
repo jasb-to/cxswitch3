@@ -232,7 +232,7 @@ export async function updateHistoryMilestonesBatch(updates:{id:string;price:numb
   if(!updates.length)return;
   const history=await getSignalHistory();
   const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};
-  const byId=new Map(updates.map(x=>[x.id,x.price]));
+  const byId=new Map<string,number>(updates.map(x=>[x.id,x.price] as [string,number]));
   let historyChanged=false,latestChanged=false;
   for(const h of history){
     const price=byId.get(h.id);
