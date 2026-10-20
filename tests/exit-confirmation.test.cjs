@@ -42,7 +42,8 @@ test("indicator exits use a four-hour cooldown persisted outside the strategy mo
   assert.ok(state.includes('const EXIT_ALERT_COOLDOWNS_KEY = "cxswitch:exit_alert_cooldowns"'));
   assert.ok(state.includes("getExitAlertCooldowns"));
   assert.ok(state.includes("setExitAlertCooldowns"));
-  assert.ok(cron.includes("persistExitCooldown(alert.pair,hold.reason)"));
+  assert.ok(cron.includes("persistExitCooldown(alert.pair,hold.reason,cooldowns)"));
+  assert.ok(cron.includes("await setExitAlertCooldowns(cooldowns)"));
   assert.ok(cron.includes("async function observeAlertManagement(active:any[],marketData:any[])"));
 });
 
