@@ -28,7 +28,8 @@ test("alert lifecycle persists SL_HIT and TP_HIT from current market prices", ()
   assert.ok(cron.includes("async function reconcileAlertOutcomes"));
   assert.ok(cron.includes('updateSignalHistoryStatus(alert.id,"SL_HIT","stop_hit",price)'));
   assert.ok(cron.includes('updateSignalHistoryStatus(alert.id,"TP_HIT","tp2_hit",price)'));
-  assert.ok(cron.includes("await updateHistoryMilestones(alert.id,price);"));
+  assert.ok(cron.includes("await updateHistoryMilestonesBatch(active.map")); 
+  assert.ok(!cron.includes("await updateHistoryMilestones(alert.id,price);"));
   assert.ok(cron.includes("active=await reconcileAlertOutcomes(active,marketData,alerts);"));
 });
 
