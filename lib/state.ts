@@ -51,15 +51,23 @@ export interface SignalHistoryEntry {
 
 
 export async function runMigrationIfNeeded(): Promise<void> {
-  if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY, 0)) return;
+  if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY)) return;
 
   const lockKey = "cxswitch:migration:layerbase_v1_lock";
   const token = `migration-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const claimed = await redis.set(lockKey, { token, startedAt: Date.now() }, { nx: true, ex: 120 });
-  if (claimed !== "OK") {
+  let claimed = false;
+  try {
+    claimed = (await redis.set(lockKey, { token, startedAt: Date.now() }, { nx: true, ex: 120 })) === "OK";
+  } catch (claimError) {
+    // An NX write can time out after Redis accepted it. Verify ownership before failing closed.
+    const lock = await redis.get<{ token?: string }>(lockKey).catch(() => null);
+    if (lock?.token === token) claimed = true;
+    else throw claimError;
+  }
+  if (!claimed) {
     for (let attempt = 0; attempt < 24; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 250));
-      if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY, 0)) return;
+      if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY)) return;
     }
     throw new Error("Layerbase state migration is already running; refusing to read uninitialised state");
   }
