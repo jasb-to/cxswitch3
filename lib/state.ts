@@ -27,6 +27,11 @@ const TELEGRAM_ALERT_TTL_SECONDS = 60*60*6;
 const CLEANUP_KEY = "cxswitch:cleanup:bandwidth_20261002_v1";
 const LEGACY_1D_LOG_KEY = "cxswitch:1d_trend_log_v2";
 
+// These cleanup markers are permanent one-time migrations. Cache successful checks
+// within a warm serverless instance so every state read does not issue extra KV queries.
+let btcShortCleanupVerified = false;
+let historyCleanupVerified = false;
+
 export interface ActiveTrade {
   id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ENTRY" | "REVERSAL_SHORT" | "REVERSAL_LONG";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number;
@@ -59,8 +64,10 @@ export async function getActiveSignals(): Promise<ActiveTrade[]> {
   // One-time cleanup for the BTC short that was identified as an invalid/stale position.
   // Preserve its history for auditability, but remove it from live position state so the
   // entry engine is allowed to evaluate BTC normally again.
-  const cleaned = await redis.get<boolean>(ONE_TIME_BTC_SHORT_CLEANUP_KEY);
-  if (!cleaned) {
+  if (!btcShortCleanupVerified) {
+    const cleaned = await redis.get<boolean>(ONE_TIME_BTC_SHORT_CLEANUP_KEY);
+    if (cleaned) btcShortCleanupVerified = true;
+    if (!cleaned) {
     const bad = active.filter(t => t.pair === "BTC" && t.direction === "SHORT");
     if (bad.length) {
       active = active.filter(t => !(t.pair === "BTC" && t.direction === "SHORT"));
@@ -84,7 +91,9 @@ export async function getActiveSignals(): Promise<ActiveTrade[]> {
       }
       console.log(`[STATE CLEANUP] Removed invalid BTC SHORT position(s): ${bad.map(t => t.id).join(", ")}`);
     }
-    await redis.set(ONE_TIME_BTC_SHORT_CLEANUP_KEY, true);
+      await redis.set(ONE_TIME_BTC_SHORT_CLEANUP_KEY, true);
+      btcShortCleanupVerified = true;
+    }
   }
   return active;
 }
@@ -127,11 +136,15 @@ export async function getSignalHistory():Promise<SignalHistoryEntry[]>{
       console.warn(`[STATE CLEANUP] signal_history compaction write failed; continuing with compact in-memory history bytes=${bytes}: ${String(error)}`);
     }
   }
-  const cleaned=await redis.get<boolean>(CLEANUP_KEY);
-  if(!cleaned){
-    await redis.del(LEGACY_1D_LOG_KEY);
-    await redis.set(CLEANUP_KEY,true);
-    console.log(`[STATE CLEANUP] History retention complete: signal_history ${history.length} -> ${compact.length}; deleted legacy 1D v2 log`);
+  if(!historyCleanupVerified){
+    const cleaned=await redis.get<boolean>(CLEANUP_KEY);
+    if(cleaned) historyCleanupVerified=true;
+    else {
+      await redis.del(LEGACY_1D_LOG_KEY);
+      await redis.set(CLEANUP_KEY,true);
+      historyCleanupVerified=true;
+      console.log(`[STATE CLEANUP] History retention complete: signal_history ${history.length} -> ${compact.length}; deleted legacy 1D v2 log`);
+    }
   }
   return compact;
 }
