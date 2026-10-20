@@ -27,6 +27,20 @@ test("Redis REST operations use bounded timeouts, one retry, and timing logs", (
   assert.ok(kv.includes("Do not SCAN an unordered keyspace"));
 });
 
+test("Layerbase cutover migrates bounded critical state before serving reads", () => {
+  assert.ok(state.includes("LAYERBASE_MIGRATION_FLAG_KEY"));
+  assert.ok(state.includes('from("cxswitch_kv")'));
+  assert.ok(state.includes('.select("key,value,expires_at").in("key", keys)'));
+  assert.ok(state.includes("source active_signals is missing or invalid"));
+  assert.ok(state.includes("source signal_history is missing or invalid"));
+  assert.ok(state.includes("historyRow.value.slice(-SIGNAL_HISTORY_MAX)"));
+  assert.ok(state.includes("Supabase -> Layerbase completed"));
+  assert.ok(state.includes("refusing to read uninitialised state"));
+  assert.ok(state.includes("cxswitch:cleanup:btc_short_20260923"));
+  assert.ok(state.includes("cxswitch:exit_alert_cooldowns"));
+  assert.ok(!state.includes('keys.push(TELEGRAM_ALERT_KEY_PREFIX'));
+});
+
 test("active state removes bulky context, preserves size, and logs payload bytes", () => {
   assert.ok(state.includes("delete stored.context"));
   assert.ok(state.includes("active_signals payload count="));
