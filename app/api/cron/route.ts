@@ -5,7 +5,7 @@ import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
@@ -54,7 +54,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
 }
 
 const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
-async function persistExitCooldown(pair:string,reason:string){if(!INDICATOR_EXIT_REASONS.has(reason))return;const cooldowns=await getExitAlertCooldowns();cooldowns[pair]=Date.now();await setExitAlertCooldowns(cooldowns);}
+async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 
 function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean{
@@ -82,16 +82,21 @@ function mergeNewSignalsIntoActive(current:any[],signals:Signal[]):any[]{
 
 async function observeAlertManagement(active:any[],marketData:any[]):Promise<boolean>{
   let stateStoreFailed=false;
+  let cooldowns:Record<string,number>={};
+  let cooldownsLoaded=false,cooldownsChanged=false;
+  try{cooldowns=await getExitAlertCooldowns();cooldownsLoaded=true;}
+  catch(error){stateStoreFailed=true;cooldownsLoaded=true;console.error("[MANAGEMENT] Could not load exit cooldowns; continuing without cooldown context",error);}
   for(const alert of active){
     try {
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
     const candles=Array.isArray(market?.momentumCandles4h)?market.momentumCandles4h:[];
     const price=Number(market?.currentPrice??market?.price);
     if(!candles.length||!Number.isFinite(price)||price<=0)continue;
-    await updateHistoryMilestones(alert.id,price);
-    const cooldowns=await getExitAlertCooldowns();
     const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
-    if(!hold.shouldHold)await persistExitCooldown(alert.pair,hold.reason);
+    if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
+      persistExitCooldown(alert.pair,hold.reason,cooldowns);
+      cooldownsChanged=true;
+    }
     if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
       const improves=alert.direction==="LONG"?hold.newStop>Number(alert.stop):hold.newStop<Number(alert.stop);
       if(!improves)continue;
@@ -113,6 +118,10 @@ async function observeAlertManagement(active:any[],marketData:any[]):Promise<boo
       console.error(`[MANAGEMENT] ${alert.pair} ${alert.direction} failed; continuing other positions`,error);
     }
   }
+  if(cooldownsChanged){
+    try{await setExitAlertCooldowns(cooldowns);}
+    catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Batched exit cooldown write failed",error);}
+  }
   return stateStoreFailed;
 }
 
@@ -123,7 +132,6 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
     const price=Number(market?.currentPrice??market?.price);
     if(!Number.isFinite(price)||price<=0)continue;
-    await updateHistoryMilestones(alert.id,price);
     const stop=Number(alert.stop);
     const target=Number(alert.tp2??alert.target);
     const stopHit=Number.isFinite(stop)&&stop>0&&(alert.direction==="LONG"?price<=stop:price>=stop);
@@ -335,6 +343,16 @@ export async function GET(request:Request){
  if(newSignals.length){
    active=mergeNewSignalsIntoActive(active,newSignals);
    console.log(`[STATE ADD] Batched ${newSignals.length} new signal(s) into active state; one compact write will occur after reconciliation`);
+ }
+ const milestoneStarted=Date.now();
+ console.log(`[PERF] Stage updateHistoryMilestonesBatch started active=${active.length}`);
+ try{
+   await updateHistoryMilestonesBatch(active.map((item:any)=>({id:String(item.id),price:Number(marketData.find((m:any)=>m?.pair===item.pair)?.currentPrice??marketData.find((m:any)=>m?.pair===item.pair)?.price)})).filter((item:any)=>Number.isFinite(item.price)&&item.price>0));
+   console.log(`[PERF] Stage updateHistoryMilestonesBatch completed in ${Date.now()-milestoneStarted}ms`);
+ }catch(error){
+   stateDegraded=true;
+   console.error(`[PERF] Stage updateHistoryMilestonesBatch failed after ${Date.now()-milestoneStarted}ms`,error);
+   alerts.push({status:"milestone_batch_failed",reason:String(error)});
  }
  const managementStarted=Date.now();
  console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
