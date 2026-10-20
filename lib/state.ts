@@ -73,7 +73,7 @@ export async function runMigrationIfNeeded(): Promise<void> {
   }
 
   try {
-    if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY, 0)) return;
+    if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY)) return;
     const rawUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!rawUrl || !serviceKey) throw new Error("Layerbase migration requires the existing Supabase source credentials");
