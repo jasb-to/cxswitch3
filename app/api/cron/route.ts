@@ -83,9 +83,9 @@ function mergeNewSignalsIntoActive(current:any[],signals:Signal[]):any[]{
 async function observeAlertManagement(active:any[],marketData:any[]):Promise<boolean>{
   let stateStoreFailed=false;
   let cooldowns:Record<string,number>={};
-  let cooldownsLoaded=false,cooldownsChanged=false;
-  try{cooldowns=await getExitAlertCooldowns();cooldownsLoaded=true;}
-  catch(error){stateStoreFailed=true;cooldownsLoaded=true;console.error("[MANAGEMENT] Could not load exit cooldowns; continuing without cooldown context",error);}
+  let cooldownsAvailable=false,cooldownsChanged=false;
+  try{cooldowns=await getExitAlertCooldowns();cooldownsAvailable=true;}
+  catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Could not load exit cooldowns; continuing without cooldown context",error);}
   for(const alert of active){
     try {
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
@@ -93,7 +93,7 @@ async function observeAlertManagement(active:any[],marketData:any[]):Promise<boo
     const price=Number(market?.currentPrice??market?.price);
     if(!candles.length||!Number.isFinite(price)||price<=0)continue;
     const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
-    if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
+    if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)&&cooldownsAvailable){
       persistExitCooldown(alert.pair,hold.reason,cooldowns);
       cooldownsChanged=true;
     }
