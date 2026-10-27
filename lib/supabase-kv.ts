@@ -129,13 +129,17 @@ export class Redis {
 
       const expiresAt = options.ex && options.ex > 0 ? new Date(Date.now() + options.ex * 1000).toISOString() : null;
       if (options.nx) {
-        // Remove expired rows first; the claim itself is an atomic INSERT ... ON CONFLICT DO NOTHING.
-        await supabaseRequest("rpc/cxswitch_kv_cleanup_expired", { method: "POST", body: "{}" }, timeoutMs);
-        const claimed = await supabaseRequest<boolean>("rpc/cxswitch_kv_claim", {
+        // Fast path: one atomic RPC for the normal lock/alert claim. Only run the
+        // global expiry cleanup if the key is already occupied, then retry once;
+        // this avoids an extra database round trip on every cron lock and alert.
+        const claim = () => supabaseRequest<boolean>("rpc/cxswitch_kv_claim", {
           method: "POST",
           body: JSON.stringify({ p_key: key, p_value: value, p_expires_at: expiresAt }),
         }, timeoutMs);
-        return claimed ? "OK" : null;
+        const claimed = await claim();
+        if (claimed) return "OK";
+        await supabaseRequest("rpc/cxswitch_kv_cleanup_expired", { method: "POST", body: "{}" }, timeoutMs);
+        return await claim() ? "OK" : null;
       }
 
       await supabaseRequest("cxswitch_kv?on_conflict=key", {
