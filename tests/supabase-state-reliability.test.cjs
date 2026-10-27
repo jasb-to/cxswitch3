@@ -8,23 +8,23 @@ const cron = fs.readFileSync("app/api/cron/route.ts", "utf8");
 const signals = fs.readFileSync("app/api/signals/route.ts", "utf8");
 const telegram = fs.readFileSync("lib/telegram.ts", "utf8");
 
-test("Redis REST operations use bounded timeouts, one retry, and timing logs", () => {
+test("Supabase KV operations use bounded timeouts, controlled retries, and timing logs", () => {
   assert.ok(kv.includes("const DEFAULT_QUERY_TIMEOUT_MS = 8_000"));
   assert.ok(kv.includes("const MAX_OPERATION_RETRIES = 1"));
   assert.ok(kv.includes("const RETRY_DELAY_MS = 250"));
   assert.ok(kv.includes("AbortSignal.timeout(timeoutMs)"));
-  assert.ok(kv.includes("REDIS_REST_URL"));
-  assert.ok(kv.includes("REDIS_REST_TOKEN"));
+  assert.ok(kv.includes("SUPABASE_URL"));
+  assert.ok(kv.includes("SUPABASE_SERVICE_ROLE_KEY"));
+  assert.ok(kv.includes('cxswitch_kv?select=value,expires_at&key=eq.'));
+  assert.ok(kv.includes('"rpc/cxswitch_kv_claim"'));
+  assert.ok(kv.includes('"rpc/cxswitch_kv_cleanup_expired"'));
   assert.ok(kv.includes('method: "POST"'));
-  assert.ok(kv.includes('["GET", key]'));
-  assert.ok(kv.includes('args.push("NX")'));
-  assert.ok(kv.includes('args.push("EX", options.ex)'));
-  assert.ok(kv.includes("[KV] ${opName} took"));
+  assert.ok(kv.includes("[KV] ${opName} provider=${provider()} took"));
   assert.ok(kv.includes("attempt=${attempt + 1} status=ok"));
   assert.ok(kv.includes("attempt=${attempt + 1} status=error"));
   assert.ok(kv.includes("options.nx ? 0 : MAX_OPERATION_RETRIES"), "NX claims must not blindly retry after ambiguous timeouts");
-  assert.ok(kv.includes("Redis expires keys natively"));
-  assert.ok(kv.includes("Do not SCAN an unordered keyspace"));
+  assert.ok(kv.includes("PostgREST applies the token predicate and DELETE in one SQL statement"));
+  assert.ok(kv.includes('process.env.CXSWITCH_KV_PROVIDER?.trim().toLowerCase() === "layerbase"'), "Layerbase must be explicit opt-in; Supabase is the default");
 });
 
 test("Layerbase cutover migrates bounded critical state before serving reads", () => {
