@@ -51,6 +51,10 @@ export interface SignalHistoryEntry {
 
 
 export async function runMigrationIfNeeded(): Promise<void> {
+  // This routine migrates Supabase state INTO the legacy Redis provider. When Supabase
+  // is the active KV store, running it would compact/truncate the same live rows in place.
+  // Keep it completely disabled for the temporary Supabase-first configuration.
+  if (process.env.CXSWITCH_KV_PROVIDER?.trim().toLowerCase() !== "layerbase") return;
   if (await redis.get<boolean>(LAYERBASE_MIGRATION_FLAG_KEY)) return;
 
   const lockKey = "cxswitch:migration:layerbase_v1_lock";
