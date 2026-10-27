@@ -19,7 +19,7 @@ test("Supabase KV operations use bounded timeouts, controlled retries, and timin
   assert.ok(kv.includes('"rpc/cxswitch_kv_claim"'));
   assert.ok(kv.includes('"rpc/cxswitch_kv_cleanup_expired"'));
   assert.ok(kv.includes('method: "POST"'));
-  assert.ok(kv.includes("[KV] ${opName} took"));
+  assert.ok(kv.includes("[KV] ${opName} provider=${provider()} took"));
   assert.ok(kv.includes("attempt=${attempt + 1} status=ok"));
   assert.ok(kv.includes("attempt=${attempt + 1} status=error"));
   assert.ok(kv.includes("options.nx ? 0 : MAX_OPERATION_RETRIES"), "NX claims must not blindly retry after ambiguous timeouts");
