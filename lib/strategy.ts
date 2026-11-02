@@ -56,6 +56,7 @@ export function computeRegime(c:Candle[]):ComputedRegime {
 }
 export interface TrendlineResult { valid:boolean; slope:number; intercept:number; priceAtCurrent:number; pivots:{index:number;price:number;timestamp:number}[]; r2:number; touchCount:number; reason:string }
 export function evaluateTrendlineProximity(price:number,trendlinePrice:number){if(!Number.isFinite(price)||!Number.isFinite(trendlinePrice)||trendlinePrice<=0)return{valid:false,distancePct:Infinity,reason:"invalid_trendline_price"};const distancePct=Math.abs(price-trendlinePrice)/trendlinePrice*100;return{valid:distancePct<=1.2,distancePct,reason:distancePct>1.2?"price_too_far_from_trendline":"valid"};}
+export function hasBreakoutVolumeConfirmation(candles:Candle[]):boolean{const current=candles.at(-1),previous=candles.slice(-6,-1);return !!current&&previous.length===5&&current.volume>previous.reduce((sum,x)=>sum+x.volume,0)/5*1.2;}
 export function get4HTrendline(candles:Candle[],direction:Direction,price:number):TrendlineResult {
   void price;
   const closed=candles.slice(0,-1).slice(-60),invalid=(reason:string,pivots:{index:number;price:number;timestamp:number}[]=[],slope=0,intercept=0,r2=0):TrendlineResult=>({valid:false,slope,intercept,priceAtCurrent:0,pivots,r2,touchCount:pivots.length,reason});
@@ -197,7 +198,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   if(tl?.valid){const proximity=evaluateTrendlineProximity(p,tl.priceAtCurrent);trendlineGate={valid:proximity.valid,price:tl.priceAtCurrent,distancePct:proximity.distancePct,r2:tl.r2,reason:proximity.reason};}
   const lastClosed=closed4h.at(-1),priorClosed=closed4h.at(-2),lineNow=tl?.valid?tl.slope*(closed4h.length-1)+tl.intercept:0,linePrev=tl?.valid?tl.slope*(closed4h.length-2)+tl.intercept:0;
   const breakout=!!(tl?.valid&&lastClosed&&priorClosed&&(direction==="LONG"?priorClosed.close<=linePrev&&lastClosed.close>lineNow:priorClosed.close>=linePrev&&lastClosed.close<lineNow));
-  const avgVolume=closed4h.slice(-6,-1),volumeConfirmed=avgVolume.length===5&&lastClosed!.volume>avgVolume.reduce((sum,x)=>sum+x.volume,0)/5*1.2;
+  const volumeConfirmed=hasBreakoutVolumeConfirmation(closed4h);
   const e1=evaluateEntry1(direction,stSeries,closed4h,p,st),entry1=!!e1.entry1&&(!breakout||volumeConfirmed);
   const entry2Check=direction?entry2Ready(pair,direction,entry1State,c,p,st,entry2AlreadyFired):{ready:false,reason:"regime_chop"};
   const entry2=entry2Check.ready,signalType:"ENTRY_1"|"ENTRY_2"|null=entry2?"ENTRY_2":entry1?"ENTRY_1":null;
