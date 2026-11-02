@@ -95,7 +95,7 @@ test("ENTRY_1 uses strict V28 K extremes", () => {
   assert.equal(strategy.evaluateEntry1("SHORT", stoch(60, 65, 70, 65)).entry1, false);
   assert.equal(strategy.evaluateEntry1("SHORT", stoch(80, 85, 90, 85)).entry1Short, true);
   assert.equal(strategy.evaluateEntry1("LONG", stoch(40, 35, 30, 35)).entry1, false);
-  assert.equal(strategy.evaluateEntry1("LONG", stoch(20, 25, 10, 15)).entry1Long, true);
+  assert.equal(strategy.evaluateEntry1("LONG", stoch(20, 15, 10, 15)).entry1Long, true);
 });
 
 test("ENTRY_1 accepts a crossover on either of the last two candle transitions", () => {
