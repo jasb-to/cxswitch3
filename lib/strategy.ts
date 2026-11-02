@@ -55,6 +55,7 @@ export function computeRegime(c:Candle[]):ComputedRegime {
   return{state,direction,sizeMultiplier,price,e21,e5,e13,spread,spread3,spreadDelta,strength:direction?strength:"NEUTRAL"};
 }
 export interface TrendlineResult { valid:boolean; slope:number; intercept:number; priceAtCurrent:number; pivots:{index:number;price:number;timestamp:number}[]; r2:number; touchCount:number; reason:string }
+export function calculateTrendlineR2(points:{index:number;price:number}[]):number{if(points.length<2)return 0;const mean=points.reduce((sum,p)=>sum+p.price,0)/points.length,total=points.reduce((sum,p)=>sum+(p.price-mean)**2,0);if(total===0)return 0;const n=points.length,sx=points.reduce((sum,p)=>sum+p.index,0),sy=points.reduce((sum,p)=>sum+p.price,0),sxy=points.reduce((sum,p)=>sum+p.index*p.price,0),sx2=points.reduce((sum,p)=>sum+p.index*p.index,0),denom=n*sx2-sx*sx;if(!denom)return 0;const slope=(n*sxy-sx*sy)/denom,intercept=(sy-slope*sx)/n,residual=points.reduce((sum,p)=>sum+(p.price-(slope*p.index+intercept))**2,0);return 1-residual/total;}
 export function evaluateTrendlineProximity(price:number,trendlinePrice:number){if(!Number.isFinite(price)||!Number.isFinite(trendlinePrice)||trendlinePrice<=0)return{valid:false,distancePct:Infinity,reason:"invalid_trendline_price"};const distancePct=Math.abs(price-trendlinePrice)/trendlinePrice*100;return{valid:distancePct<=1.2,distancePct,reason:distancePct>1.2?"price_too_far_from_trendline":"valid"};}
 export function hasBreakoutVolumeConfirmation(candles:Candle[]):boolean{const current=candles.at(-1),previous=candles.slice(-6,-1);return !!current&&previous.length===5&&current.volume>previous.reduce((sum,x)=>sum+x.volume,0)/5*1.2;}
 export function get4HTrendline(candles:Candle[],direction:Direction,price:number):TrendlineResult {
@@ -66,7 +67,7 @@ export function get4HTrendline(candles:Candle[],direction:Direction,price:number
   if(pivots.length<3)return invalid("fewer_than_3_pivots",pivots);
   const recent=pivots.slice(-5),n=recent.length,sumX=recent.reduce((v,x)=>v+x.index,0),sumY=recent.reduce((v,x)=>v+x.price,0),sumXY=recent.reduce((v,x)=>v+x.index*x.price,0),sumX2=recent.reduce((v,x)=>v+x.index*x.index,0),denom=n*sumX2-sumX*sumX;
   if(!denom)return invalid("degenerate_pivots",recent);
-  const slope=(n*sumXY-sumX*sumY)/denom,intercept=(sumY-slope*sumX)/n,mean=sumY/n,ssTotal=recent.reduce((v,x)=>v+(x.price-mean)**2,0),ssResidual=recent.reduce((v,x)=>v+(x.price-(slope*x.index+intercept))**2,0),r2=ssTotal===0?0:1-ssResidual/ssTotal;
+  const slope=(n*sumXY-sumX*sumY)/denom,intercept=(sumY-slope*sumX)/n,r2=calculateTrendlineR2(recent);
   if(direction==="LONG"&&slope<=0)return invalid("slope_mismatch_long",recent,slope,intercept,r2);
   if(direction==="SHORT"&&slope>=0)return invalid("slope_mismatch_short",recent,slope,intercept,r2);
   if(r2<0.60)return invalid("r2_below_0.60",recent,slope,intercept,r2);
