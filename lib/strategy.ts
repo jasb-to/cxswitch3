@@ -55,6 +55,7 @@ export function computeRegime(c:Candle[]):ComputedRegime {
   return{state,direction,sizeMultiplier,price,e21,e5,e13,spread,spread3,spreadDelta,strength:direction?strength:"NEUTRAL"};
 }
 export interface TrendlineResult { valid:boolean; slope:number; intercept:number; priceAtCurrent:number; pivots:{index:number;price:number;timestamp:number}[]; r2:number; touchCount:number; reason:string }
+export function evaluateTrendlineProximity(price:number,trendlinePrice:number){if(!Number.isFinite(price)||!Number.isFinite(trendlinePrice)||trendlinePrice<=0)return{valid:false,distancePct:Infinity,reason:"invalid_trendline_price"};const distancePct=Math.abs(price-trendlinePrice)/trendlinePrice*100;return{valid:distancePct<=1.2,distancePct,reason:distancePct>1.2?"price_too_far_from_trendline":"valid"};}
 export function get4HTrendline(candles:Candle[],direction:Direction,price:number):TrendlineResult {
   void price;
   const closed=candles.slice(0,-1).slice(-60),invalid=(reason:string,pivots:{index:number;price:number;timestamp:number}[]=[],slope=0,intercept=0,r2=0):TrendlineResult=>({valid:false,slope,intercept,priceAtCurrent:0,pivots,r2,touchCount:pivots.length,reason});
@@ -193,7 +194,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const closed4h=c.slice(0,-1),closedCloses=closed4h.map(x=>x.close),closes=c.map(x=>x.close),st=stoch(closes),stSeries=getStochSeries(closedCloses),rv=rsi(closes),a=atr(c);
   const tl=direction?get4HTrendline(c,direction,p):null,tlDistance=tl?.valid?Math.abs(p-tl.priceAtCurrent)/tl.priceAtCurrent*100:Infinity;
   let trendlineGate={valid:false,price:0,distancePct:Infinity,r2:tl?.r2??0,reason:tl?.reason??"regime_blocked"};
-  if(tl?.valid){trendlineGate=tlDistance>1.2?{valid:false,price:tl.priceAtCurrent,distancePct:tlDistance,r2:tl.r2,reason:"price_too_far_from_trendline"}:{valid:true,price:tl.priceAtCurrent,distancePct:tlDistance,r2:tl.r2,reason:"valid"};}
+  if(tl?.valid){const proximity=evaluateTrendlineProximity(p,tl.priceAtCurrent);trendlineGate={valid:proximity.valid,price:tl.priceAtCurrent,distancePct:proximity.distancePct,r2:tl.r2,reason:proximity.reason};}
   const lastClosed=closed4h.at(-1),priorClosed=closed4h.at(-2),lineNow=tl?.valid?tl.slope*(closed4h.length-1)+tl.intercept:0,linePrev=tl?.valid?tl.slope*(closed4h.length-2)+tl.intercept:0;
   const breakout=!!(tl?.valid&&lastClosed&&priorClosed&&(direction==="LONG"?priorClosed.close<=linePrev&&lastClosed.close>lineNow:priorClosed.close>=linePrev&&lastClosed.close<lineNow));
   const avgVolume=closed4h.slice(-6,-1),volumeConfirmed=avgVolume.length===5&&lastClosed!.volume>avgVolume.reduce((sum,x)=>sum+x.volume,0)/5*1.2;
