@@ -19,7 +19,7 @@ test("Redis REST operations use bounded timeouts, one retry, and timing logs", (
   assert.ok(kv.includes('["GET", key]'));
   assert.ok(kv.includes('args.push("NX")'));
   assert.ok(kv.includes('args.push("EX", options.ex)'));
-  assert.ok(kv.includes("[KV] ${opName} took"));
+  assert.ok(kv.includes("[KV] ${opName} provider=${provider()} took"));
   assert.ok(kv.includes("attempt=${attempt + 1} status=ok"));
   assert.ok(kv.includes("attempt=${attempt + 1} status=error"));
   assert.ok(kv.includes("options.nx ? 0 : MAX_OPERATION_RETRIES"), "NX claims must not blindly retry after ambiguous timeouts");
