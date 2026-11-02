@@ -43,7 +43,7 @@ test("a clean descending SHORT resistance trendline passes R-squared validation"
   assert.ok(result.slope<0);
 });
 test("a pivot trendline with R-squared below 0.60 is rejected",()=>{
-  const result=strategy.get4HTrendline(trendCandles("LONG",[0,7,-7,7,-7,0]),"LONG",130);
+  const result=strategy.get4HTrendline(trendCandles("LONG",[0,7.5,-7.5,7.5,-7.5,0]),"LONG",130);
   assert.equal(result.valid,false);
   assert.equal(result.reason,"r2_below_0.60");
   assert.ok(result.r2<0.60);
