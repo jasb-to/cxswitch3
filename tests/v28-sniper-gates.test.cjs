@@ -18,7 +18,7 @@ function trendCandles(direction, noise=[]) {
   let n=0;
   for(let i=5;i<=55;i+=10){
     const base=direction==="LONG"?100+i*.5:200-i*.5;
-    if(direction==="LONG")out[i].low=base-10+(noise[n]??0);
+    if(direction==="LONG"||direction==="LONG_NEGATIVE")out[i].low=base-10+(noise[n]??0);
     else out[i].high=base+10+(noise[n]??0);
     n++;
   }
@@ -47,7 +47,7 @@ test("trendline regression quality below R-squared 0.60 is detected",()=>{
   assert.ok(strategy.calculateTrendlineR2(points)<0.60);
 });
 test("LONG trendlines with negative slope are rejected",()=>{
-  const result=strategy.get4HTrendline(trendCandles("SHORT"),"LONG",170);
+  const result=strategy.get4HTrendline(trendCandles("LONG_NEGATIVE"),"LONG",170);
   assert.equal(result.valid,false);
   assert.equal(result.reason,"slope_mismatch_long");
 });
