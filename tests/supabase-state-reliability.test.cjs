@@ -23,8 +23,8 @@ test("Redis REST operations use bounded timeouts, one retry, and timing logs", (
   assert.ok(kv.includes("attempt=${attempt + 1} status=ok"));
   assert.ok(kv.includes("attempt=${attempt + 1} status=error"));
   assert.ok(kv.includes("options.nx ? 0 : MAX_OPERATION_RETRIES"), "NX claims must not blindly retry after ambiguous timeouts");
-  assert.ok(kv.includes("Redis expires keys natively"));
-  assert.ok(kv.includes("Do not SCAN an unordered keyspace"));
+  assert.ok(kv.includes("const expiresAt = options.ex && options.ex > 0 ? new Date(Date.now() + options.ex * 1000).toISOString() : null"));
+  assert.ok(kv.includes("expires_at: expiresAt")), "Supabase KV stores TTL as expires_at");
 });
 
 test("Layerbase cutover migrates bounded critical state before serving reads", () => {
