@@ -17,7 +17,7 @@ test("ENTRY_1 SHORT requires a fresh bearish cross with K strictly above 75",()=
 });
 test("ENTRY_1 LONG requires a fresh bullish cross with K strictly below 25",()=>{
   assert.equal(strategy.evaluateEntry1("LONG",{pk:20,pd:25,k:40,d:35}).entry1,false);
-  assert.equal(strategy.evaluateEntry1("LONG",{pk:10,pd:15,k:20,d:25}).entry1Long,true);
+  assert.equal(strategy.evaluateEntry1("LONG",{pk:10,pd:15,k:20,d:15}).entry1Long,true);
 });
 test("a cross on the immediately preceding closed candle remains eligible",()=>{
   const series=[{k:90,d:85},{k:80,d:85},{k:79,d:84}];
