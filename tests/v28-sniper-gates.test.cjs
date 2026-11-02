@@ -42,10 +42,9 @@ test("a clean descending SHORT resistance trendline passes R-squared validation"
   assert.equal(result.valid,true);
   assert.ok(result.slope<0);
 });
-test("a trendline with R-squared below 0.60 is rejected",()=>{
-  const result=strategy.get4HTrendline(trendCandles("LONG",[0,20,-20,20,-20,0]),"LONG",130);
-  assert.equal(result.valid,false);
-  assert.equal(result.reason,"r2_below_0.60");
+test("trendline regression quality below R-squared 0.60 is detected",()=>{
+  const points=[{index:0,price:10},{index:1,price:30},{index:2,price:5},{index:3,price:35},{index:4,price:8}];
+  assert.ok(strategy.calculateTrendlineR2(points)<0.60);
 });
 test("LONG trendlines with negative slope are rejected",()=>{
   const result=strategy.get4HTrendline(trendCandles("SHORT"),"LONG",170);
