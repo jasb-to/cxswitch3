@@ -38,23 +38,22 @@ function trendTargets(kind, days = 40) {
 }
 function stoch(k, d, pk, pd) { return { k, d, pk, pd }; }
 
-test("BEAR_HIGH + fresh 4H bearish Stoch cross at K=75 => SHORT at 100% size", () => {
+test("BEAR_HIGH regime remains tradeable at full regime size", () => {
   const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearHigh")));
   assert.equal(regime.state, "BEAR_HIGH");
   assert.equal(regime.direction, "SHORT");
   assert.equal(regime.sizeMultiplier, 1);
-  const trigger = strategy.evaluateEntry1(regime.direction, stoch(75, 77, 80, 78));
+  const trigger = strategy.evaluateEntry1(regime.direction, stoch(80, 85, 90, 85));
   assert.equal(trigger.entry1Short, true);
   assert.equal(trigger.direction, "SHORT");
 });
 
-test("BEAR_LOW + fresh 4H bearish Stoch cross at K=75 => SHORT at 50% size", () => {
+test("BEAR_LOW regime blocks direction and has zero size", () => {
   const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearLow")));
   assert.equal(regime.state, "BEAR_LOW");
-  assert.equal(regime.direction, "SHORT");
-  assert.equal(regime.sizeMultiplier, 0.5);
-  const trigger = strategy.evaluateEntry1(regime.direction, stoch(75, 77, 80, 78));
-  assert.equal(trigger.entry1Short, true);
+  assert.equal(regime.direction, null);
+  assert.equal(regime.sizeMultiplier, 0);
+  assert.equal(strategy.regimeAllowsTrading(regime.state), false);
 });
 
 test("CHOP + fresh bearish Stoch cross => no signal and zero size", () => {
@@ -66,14 +65,12 @@ test("CHOP + fresh bearish Stoch cross => no signal and zero size", () => {
   assert.equal(trigger.entry1, false);
 });
 
-test("BULL_LOW + fresh 4H bullish Stoch cross at K=30 => LONG at 50% size", () => {
+test("BULL_LOW regime blocks direction and has zero size", () => {
   const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bullLow")));
   assert.equal(regime.state, "BULL_LOW");
-  assert.equal(regime.direction, "LONG");
-  assert.equal(regime.sizeMultiplier, 0.5);
-  const trigger = strategy.evaluateEntry1(regime.direction, stoch(30, 28, 25, 30));
-  assert.equal(trigger.entry1Long, true);
-  assert.equal(trigger.direction, "LONG");
+  assert.equal(regime.direction, null);
+  assert.equal(regime.sizeMultiplier, 0);
+  assert.equal(strategy.regimeAllowsTrading(regime.state), false);
 });
 
 test("MED regimes use full size; direction does not require 4H EMA5/13 agreement", () => {
@@ -94,18 +91,16 @@ test("Spread output is signed and includes the three-day comparison", () => {
   assert.ok(Number.isFinite(regime.spreadDelta));
 });
 
-test("ENTRY_1 uses the revised K thresholds of <70 for LONG and >30 for SHORT", () => {
-  assert.equal(strategy.evaluateEntry1("LONG", stoch(30, 28, 25, 30)).entry1Long, true);
-  assert.equal(strategy.evaluateEntry1("SHORT", stoch(75, 77, 80, 78)).entry1Short, true);
-  assert.equal(strategy.evaluateEntry1("LONG", stoch(69, 65, 60, 66)).entry1Long, true);
-  assert.equal(strategy.evaluateEntry1("SHORT", stoch(31, 35, 40, 36)).entry1Short, true);
-  assert.equal(strategy.evaluateEntry1("LONG", stoch(70, 65, 60, 66)).entry1, false);
-  assert.equal(strategy.evaluateEntry1("SHORT", stoch(30, 35, 40, 36)).entry1, false);
+test("ENTRY_1 uses strict V28 K extremes", () => {
+  assert.equal(strategy.evaluateEntry1("SHORT", stoch(60, 65, 70, 65)).entry1, false);
+  assert.equal(strategy.evaluateEntry1("SHORT", stoch(80, 85, 90, 85)).entry1Short, true);
+  assert.equal(strategy.evaluateEntry1("LONG", stoch(40, 35, 30, 35)).entry1, false);
+  assert.equal(strategy.evaluateEntry1("LONG", stoch(20, 25, 10, 15)).entry1Long, true);
 });
 
 test("ENTRY_1 accepts a crossover on either of the last two candle transitions", () => {
   const previousCandleCross = strategy.evaluateEntry1("SHORT", [
-    { k: 45, d: 40 }, { k: 42.8, d: 50.3 }, { k: 36, d: 44.7 },
+    { k: 90, d: 85 }, { k: 80, d: 85 }, { k: 79, d: 84 },
   ]);
   assert.equal(previousCandleCross.entry1Short, true);
   assert.equal(previousCandleCross.crossAge, "previous candle");
@@ -113,7 +108,7 @@ test("ENTRY_1 accepts a crossover on either of the last two candle transitions",
     { k: 45, d: 50 }, { k: 42.8, d: 50.3 }, { k: 36, d: 44.7 },
   ]);
   assert.equal(noRecentCross.entry1Short, false);
-  assert.equal(noRecentCross.reason, "no_qualifying_cross_within_6_closed_candles");
+  assert.equal(noRecentCross.reason, "cross_too_old");
 });
 
 test("structural stop uses the last five candles and the 1.5 ATR floor", () => {
