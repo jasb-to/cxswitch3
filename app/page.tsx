@@ -91,9 +91,12 @@ export default function Dashboard(){
     const alertSent=!!a;
     const momentum=m?.momentumState;
     return <article key={pair} className="bg-[#0b0b0b] p-2.5 sm:p-3 min-w-0 flex flex-col gap-1.5 select-text" style={{WebkitUserSelect:"text",userSelect:"text"}}>
-      <div className="flex items-center justify-between gap-1 min-w-0">
-        <div className="flex items-baseline gap-1.5 min-w-0"><span className={`rounded px-1.5 py-0.5 text-[9px] font-black tracking-wide ${regimeBadge} ${regimeTone}`}>{pair}/USD</span><span className="text-[12px] sm:text-base font-semibold shrink-0 whitespace-nowrap">{money(p)}</span></div>
-        <div className={`text-[8px] sm:text-[9px] font-black text-right whitespace-nowrap shrink-0 ${regimeTone}`}>{regime}</div>
+      <div className="flex flex-wrap items-center justify-between gap-y-2 gap-x-4 w-full -mx-2.5 -mt-2.5 sm:-mx-3 sm:-mt-3 mb-1.5 p-3 border-b border-gray-800">
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="font-bold text-white">{pair}/USD</span>
+          <span className="text-gray-300 font-mono text-sm whitespace-nowrap">{money(p)}</span>
+        </div>
+        <span className={`text-xs font-semibold px-2 py-1 rounded border uppercase tracking-wider shrink-0 ${regimeBadge} ${regimeTone}`}>{regime}</span>
       </div>
       <div className="min-w-0 flex items-start gap-1 text-[9px] leading-4"><span className="shrink-0 text-white/30 font-bold tracking-wide">STATUS</span><span className={`min-w-0 break-words ${statusTone}`}>{status}{trendlineNote}</span></div>
       <div className="min-w-0 flex items-start gap-1 text-[9px] leading-4"><span className="shrink-0 text-white/30 font-bold tracking-wide">STOCH</span><span className={`min-w-0 break-words ${stochTone}`}>{typeof closedK==="number"&&typeof closedD==="number"?`${closedK.toFixed(1)} / ${closedD.toFixed(1)}`:"— / —"} — {stochState}{staleNote}</span></div>
