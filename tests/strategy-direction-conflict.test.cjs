@@ -111,30 +111,24 @@ test("ENTRY_1 accepts a crossover on either of the last two candle transitions",
   assert.equal(noRecentCross.reason, "cross_too_old");
 });
 
-test("structural stop uses the last five candles and the 1.5 ATR floor", () => {
+test("structural stop uses the last 20 candles and the 2 ATR floor", () => {
   const c = candlesFromDaily(trendTargets("bullMed"));
   const result = strategy.calculateStop("LONG", 110, 2, c);
-  const low = Math.min(...c.slice(-5).map(x => x.low));
+  const low = Math.min(...c.slice(-20).map(x => x.low));
   assert.equal(result.valid, true);
-  assert.equal(result.stop, Math.min(low, 107));
+  assert.equal(result.stop, Math.min(low, 106));
 });
 
-test("shouldHold preserves stop, TP1 scale-out and trailing stop when RSI is not extreme", () => {
+test("shouldHold does not scale out at TP1 and only returns a tighter Chandelier stop", () => {
   const c = candlesFromDaily(Array.from({ length: 40 }, (_, i) => 100 + i * 0.02 + (i % 2 ? 0.5 : -0.5)));
-  const base = { direction: "LONG", entry: 100, stop: 90, tp1: 103, tp2: 106, timestamp: Date.UTC(2026, 0, 1), version: 31 };
-  assert.equal(strategy.shouldHold(base, c, 99.5).managementState, "STAY");
-  assert.equal(strategy.shouldHold(base, c, 102).managementState, "STAY");
-  const tp1 = strategy.shouldHold(base, c, 103);
-  assert.equal(tp1.reason, "tp1_hit_scale_out");
-  assert.equal(tp1.scaleOut.size, 0.5);
-  assert.equal(tp1.newStop, 100);
-  const rising = [...c];
-  for (let i = 0; i < 5; i++) {
-    const close = 101 + i * 0.5;
-    rising[rising.length - 5 + i] = { ...rising[rising.length - 5 + i], open: close, close, high: close + 0.2, low: close - 0.2 };
+  const base = { direction: "LONG", entry: 100, stop: 90, tp1: 103, tp2: 106, timestamp: Date.UTC(2026, 0, 1), version: 32 };
+  for (const price of [99.5, 102, 103]) {
+    const result = strategy.shouldHold(base, c, price);
+    assert.equal(result.shouldHold, true);
+    assert.notEqual(result.reason, "tp1_hit_scale_out");
   }
-  const managed = { ...base, tp1HitAt: Date.UTC(2026, 1, 1) };
-  const trail = strategy.shouldHold(managed, rising, 103.5);
-  assert.equal(trail.reason, "chandelier_stop");
-  assert.ok(trail.newStop > managed.stop);
+  const trail = strategy.shouldHold(base, c, 103.5);
+  assert.equal(trail.shouldHold, true);
+  assert.equal(trail.reason, "chandelier_stop_update");
+  assert.ok(trail.newStop > base.stop);
 });
