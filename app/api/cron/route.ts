@@ -259,6 +259,8 @@ export async function GET(request:Request){
   const regimeDebug=dbg.find(x=>x.startsWith("[REGIME]"));
   if(regimeDebug)console.log(`[PAIR] ${pair} — ${regimeDebug}`);
   const triggerDebug=dbg.find(x=>x.startsWith("[TRIGGER]"));
+  const diagnosticDebug=dbg.find(x=>x.startsWith("[DIAGNOSTIC]"));
+  if(diagnosticDebug)console.log(diagnosticDebug);
   if(triggerDebug)console.log(`[PAIR] ${pair} — ${triggerDebug}`);
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
   if(gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
