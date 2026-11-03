@@ -33,12 +33,14 @@ function candlesFromCloses(closes, range=100) {
 function structuralSnapCandles(direction) {
   const closes = [];
   let price = 100;
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 30; i++) {
     price += direction === "LONG" ? 1 : -1;
     closes.push(price);
   }
-  for (let i = 0; i < 16; i++) {
-    price += direction === "LONG" ? -2 : 2;
+  // The final two candles create the Stoch extreme; the second candle
+  // causes the EMA5/13 cross on the latest completed candle.
+  for (let i = 0; i < 2; i++) {
+    price += direction === "LONG" ? -8 : 8;
     closes.push(price);
   }
   return candlesFromCloses(closes);
