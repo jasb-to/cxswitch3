@@ -199,6 +199,42 @@ export async function setActiveSignals(signals: ActiveTrade[]): Promise<void> {
   if (payloadBytes > 10 * 1024) console.warn(`[STATE] active_signals payload exceeds 10KB: ${payloadBytes} bytes`);
   await redis.set(ACTIVE_SIGNALS_KEY, compact);
 }
+
+// Ratchet an active position's stop in the safe direction only. Keep active state,
+// signal history, and the latest-alert pointer consistent so recovery cannot restore
+// an older, wider stop after a state rebuild.
+export async function updateActiveSignalStop(pair:string,direction:"LONG"|"SHORT",newStop:number):Promise<boolean>{
+  if(!Number.isFinite(newStop)||newStop<=0)throw new Error("Invalid trailing stop");
+  const active=await getActiveSignals();
+  const index=active.findIndex(trade=>trade.pair===pair&&trade.direction===direction);
+  if(index<0)return false;
+  const current=Number(active[index].stop);
+  const tighter=direction==="LONG"?newStop>current:newStop<current;
+  if(!tighter)return false;
+  active[index]={...active[index],stop:newStop};
+  await setActiveSignals(active);
+
+  const history=await getSignalHistory();
+  let historyChanged=false;
+  for(const entry of history){
+    if(entry.id===active[index].id&&entry.status==="ACTIVE"&&
+      (direction==="LONG"?newStop>Number(entry.stop):newStop<Number(entry.stop))){
+      entry.stop=newStop;
+      historyChanged=true;
+    }
+  }
+  if(historyChanged)await setSignalHistory(history);
+  const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};
+  const latestEntry=latest[pair];
+  if(latestEntry?.id===active[index].id&&
+    (direction==="LONG"?newStop>Number(latestEntry.stop):newStop<Number(latestEntry.stop))){
+    latestEntry.stop=newStop;
+    latest[pair]=latestEntry;
+    await redis.set(LATEST_ALERTS_KEY,latest);
+  }
+  console.log(`[STATE] ${pair} ${direction} persisted Chandelier stop ${current} -> ${newStop}`);
+  return true;
+}
 export async function addActiveSignal(signal: Signal): Promise<void> {
   const active = await getActiveSignals();
   const trade: ActiveTrade = {id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? 0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",sizeMultiplier:signal.sizeMultiplier,version:signal.version};
