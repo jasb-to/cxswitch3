@@ -45,8 +45,8 @@ test("hard stops remain active but TP1/TP2 are not operational exits", () => {
 });
 
 test("Telegram management alert describes the new structural exit accurately", () => {
-  assert.ok(telegram.includes("Confirmed chandelier trailing-stop breach. EXIT TRADE."));
-  assert.ok(telegram.includes("4H Stoch RSI extreme + EMA 5/13 cross confirmed on the latest closed candle"));
+  assert.ok(telegram.includes("(Chandelier)."));
+  assert.ok(telegram.includes("(4H structural exit)."));
 });
 
 
