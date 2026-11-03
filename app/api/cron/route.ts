@@ -5,7 +5,7 @@ import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCoun
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, updateActiveSignalStop, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
@@ -53,7 +53,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
-const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
+const INDICATOR_EXIT_REASONS=new Set(["chandelier_trailing_stop","stoch_extreme_ema5_13_bearish_cross","stoch_extreme_ema5_13_bullish_cross"]);
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 
@@ -97,21 +97,30 @@ async function observeAlertManagement(active:any[],marketData:any[]):Promise<boo
       persistExitCooldown(alert.pair,hold.reason,cooldowns);
       cooldownsChanged=true;
     }
-    if(hold.reason==="chandelier_stop"&&hold.newStop!==undefined){
-      const improves=alert.direction==="LONG"?hold.newStop>Number(alert.stop):hold.newStop<Number(alert.stop);
-      if(!improves)continue;
-      const key=`management:${alert.id}:trail:${round(Number(hold.newStop))}`;
-      if(await claimTelegramAlert(key)){
-        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"TRAIL",stop:Number(hold.newStop)});
-        console.log(`[MANAGEMENT ALERT] CX — ${alert.pair} ${alert.direction}. Trail stop raised to ${round(Number(hold.newStop))}.`);
+    if(hold.shouldHold&&hold.reason==="chandelier_stop_update"&&hold.newStop!==undefined){
+      const oldStop=Number(alert.stop);
+      const tighter=alert.direction==="LONG"?hold.newStop>oldStop:hold.newStop<oldStop;
+      if(tighter){
+        const persisted=await updateActiveSignalStop(alert.pair,alert.direction,hold.newStop);
+        if(persisted){
+          alert.stop=hold.newStop;
+          console.log(`[CHANDELIER] ${alert.pair} ${alert.direction} | stop updated ${oldStop} -> ${hold.newStop}`);
+          const key=`management:${alert.id}:trail:${round(Number(hold.newStop))}`;
+          if(await claimTelegramAlert(key))
+            await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"TRAIL",stop:Number(hold.newStop)});
+        }
       }
     }else if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
-      const kind=hold.reason==="1d_ema_reversal_confirmed"?"1D_REVERSAL":hold.reason==="4h_rsi_extreme_opposite"?"RSI_EXTREME":hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
+      // Commit the exit to history and active state before attempting Telegram delivery.
+      await updateSignalHistoryStatus(alert.id,"FAILED",hold.reason,price);
+      const activeIndex=active.findIndex((item:any)=>item.id===alert.id);
+      if(activeIndex>=0)active.splice(activeIndex,1);
+      console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — EXIT @ ${price} (${hold.reason})`);
+      alerts.push({pair:alert.pair,direction:alert.direction,status:"management_exit",reason:hold.reason,price});
+      const kind=hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
-      if(await claimTelegramAlert(key)){
+      if(await claimTelegramAlert(key))
         await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind});
-        console.log(`[MANAGEMENT ALERT] CX — ${alert.pair} ${alert.direction}. ${hold.reason} confirmed. EXIT TRADE.`);
-      }
     }
     } catch(error) {
       if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(error)))stateStoreFailed=true;
@@ -122,6 +131,9 @@ async function observeAlertManagement(active:any[],marketData:any[]):Promise<boo
     try{await setExitAlertCooldowns(cooldowns);}
     catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Batched exit cooldown write failed",error);}
   }
+  // Persist any positions removed by structural or Chandelier exits.
+  try{await setActiveSignals(active);}
+  catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Active-position state write failed",error);}
   return stateStoreFailed;
 }
 
@@ -133,19 +145,12 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
     const price=Number(market?.currentPrice??market?.price);
     if(!Number.isFinite(price)||price<=0)continue;
     const stop=Number(alert.stop);
-    const target=Number(alert.tp2??alert.target);
     const stopHit=Number.isFinite(stop)&&stop>0&&(alert.direction==="LONG"?price<=stop:price>=stop);
-    const targetHit=Number.isFinite(target)&&target>0&&(alert.direction==="LONG"?price>=target:price<=target);
     if(stopHit){
       await updateSignalHistoryStatus(alert.id,"SL_HIT","stop_hit",price);
       active=active.filter((item:any)=>item.id!==alert.id);
       alerts.push({pair:alert.pair,status:"sl_hit",price,level:stop});
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — SL_HIT @ ${price} (SL ${stop})`);
-    }else if(targetHit){
-      await updateSignalHistoryStatus(alert.id,"TP_HIT","tp2_hit",price);
-      active=active.filter((item:any)=>item.id!==alert.id);
-      alerts.push({pair:alert.pair,status:"tp_hit",price,level:target});
-      console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — TP_HIT @ ${price} (TP2 ${target})`);
     }
     } catch(error) {
       console.error(`[RECONCILE] ${alert.pair} ${alert.direction} failed; retaining position for next run`,error);
