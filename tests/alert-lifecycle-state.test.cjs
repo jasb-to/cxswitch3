@@ -43,3 +43,10 @@ test("dashboard still distinguishes completed alert states", () => {
   assert.ok(signals.includes('h.status==="SL_HIT"||h.status==="FAILED"'));
   assert.ok(signals.includes('h.status!=="ACTIVE"'));
 });
+
+
+test("ENTRY_2 is persisted internally without Telegram dispatch",()=>{assert.ok(cron.includes('reason=entry2_internal'));assert.ok(cron.includes('newSignals.push(signal)'));assert.ok(cron.includes('await appendSignalHistory(signal)'));});
+
+test("ADD same-direction continuation bypasses active suppression and has four-hour hysteresis",()=>{assert.ok(cron.includes('signal.type==="ADD"&&!sameDirectionExisting'));assert.ok(cron.includes('reason=add_hysteresis_4h'));});
+
+test("hard stop dispatches Telegram EXIT",()=>{assert.ok(cron.includes('kind:"STOP_HIT",price'));});

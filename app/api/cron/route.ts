@@ -60,7 +60,7 @@ function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK
 function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean{
   const message=error instanceof Error?error.message:String(error);
   if(message.startsWith("Telegram alerting is not configured:")||
-     message.startsWith("Only ENTRY_1 and ENTRY_2 alerts are permitted:")||
+     message.startsWith("Only ENTRY_1 and ADD alerts are permitted:")||
      message.startsWith("Telegram alert refused:"))return true;
   const statusPrefix="Telegram sendMessage failed (";
   if(!message.startsWith(statusPrefix))return false;
@@ -120,7 +120,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       const kind=hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
       if(await claimTelegramAlert(key))
-        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind});
+        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price});
     }
     } catch(error) {
       if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(error)))stateStoreFailed=true;
@@ -149,7 +149,9 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
     if(stopHit){
       await updateSignalHistoryStatus(alert.id,"SL_HIT","stop_hit",price);
       active=active.filter((item:any)=>item.id!==alert.id);
-      alerts.push({pair:alert.pair,status:"sl_hit",price,level:stop});
+      alerts.push({pair:alert.pair,direction:alert.direction,status:"sl_hit",price,level:stop});
+      const exitKey=`management:${alert.id}:exit:hard_stop`;
+      if(await claimTelegramAlert(exitKey))await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"STOP_HIT",price});
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — SL_HIT @ ${price} (SL ${stop})`);
     }
     } catch(error) {
@@ -290,10 +292,23 @@ export async function GET(request:Request){
     return;
   }
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2} | RR ${signal.rr}`);
-  const entry2Continuation=!!existing&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2"&&existing.direction===signal.direction;
-  if(existing&&!entry2Continuation){console.log(`[PAIR] ${pair} — ${signal.type} suppressed because position is already active`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=active_position_exists`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=active_position_exists`);return;}
-  const history=historyAtStart;
-  if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=pair_paused`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=pair_paused`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
+  const sameDirectionExisting=!!existing&&existing.direction===signal.direction;
+   const entry2Continuation=sameDirectionExisting&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2";
+   if(existing&&existing.direction!==signal.direction){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=opposite_direction_position_exists`);return;}
+   if(existing&&signal.type!=="ADD"&&!entry2Continuation&&signal.type!=="ENTRY_2"){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=active_position_exists`);return;}
+   if(signal.type==="ADD"&&!sameDirectionExisting){console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=active_position_exists`);return;}
+   if(signal.type==="ADD"&&historyAtStart.some((h:any)=>h.pair===pair&&h.direction===signal.direction&&h.type==="ADD"&&Date.now()-Number(h.timestamp)<4*60*60*1000)){console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=add_hysteresis_4h`);return;}
+   const history=historyAtStart;
+   if(signal.type==="ENTRY_2"){
+     console.log(`[ALERT DISPATCH] pair=${pair} type=ENTRY_2 status=suppressed reason=entry2_internal`);
+     newSignals.push(signal);stateSignal=signal;dispatchStage="signal_history_append";
+     await appendSignalHistory(signal);
+     console.log(`[STATE ADD] pair=${pair} type=ENTRY_2 status=history_appended id=${signal.id}`);
+     dispatchStage="active_state_add";stateAddAttempted=true;
+     console.log(`[STATE ADD] pair=${pair} type=ENTRY_2 status=queued_for_batch id=${signal.id}`);
+     dispatchStage="complete";return;
+   }
+   if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=pair_paused`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=pair_paused`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
   if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=recent_signal_dedupe`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=recent_signal_dedupe`);return;}
   dispatchStage="cooldown_check";
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];
@@ -319,7 +334,7 @@ export async function GET(request:Request){
     alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
     newSignals.push(signal);
     console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
-    console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=sent reason=telegram_api_accepted`);
+    console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=sent reason=telegram_api_accepted`);
   }catch(e){
     if(isDefinitivelyRejectedBeforeDelivery(e)){
       try{await releaseTelegramAlert(alertKey);}

@@ -18,17 +18,20 @@ export async function sendAlert(signal:any){
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
 
   const type=signal.signalType||signal.state;
-  if(type!=="ENTRY_1"&&type!=="ENTRY_2") throw new Error("Only ENTRY_1 and ENTRY_2 alerts are permitted: "+String(type));
+  if(type!=="ENTRY_1"&&type!=="ADD"&&type!=="ENTRY_2") throw new Error("Only ENTRY_1, ADD, and ENTRY_2 alerts are permitted: "+String(type));
 
   const emoji=signal.signalEmoji||"📊";
   const dir=signal.bias==="LONG"?"📈":"📉";
   const entry=Number(signal.price??signal.entry);
-  const tp1=Number(signal.takeProfit1??signal.tp1);
-  const tp2=Number(signal.takeProfit2??signal.tp2);
+  const rawTp1=Number(signal.takeProfit1??signal.tp1);
+  const rawTp2=Number(signal.takeProfit2??signal.tp2);
+  const trailingTargets=Number.isFinite(rawTp1)&&Number.isFinite(rawTp2)&&rawTp1===rawTp2;
+  const tp1=trailingTargets?"TRAILING":rawTp1;
+  const tp2=trailingTargets?"TRAILING":rawTp2;
   const stop=Number(signal.stopLoss??signal.stop);
   const riskDistance=Number.isFinite(entry)&&Number.isFinite(stop)?Math.abs(entry-stop):0;
-  const rrTp1=riskDistance>0&&Number.isFinite(tp1)?Math.abs(tp1-entry)/riskDistance:null;
-  const rrTp2=riskDistance>0&&Number.isFinite(tp2)?Math.abs(tp2-entry)/riskDistance:null;
+  const rrTp1=riskDistance>0&&Number.isFinite(Number(tp1))?Math.abs(Number(tp1)-entry)/riskDistance:null;
+  const rrTp2=riskDistance>0&&Number.isFinite(Number(tp2))?Math.abs(Number(tp2)-entry)/riskDistance:null;
 
   const signalClass=signal.signalClass??signal.context?.signalClass;
   const sizeMultiplier=signal.sizeMultiplier??signal.context?.sizeMultiplier;
@@ -51,12 +54,12 @@ export async function sendAlert(signal:any){
       ? "Reason: fresh 4H Stoch RSI cross"
       : type==="ENTRY_2"?"Reason: ENTRY_2 retest confirmed":"";
   const lines=[
-    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type}`,"",
+    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type==="ADD"?"ADD (Position Building)":type}`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,
     `Entry: ${formatPrice(entry)} · MARKET`,
     `SL: ${formatPrice(stop)}`,
-    `TP1: ${formatPrice(tp1)}`,
-    `TP2: ${formatPrice(tp2)}`,
+    `TP1: ${trailingTargets?"TRAILING":formatPrice(tp1)}`,
+    `TP2: ${trailingTargets?"TRAILING":formatPrice(tp2)}`,
     `RR (TP1): ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
     `RR (TP2): ${rrTp2==null?"-":rrTp2.toFixed(2)+"R"}`,
     `Size: ${sizeText}`,
@@ -64,9 +67,7 @@ export async function sendAlert(signal:any){
     reasonText
   ].filter(Boolean).join("\n");
 
-  if(Number.isFinite(tp1)&&Number.isFinite(tp2)&&tp1===tp2){
-    throw new Error(`Telegram alert refused: TP1 and TP2 are identical (${formatPrice(tp1)}).`);
-  }
+  // Identical TP fields are V28 15 ATR safety placeholders; display as TRAILING, not executable targets.
 
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines}),signal:AbortSignal.timeout(6000)});
   if(!response.ok){
@@ -140,20 +141,23 @@ export async function sendJarvisOpportunity(update:{
 export async function sendManagementAlert(update:{
   pair:string;
   direction:"LONG"|"SHORT";
-  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL";
+  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL"|"STOP_HIT";
   stop?:number;
+  price?:number;
 }){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
-  const text=update.kind==="TRAIL"
+  const text=update.kind==="STOP_HIT"
+    ? `🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price)}.`
+    : update.kind==="TRAIL"
     ? `CX — ${update.pair} ${update.direction}. Trail stop raised to ${formatPrice(update.stop)}.`
     : update.kind==="TRAIL_EXIT"
-      ? `CX — ${update.pair} ${update.direction}. Confirmed chandelier trailing-stop breach. EXIT TRADE.`
+      ? `🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price??update.stop)} (Chandelier).`
       : update.kind==="RSI_EXTREME"
         ? `CX — ${update.pair} ${update.direction}. 4H RSI extreme confirmed on two closed candles. EXIT TRADE.`
         : update.kind==="1D_REVERSAL"
           ? `CX — ${update.pair} ${update.direction}. 1D EMA 5/13 reversal confirmed on two closed daily candles. EXIT TRADE.`
-          : `CX — ${update.pair} ${update.direction}. 4H Stoch RSI extreme + EMA 5/13 cross confirmed on the latest closed candle. EXIT TRADE.`;
+          : `🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price)} (4H structural exit).`;
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
   if(!response.ok){
     const body=await response.text().catch(()=>"");

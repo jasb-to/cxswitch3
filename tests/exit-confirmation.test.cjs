@@ -45,6 +45,11 @@ test("hard stops remain active but TP1/TP2 are not operational exits", () => {
 });
 
 test("Telegram management alert describes the new structural exit accurately", () => {
-  assert.ok(telegram.includes("Confirmed chandelier trailing-stop breach. EXIT TRADE."));
-  assert.ok(telegram.includes("4H Stoch RSI extreme + EMA 5/13 cross confirmed on the latest closed candle"));
+  assert.ok(telegram.includes("(Chandelier)."));
+  assert.ok(telegram.includes("(4H structural exit)."));
 });
+
+
+test("V28 alert matrix: ENTRY_1 and ADD permitted, dummy targets shown as trailing, ENTRY_2 silent",()=>{assert.ok(telegram.includes('type!=="ENTRY_1"&&type!=="ADD"&&type!=="ENTRY_2"'));assert.ok(telegram.includes('TP1: ${trailingTargets?"TRAILING":formatPrice(tp1)}'));assert.ok(telegram.includes('ADD (Position Building)'));assert.ok(cron.includes('reason=entry2_internal'));assert.ok(cron.includes('reason=add_hysteresis_4h'));});
+
+test("hard-stop and structural exits send priced EXIT alerts",()=>{assert.ok(telegram.includes('"STOP_HIT"'));assert.ok(cron.includes('kind:"STOP_HIT",price'));assert.ok(cron.includes('kind,price'));});
