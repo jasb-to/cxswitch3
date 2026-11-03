@@ -153,7 +153,7 @@ export async function sendManagementAlert(update:{
         ? `CX — ${update.pair} ${update.direction}. 4H RSI extreme confirmed on two closed candles. EXIT TRADE.`
         : update.kind==="1D_REVERSAL"
           ? `CX — ${update.pair} ${update.direction}. 1D EMA 5/13 reversal confirmed on two closed daily candles. EXIT TRADE.`
-          : `CX — ${update.pair} ${update.direction}. 4H EMA 8/21 reversal confirmed on two closed candles. EXIT TRADE.`;
+          : `CX — ${update.pair} ${update.direction}. 4H Stoch RSI extreme + EMA 5/13 cross confirmed on the latest closed candle. EXIT TRADE.`;
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
   if(!response.ok){
     const body=await response.text().catch(()=>"");
