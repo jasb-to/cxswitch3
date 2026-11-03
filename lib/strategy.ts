@@ -27,7 +27,7 @@ function adx(c:Candle[],p=14){if(c.length<p+2)return 0;const tr:number[]=[],pl:n
 function daily(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [...c].sort((a,b)=>a.timestamp-b.timestamp)){const z=new Date(x.timestamp),k=z.toISOString().slice(0,10),b=m.get(k)??[];b.push(x);m.set(k,b)}return[...m.values()].map(b=>({timestamp:b[0].timestamp,open:b[0].open,high:Math.max(...b.map(x=>x.high)),low:Math.min(...b.map(x=>x.low)),close:b.at(-1)!.close,volume:b.reduce((s,x)=>s+x.volume,0)}))}
 export type RegimeStrength="HIGH"|"MED"|"LOW";
 export type RegimeState="BULL_HIGH"|"BULL_MED"|"BULL_LOW"|"CHOP"|"BEAR_LOW"|"BEAR_MED"|"BEAR_HIGH";
-export function regimeAllowsTrading(state:RegimeState):boolean{return state!=="CHOP";}
+export function regimeAllowsTrading(state:RegimeState):boolean{return state==="BEAR_HIGH"||state==="BEAR_MED"||state==="BULL_HIGH"||state==="BULL_MED";}
 export interface ComputedRegime {
   state:RegimeState; direction:Direction|null; sizeMultiplier:0|0.5|1;
   price:number; e21:number; e5:number; e13:number; spread:number; spread3:number; spreadDelta:number;
@@ -52,7 +52,7 @@ export function computeRegime(c:Candle[]):ComputedRegime {
   else if(emaStack==="BEAR"&&!aboveE21)state=("BEAR_"+strength) as RegimeState;
   else state="CHOP";
   const direction:Direction|null=regimeAllowsTrading(state)?state.startsWith("BULL")?"LONG":"SHORT":null;
-  const sizeMultiplier:0|0.5|1=direction===null?0:strength==="LOW"?0.5:1;
+  const sizeMultiplier:0|0.5|1=direction===null?0:1;
   return{state,direction,sizeMultiplier,price,e21,e5,e13,spread,spread3,spreadDelta,strength:direction?strength:"NEUTRAL"};
 }
 export interface TrendlineResult { valid:boolean; slope:number; intercept:number; priceAtCurrent:number; pivots:{index:number;price:number;timestamp:number}[]; r2:number; touchCount:number; reason:string }
