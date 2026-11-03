@@ -80,7 +80,7 @@ function mergeNewSignalsIntoActive(current:any[],signals:Signal[]):any[]{
   return merged;
 }
 
-async function observeAlertManagement(active:any[],marketData:any[]):Promise<boolean>{
+async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]):Promise<boolean>{
   let stateStoreFailed=false;
   let cooldowns:Record<string,number>={};
   let cooldownsAvailable=false,cooldownsChanged=false;
@@ -366,7 +366,7 @@ export async function GET(request:Request){
  const managementStarted=Date.now();
  console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
  try {
-   if(await observeAlertManagement(active,marketData))stateDegraded=true;
+   if(await observeAlertManagement(active,marketData,alerts))stateDegraded=true;
    console.log(`[PERF] Stage observeAlertManagement completed in ${Date.now()-managementStarted}ms`);
  } catch(error) {
    console.error(`[PERF] Stage observeAlertManagement failed after ${Date.now()-managementStarted}ms`,error);
