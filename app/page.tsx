@@ -93,7 +93,7 @@ export default function Dashboard(){
     const momentum=m?.momentumState;
     return <article key={pair} className="bg-[#0b0b0b] p-2.5 sm:p-3 min-w-0 flex flex-col gap-1.5 select-text" style={{WebkitUserSelect:"text",userSelect:"text"}}>
       <div className="flex items-center justify-between gap-1 min-w-0">
-        <div className="flex items-baseline gap-1.5 min-w-0"><span className={`rounded px-1.5 py-0.5 text-[9px] font-black tracking-wide ${regimeBadge} ${regimeTone}`}>{pair}/USD</span><span className="text-[13px] sm:text-base font-semibold truncate">{money(p)}</span></div>
+        <div className="flex flex-1 min-w-0 items-baseline gap-1"><span className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[9px] font-black tracking-wide ${regimeBadge} ${regimeTone}`}>{pair}/USD</span><span className="shrink-0 whitespace-nowrap text-[10px] sm:text-sm font-semibold tabular-nums">{money(p)}</span></div>
         <div className={`text-[8px] sm:text-[9px] font-black text-right whitespace-nowrap ${regimeTone}`}>{regime} · {sizePct}% size</div>
       </div>
       <div className="min-w-0 flex items-start gap-1 text-[9px] leading-4"><span className="shrink-0 text-white/30 font-bold tracking-wide">STATUS</span><span className={`min-w-0 break-words ${statusTone}`}>{status}{trendlineNote}</span></div>
