@@ -10,53 +10,41 @@ const telegram = fs.readFileSync("lib/telegram.ts", "utf8");
 test("active pair and direction suppress a new signal independently of entry price", () => {
   assert.ok(strategy.includes("activeSignals:Array<{pair:string;direction:Direction}>=[]"));
   assert.ok(strategy.includes("active.pair===pair&&active.direction===s.direction"));
-  assert.ok(strategy.includes("reason=active_position_exists"));
   assert.ok(cron.includes("entry2AlreadyFired,active.map((x:any)=>({pair:x.pair,direction:x.direction}))"));
 });
 
-test("chandelier trailing-stop exit requires two consecutive closed-candle breaches", () => {
-  assert.ok(strategy.includes("const trailAt=(bars:Candle[])=>"));
-  assert.ok(strategy.includes("if(breachedNow&&breachedPrevious)return exit(\"chandelier_trailing_stop\",trail)"));
+test("Chandelier uses the 10-candle extreme with a 3 ATR offset", () => {
+  assert.ok(strategy.includes("window=closed4h.slice(-10)"));
+  assert.ok(strategy.includes("Math.max(...window.map(z=>z.high))-3*volatility"));
+  assert.ok(strategy.includes("Math.min(...window.map(z=>z.low))+3*volatility"));
+  assert.ok(strategy.includes('reason:"chandelier_stop_update"'));
+  assert.ok(strategy.includes('reason:"chandelier_trailing_stop"'));
 });
 
-test("4H EMA reversal requires two consecutive closed candles on the adverse side", () => {
-  assert.ok(strategy.includes("const closed4h=x.slice(0,-1)"));
-  assert.ok(strategy.includes("const wrongNow=s.direction==="));
-  assert.ok(strategy.includes("if(wrongNow&&wrongPrev)return exit(\"4h_ema_reversal_confirmed\")"));
+test("structural exits require both the Stoch extreme and latest closed EMA5/13 cross", () => {
+  assert.ok(strategy.includes("st.k<20&&bearishCross"));
+  assert.ok(strategy.includes("st.k>80&&bullishCross"));
+  assert.ok(strategy.includes("ema5[prev]>=ema13[prev]&&ema5[last]<ema13[last]"));
+  assert.ok(strategy.includes("ema5[prev]<=ema13[prev]&&ema5[last]>ema13[last]"));
+  assert.doesNotMatch(strategy, /rsiNow>=78|rsiNow<=22|4h_ema_reversal_confirmed|1d_ema_reversal_confirmed/);
 });
 
-test("daily EMA 5/13 reversal requires two consecutive completed daily candles", () => {
-  assert.ok(strategy.includes("const d=daily(x).slice(0,-1)"));
-  assert.ok(strategy.includes("if(adverseNow&&adversePrev)return exit(\"1d_ema_reversal_confirmed\")"));
+test("Chandelier ratchets are persisted only when tighter and exits remove active positions", () => {
+  assert.ok(state.includes("export async function updateActiveSignalStop"));
+  assert.ok(state.includes('direction==="LONG"?newStop>current:newStop<current'));
+  assert.ok(cron.includes('hold.reason==="chandelier_stop_update"'));
+  assert.ok(cron.includes("updateActiveSignalStop(alert.pair,alert.direction,hold.newStop)"));
+  assert.ok(cron.includes("active.splice(activeIndex,1)"));
+  assert.ok(cron.includes('updateSignalHistoryStatus(alert.id,"FAILED",hold.reason,price)'));
 });
 
-test("4H RSI extreme requires two consecutive closed-candle readings", () => {
-  assert.ok(strategy.includes("const rsiNow=closedRsi.at(-1)??50,rsiPrev=closedRsi.at(-2)??50"));
-  assert.ok(strategy.includes("rsiNow>=78&&rsiPrev>=78"));
-  assert.ok(strategy.includes("rsiNow<=22&&rsiPrev<=22"));
+test("hard stops remain active but TP1/TP2 are not operational exits", () => {
+  assert.ok(cron.includes("const stopHit=Number.isFinite(stop)&&stop>0"));
+  assert.doesNotMatch(cron, /targetHit|tp2_hit/);
+  assert.doesNotMatch(strategy, /calculateTargetsFromPivots|export function calculateTargets\(/);
 });
 
-test("indicator exits use a four-hour cooldown persisted outside the strategy module", () => {
-  assert.ok(strategy.includes("EXIT_ALERT_COOLDOWN_MS=4*60*60*1000"));
-  assert.ok(strategy.includes('reason:"exit_cooldown"'));
-  assert.ok(state.includes('const EXIT_ALERT_COOLDOWNS_KEY = "cxswitch:exit_alert_cooldowns"'));
-  assert.ok(state.includes("getExitAlertCooldowns"));
-  assert.ok(state.includes("setExitAlertCooldowns"));
-  assert.ok(cron.includes("persistExitCooldown(alert.pair,hold.reason,cooldowns)"));
-  assert.ok(cron.includes("await setExitAlertCooldowns(cooldowns)"));
-  assert.ok(cron.includes("async function observeAlertManagement(active:any[],marketData:any[])"));
-});
-
-test("hard stop and TP2 exits are checked before the indicator cooldown", () => {
-  const stop = strategy.indexOf('reason:"stop_hit"');
-  const target = strategy.indexOf('reason:"tp2_hit"');
-  const cooldown = strategy.indexOf('reason:"exit_cooldown"');
-  assert.ok(stop >= 0 && target > stop && cooldown > target);
-});
-
-test("Telegram management alerts describe confirmed daily, RSI, and trailing-stop exits", () => {
-  assert.ok(telegram.includes('"RSI_EXTREME"'));
-  assert.ok(telegram.includes('"TRAIL_EXIT"'));
-  assert.ok(telegram.includes("1D EMA 5/13 reversal confirmed on two closed daily candles"));
-  assert.ok(telegram.includes("4H RSI extreme confirmed on two closed candles"));
+test("Telegram management alert describes the new structural exit accurately", () => {
+  assert.ok(telegram.includes("Confirmed chandelier trailing-stop breach. EXIT TRADE."));
+  assert.ok(telegram.includes("4H Stoch RSI extreme + EMA 5/13 cross confirmed on the latest closed candle"));
 });
