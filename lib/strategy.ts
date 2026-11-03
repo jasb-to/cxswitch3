@@ -311,8 +311,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     context:{entryAnchor:"current price",signalClass:"TREND",sizeMultiplier,regimeSizeMultiplier,entrySizeMultiplier,riskSizeMultiplier,riskPct:stopResult.calc.riskPct,entryCrossType:signalType==="ENTRY_1"?evaluation.trigger.entry1Case:null,crossAgeInCandles:signalType==="ENTRY_1"?evaluation.trigger.entry1CrossAgeInCandles:null,structuralAnchor:stopResult.calc.structuralAnchor,liquidationPrice:stopResult.calc.liquidationPrice,stopToLiquidationBufferPct:stopResult.calc.liquidationBufferPct,stopCalc:stopResult.calc,regime:alignment.regime,dailySpreadPct:alignment.dailySpreadPct,dailySpread3dPct:alignment.dailySpread3dPct,dailySpreadDelta:alignment.dailySpreadDelta,ema5_1d:alignment.dailyE5,ema13_1d:alignment.dailyE13,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,ema8_4h:ema8_4h,ema21_4h:ema21_4h,closed4hTimestamp,stochK_4h:st.k,stochD_4h:st.d}
   };
   const activeMatch=activeSignals.find(active=>active.pair===pair&&active.direction===s.direction);
-  if(activeMatch&&signalType!=="ADD"){
-    debug.push(`[SUPPRESSED] ${pair} — active ${s.direction} position already exists | reason=active_position_exists`);
+  if((activeMatch&&signalType!=="ADD")||(signalType==="ADD"&&!activeMatch)){
+    debug.push(`[SUPPRESSED] ${pair} — ${signalType==="ADD"?"ADD requires an active same-direction position":"active position already exists"}`);
     debug.push("[SIGNAL] none");
     debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
