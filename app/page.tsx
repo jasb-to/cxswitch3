@@ -104,7 +104,7 @@ export default function Dashboard(){
         {isActive&&mg&&<div className="mt-1 text-[8px] text-white/45">{mg.recommendation} — {mg.reason}{mg.nextAction?` · ${mg.nextAction}`:""}</div>}
       </div>}
       {isDetails&&<div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
-        <div>POSITION SIZE · {isActive?`${Math.round((m?.sizeMultiplier??a?.sizeMultiplier??0)*100)}% size`:"—"}</div>
+        {isActive&&<div>POSITION SIZE · {Math.round((m?.sizeMultiplier??a?.sizeMultiplier??0)*100)}% size</div>}
         <div>1D CLOSE / EMA21 · {m?.dailyClose!=null&&m?.dailyE21!=null?`${money(m.dailyClose)} / ${money(m.dailyE21)}`:"—"}</div>
         <div>1D EMA 5/13 · {m?.ema5_1d!=null&&m?.ema13_1d!=null?`${money(m.ema5_1d)} / ${money(m.ema13_1d)}`:"—"}</div>
         <div>4H EMA 5/13 · {m?.ema5_4h!=null&&m?.ema13_4h!=null?`${money(m.ema5_4h)} / ${money(m.ema13_4h)}`:"—"}</div>
