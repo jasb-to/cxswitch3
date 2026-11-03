@@ -259,10 +259,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
   if(riskSizeMultiplier===0.5)debug.push("[RISK SIZE] "+pair+" | stop risk "+r(riskPct,2)+"% in 3.5–5.0% band | risk size=50%");
-  const targets={tp1:direction==="LONG"?entry+15*a:entry-15*a,tp2:direction==="LONG"?entry+15*a:entry-15*a,forwardPivots:[],tp1Source:"15 ATR safety only",tp2Source:"15 ATR safety only"};
-  const tp1=targets.tp1,tp2=targets.tp2;
-  const targetPivotList=targets.forwardPivots.map(x=>priceRound(x.price)+"@"+x.index).join(", ")||"none";
-  debug.push("[TARGETS] "+pair+" "+direction+" | risk="+r(Math.abs(entry-stopResult.stop))+" | forward pivots: ["+targetPivotList+"] | TP1="+priceRound(tp1)+" ("+targets.tp1Source+") | TP2="+priceRound(tp2)+" ("+targets.tp2Source+")");
+  const safetyTarget=direction==="LONG"?entry+15*a:entry-15*a;
+  const tp1=safetyTarget,tp2=safetyTarget;
+  debug.push("[TARGETS] "+pair+" "+direction+" | 15 ATR safety fields only; no operational profit target | TP1="+priceRound(tp1)+" | TP2="+priceRound(tp2));
   const risk=Math.abs(entry-stopResult.stop),actualRr=Math.abs(tp2-entry)/Math.max(risk,EPS);
   const closed4hTimestamp=closed.at(-1)?.timestamp??0,ema8_4h=ema(closedCloses,8).at(-1)??0,ema21_4h=ema(closedCloses,21).at(-1)??0;
   const regimeSizeMultiplier=alignment.sizeMultiplier===0.5?0.5:1,entrySizeMultiplier:1|0.5=signalType==="ENTRY_1"?evaluation.trigger.entry1SizeMultiplier:1;
