@@ -229,41 +229,6 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const deduped=[...new Set(missing)];
   return{direction,zone:null,trendlineSlope:tl?.slope??0,trendline:tl?{price:tl.priceAtCurrent,distancePct:tlDistance,r2:tl.r2,reason:trendlineGate.reason}:null,alignment,trigger:{entry1,entry2,signalType:finalSignalType,entry1Reason:entry1?e1.reason:entry1WaitReason(direction,e1),entry2Reason:entry2?"trigger_met":entry2Check.reason,entry1SizeMultiplier:e1.sizeMultiplier,entry1CrossAgeInCandles:e1.crossAgeInCandles,entry1Case:e1.case},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!tl?.valid&&((!!signalType&&trendlineGate.valid)||finalSignalType==="ADD")&&!exhausted,dailyTransition:["CHOP","BEAR_LOW","BULL_LOW"].includes(alignment.regime),breakoutRecord:undefined};
 }
-type SwingPivot={price:number;index:number};
-function swings(c:Candle[],highs:boolean):SwingPivot[]{
-  const out:SwingPivot[]=[];
-  for(let i=2;i<c.length-2;i++){
-    const value=highs?c[i].high:c[i].low;
-    const isPivot=highs
-      ? value>c[i-1].high&&value>c[i-2].high&&value>=c[i+1].high&&value>=c[i+2].high
-      : value<c[i-1].low&&value<c[i-2].low&&value<=c[i+1].low&&value<=c[i+2].low;
-    if(isPivot)out.push({price:value,index:i});
-  }
-  return out;
-}
-export function calculateTargetsFromPivots(direction:Direction,entry:number,stop:number,pivots:SwingPivot[]){
-  const riskDistance=Math.abs(entry-stop);
-  const minTp1Distance=1.5*riskDistance,minTp2Distance=2.0*riskDistance;
-  // Reject distant historical pivots: they are directional, but not useful near-term targets.
-  // Valid structural targets may extend TP1 to 3R and TP2 to 4R.
-  const maxTp1Distance=3.0*riskDistance,maxTp2Distance=4.0*riskDistance;
-  const forwardPivots=pivots
-    .filter(x=>direction==="LONG"?x.price>entry:x.price<entry)
-    .sort((a,b)=>direction==="LONG"?a.price-b.price:b.price-a.price);
-  const distanceFromEntry=(x:SwingPivot)=>Math.abs(x.price-entry);
-  const tp1Pivot=forwardPivots.find(x=>distanceFromEntry(x)>=minTp1Distance&&distanceFromEntry(x)<=maxTp1Distance);
-  const tp1=tp1Pivot?.price??(direction==="LONG"?entry+minTp1Distance:entry-minTp1Distance);
-  const tp2Pivot=forwardPivots.find(x=>(direction==="LONG"?x.price>tp1:x.price<tp1)&&distanceFromEntry(x)>=minTp2Distance&&distanceFromEntry(x)<=maxTp2Distance);
-  // TP2 must remain beyond TP1 when TP1 uses a more distant valid pivot.
-  const tp2FallbackDistance=Math.max(minTp2Distance,Math.abs(tp1-entry)+0.5*riskDistance);
-  const tp2=tp2Pivot?.price??(direction==="LONG"?entry+tp2FallbackDistance:entry-tp2FallbackDistance);
-  return{tp1,tp2,forwardPivots,tp1Source:tp1Pivot?"pivot":"fallback 1.5R",tp2Source:tp2Pivot?"pivot":tp2FallbackDistance===minTp2Distance?"fallback 2R":"fallback beyond TP1"};
-}
-export function calculateTargets(direction:Direction,entry:number,stop:number,c:Candle[]){
-  const closed4h=c.slice(0,-1);
-  const pivots=swings(closed4h,direction==="LONG");
-  return calculateTargetsFromPivots(direction,entry,stop,pivots);
-}
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord,entry1State?:Entry1State,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:Direction}>=[]){
   void candles1h;void candles15m;void lastBreakout;
   const debug:string[]=[],c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,now=nowOverride??Date.now();
