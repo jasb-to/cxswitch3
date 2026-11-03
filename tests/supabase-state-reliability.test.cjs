@@ -55,7 +55,9 @@ test("cron persists management ratchets/exits and reconciles active state after 
   assert.ok(cron.includes("one compact write will occur after reconciliation"));
   assert.ok(!cron.includes("await addActiveSignal(signal);"));
   assert.ok(!cron.includes("serializeActiveStateWrite"));
-  assert.equal((cron.match(/await setActiveSignals\(active\);/g) || []).length, 1);
+  assert.equal((cron.match(/await setActiveSignals\(active\);/g) || []).length, 2);
+  assert.ok(cron.includes("updateActiveSignalStop(alert.pair,alert.direction,hold.newStop)"));
+  assert.ok(cron.includes("active.splice(activeIndex,1)"));
 });
 
 test("cron uses a shared lock and safely reports state-store degradation", () => {
