@@ -45,3 +45,15 @@ test("Stoch RSI history diagnostics report the closed-candle minimum for two cro
   assert.equal(strategy.getStochHistoryPointCount(closes32),1);
   assert.equal(strategy.getStochHistoryPointCount(closes33),2);
 });
+
+test("sufficient Stoch history with no aligned crossover reports no_cross_found",()=>{
+  const series=[{k:90,d:85},{k:91,d:86},{k:92,d:87},{k:93,d:88}];
+  const result=strategy.evaluateEntry1("SHORT",series);
+  assert.equal(result.reason,"no_cross_found");
+  assert.equal(result.crossDetected,null);
+  assert.equal(result.entry1,false);
+});
+test("only fewer than two Stoch points reports insufficient_stoch_history",()=>{
+  assert.equal(strategy.evaluateEntry1("SHORT",[{k:90,d:85}]).reason,"insufficient_stoch_history");
+  assert.equal(strategy.evaluateEntry1("SHORT",[{k:90,d:85},{k:91,d:86}]).reason,"no_cross_found");
+});
