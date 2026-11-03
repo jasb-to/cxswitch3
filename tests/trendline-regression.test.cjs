@@ -23,7 +23,7 @@ test("stop uses the last 20 candle swing and a 2 ATR floor",()=>{
 });
 test("short stop uses the last 20 candle swing and a 2 ATR ceiling",()=>{
  const c=sample(30),window=c.slice(-20),atr=2;
- const high=Math.max(...window.map(x=>x.high)),entry=90;
+ const high=Math.max(...window.map(x=>x.high)),entry=110;
  const result=strategy.calculateStop("SHORT",entry,atr,c);
  assert.equal(result.valid,true);
  assert.equal(result.stop,Math.max(high,entry+2*atr));
