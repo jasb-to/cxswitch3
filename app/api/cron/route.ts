@@ -1,7 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, shouldHold } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
@@ -226,6 +226,10 @@ export async function GET(request:Request){
     getCandles(krakenPairFormat(pair+"/USD"),240),
     getCandles(krakenPairFormat(pair+"/USD"),15)
   ]);stateCandles4h=c4||[];stateCandles15m=c15||[];
+  const closed4h=(c4||[]).slice(0,-1),closed4hCloses=closed4h.map((c:any)=>Number(c.close));
+  const iso=(value:any)=>Number.isFinite(Number(value))?new Date(Number(value)).toISOString():"none";
+  const stochPoints=getStochHistoryPointCount(closed4hCloses);
+  console.log(`[CANDLE HEALTH] pair=${pair} 1h=${(c1||[]).length} 4h=${(c4||[]).length} 4hClosedForStrategy=${closed4h.length} 4hStochPoints=${stochPoints} 15m=${(c15||[]).length} oldest4h=${iso(c4?.[0]?.timestamp)} latestReturned4h=${iso(c4?.at(-1)?.timestamp)} latestUsedClosed4h=${iso(closed4h.at(-1)?.timestamp)}${closed4h.length<33||stochPoints<2?" WARNING=insufficient_stoch_history":""}`);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});return;}
   const ema513=get4HEmaDiagnostic(c4);
 

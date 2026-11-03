@@ -38,3 +38,10 @@ test("ENTRY_2 retest still requires wave, pullback, EMA side and fresh cross",()
 test("ENTRY_2 remains blocked after an adverse EMA cross",()=>{
   assert.equal(strategy.entry2RetestConditions("LONG",100,100.5,102,99.8,{pk:30,pd:35,k:45,d:40},true,false),false);
 });
+
+test("Stoch RSI history diagnostics report the closed-candle minimum for two crossover points",()=>{
+  const closes32=Array.from({length:32},(_,i)=>100+Math.sin(i/2)*5+i*.1);
+  const closes33=Array.from({length:33},(_,i)=>100+Math.sin(i/2)*5+i*.1);
+  assert.equal(strategy.getStochHistoryPointCount(closes32),1);
+  assert.equal(strategy.getStochHistoryPointCount(closes33),2);
+});
