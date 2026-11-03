@@ -1,6 +1,6 @@
 export interface Candle { timestamp:number; open:number; high:number; low:number; close:number; volume:number }
 export interface Signal {
-  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"REVERSAL_SHORT"|"REVERSAL_LONG"; signalClass:"TREND"|"REVERSAL"; sizeMultiplier:0.125|0.25|0.5|1;
+  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"ADD"|"REVERSAL_SHORT"|"REVERSAL_LONG"; signalClass:"TREND"|"REVERSAL"; sizeMultiplier:0.125|0.25|0.5|1;
   entry:number; stop:number; tp1:number; tp2:number; rr:number;
   adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number;
   reason:string; timestamp:number; version:number; context?:any;
@@ -154,7 +154,7 @@ export interface GateEvaluation {
   trendlineSlope:number;
   trendline:{price:number;distancePct:number;r2:number;reason:string}|null;
   alignment:TrendAlignment;
-  trigger:{entry1:boolean;entry2:boolean;signalType:"ENTRY_1"|"ENTRY_2"|null;entry1Reason:string;entry2Reason:string;entry1SizeMultiplier:1|0.5;entry1CrossAgeInCandles:number|null;entry1Case:"fresh"|"recent"|null};
+  trigger:{entry1:boolean;entry2:boolean;signalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null;entry1Reason:string;entry2Reason:string;entry1SizeMultiplier:1|0.5;entry1CrossAgeInCandles:number|null;entry1Case:"fresh"|"recent"|null};
   exhaustion:string|null;
   stopCalc:StopCalc|null;
   missing:string[];
@@ -176,10 +176,10 @@ export function calculateLiquidationBufferPct(direction:Direction,entry:number,s
 export function calculateStop(direction:Direction,entry:number,atrValue:number,candles:Candle[]):{stop:number;calc:StopCalc;valid:boolean;invalidReason?:string}{
   if(!Number.isFinite(entry)||entry<=0||!Number.isFinite(atrValue)||atrValue<=0)
     return{stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_inputs"};
-  const closed=[...candles].sort((a,b)=>a.timestamp-b.timestamp),recentWindow=closed.slice(-5);
+  const closed=[...candles].sort((a,b)=>a.timestamp-b.timestamp),recentWindow=closed.slice(-20);
   if(!recentWindow.length)return{stop:0,calc:{structuralAnchor:0,atrMultiplier:0,riskPct:Infinity,liquidationBufferPct:-Infinity,liquidationPrice:0,marginUsagePct:Infinity},valid:false,invalidReason:"stop_no_closed_candles"};
   const recentSwing=direction==="LONG"?Math.min(...recentWindow.map(x=>x.low)):Math.max(...recentWindow.map(x=>x.high));
-  const atrFloor=direction==="LONG"?entry-1.5*atrValue:entry+1.5*atrValue;
+  const atrFloor=direction==="LONG"?entry-2*atrValue:entry+2*atrValue;
   const stop=direction==="LONG"?Math.min(recentSwing,atrFloor):Math.max(recentSwing,atrFloor);
   const riskPct=Math.abs(entry-stop)/Math.max(entry,EPS)*100,atrMultiplier=Math.abs(entry-stop)/Math.max(atrValue,EPS);
   const liquidationPrice=direction==="LONG"?entry*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE):entry*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
@@ -187,10 +187,13 @@ export function calculateStop(direction:Direction,entry:number,atrValue:number,c
   const calc={structuralAnchor:priceRound(recentSwing),atrMultiplier:r(atrMultiplier,2),riskPct:r(riskPct,2),liquidationBufferPct:r(liquidationBufferPct,2),liquidationPrice:priceRound(liquidationPrice),marginUsagePct:r(riskPct*MAX_LEVERAGE,1)};
   return{stop,calc,valid:true};
 }
-function exhaustion(direction:Direction,rv:number):string|null{
-  if(direction==="LONG"&&rv>78)return"4H RSI overbought";
-  if(direction==="SHORT"&&rv<22)return"4H RSI oversold";
-  return null;
+function exhaustion(direction:Direction,rv:number,adxValue:number,st:StochSnapshot):{blocked:string|null;warning:string|null}{
+  if(direction==="LONG"&&rv>78)return{blocked:"4H RSI overbought",warning:null};
+  if(direction==="SHORT"&&rv<22)return{blocked:"4H RSI oversold",warning:null};
+  const turningAgainst=direction==="LONG"?st.k<st.d&&st.pk>=st.pd:st.k>st.d&&st.pk<=st.pd;
+  if(adxValue>50&&turningAgainst)return{blocked:"ADX over 50 with Stoch RSI turning against position",warning:null};
+  if(adxValue>50)return{blocked:null,warning:"ADX over 50 but Stoch remains aligned — continuation allowed"};
+  return{blocked:null,warning:null};
 }
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,entry1State?:Entry1State,entry2AlreadyFired=false):GateEvaluation{
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),p=currentPrice??c.at(-1)?.close??0,alignment=trendAlignment(c),direction=alignment.aligned;
@@ -203,52 +206,28 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const volumeConfirmed=hasBreakoutVolumeConfirmation(closed4h);
   const e1=evaluateEntry1(direction,stSeries,closed4h,p,st),entry1=!!e1.entry1&&(!breakout||volumeConfirmed);
   const entry2Check=direction?entry2Ready(pair,direction,entry1State,c,p,st,entry2AlreadyFired):{ready:false,reason:"regime_chop"};
-  const entry2=entry2Check.ready,signalType:"ENTRY_1"|"ENTRY_2"|null=entry2?"ENTRY_2":entry1?"ENTRY_1":null;
-  const exhausted=direction?exhaustion(direction,rv):null,missing:string[]=[];
+  const entry2=entry2Check.ready;
+  const signalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=entry2?"ENTRY_2":entry1?"ENTRY_1":null;
+  const ema8=ema(closedCloses,8).at(-1)??0,ema21=ema(closedCloses,21).at(-1)??0;
+  const trendlineNow=tl?.valid?tl.slope*(closed4h.length-1)+tl.intercept:0;
+  const breakoutDistance=trendlineNow>0?(p-trendlineNow)/trendlineNow*100:0;
+  const confirming=!!lastClosed&&(direction==="LONG"?lastClosed.close>lastClosed.open:lastClosed.close<lastClosed.open);
+  const priorTen=closed4h.slice(-11,-1),volumeAverage=priorTen.length===10?priorTen.reduce((sum,x)=>sum+x.volume,0)/10:Infinity;
+  const volumeAligned=!!lastClosed&&lastClosed.volume>1.3*volumeAverage;
+  const adxValue=adx(c);
+  const beyondTrendline=direction==="LONG"?breakoutDistance>=0.8:breakoutDistance<=-0.8;
+  const addReady=!!direction&&!signalType&&!!tl?.valid&&beyondTrendline&&confirming&&volumeAligned;
+  const finalSignalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=signalType??(addReady?"ADD":null);
+  const exhausted:string|null=null,missing:string[]=[];
   if(["CHOP","BEAR_LOW","BULL_LOW"].includes(alignment.regime))missing.push("regime_transitioning");
   if(direction&&!trendlineGate.valid){missing.push("trendline_gate");missing.push(trendlineGate.reason);}
   if(breakout&&!volumeConfirmed)missing.push("breakout_volume_below_1.2x");
-  if(!signalType)missing.push(e1.reason);
+  if(!finalSignalType)missing.push(e1.reason);
   if(exhausted)missing.push("exhaustion");
   let stopCalc:StopCalc|null=null;
-  if(direction&&signalType&&a>0)stopCalc=calculateStop(direction,p,a,c).calc;
+  if(direction&&finalSignalType&&a>0)stopCalc=calculateStop(direction,p,a,c).calc;
   const deduped=[...new Set(missing)];
-  return{direction,zone:null,trendlineSlope:tl?.slope??0,trendline:tl?{price:tl.priceAtCurrent,distancePct:tlDistance,r2:tl.r2,reason:trendlineGate.reason}:null,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?e1.reason:entry1WaitReason(direction,e1),entry2Reason:entry2?"trigger_met":entry2Check.reason,entry1SizeMultiplier:e1.sizeMultiplier,entry1CrossAgeInCandles:e1.crossAgeInCandles,entry1Case:e1.case},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&trendlineGate.valid&&(!breakout||volumeConfirmed)&&!!signalType&&!exhausted,dailyTransition:["CHOP","BEAR_LOW","BULL_LOW"].includes(alignment.regime),breakoutRecord:undefined};
-}
-type SwingPivot={price:number;index:number};
-function swings(c:Candle[],highs:boolean):SwingPivot[]{
-  const out:SwingPivot[]=[];
-  for(let i=2;i<c.length-2;i++){
-    const value=highs?c[i].high:c[i].low;
-    const isPivot=highs
-      ? value>c[i-1].high&&value>c[i-2].high&&value>=c[i+1].high&&value>=c[i+2].high
-      : value<c[i-1].low&&value<c[i-2].low&&value<=c[i+1].low&&value<=c[i+2].low;
-    if(isPivot)out.push({price:value,index:i});
-  }
-  return out;
-}
-export function calculateTargetsFromPivots(direction:Direction,entry:number,stop:number,pivots:SwingPivot[]){
-  const riskDistance=Math.abs(entry-stop);
-  const minTp1Distance=1.5*riskDistance,minTp2Distance=2.0*riskDistance;
-  // Reject distant historical pivots: they are directional, but not useful near-term targets.
-  // Valid structural targets may extend TP1 to 3R and TP2 to 4R.
-  const maxTp1Distance=3.0*riskDistance,maxTp2Distance=4.0*riskDistance;
-  const forwardPivots=pivots
-    .filter(x=>direction==="LONG"?x.price>entry:x.price<entry)
-    .sort((a,b)=>direction==="LONG"?a.price-b.price:b.price-a.price);
-  const distanceFromEntry=(x:SwingPivot)=>Math.abs(x.price-entry);
-  const tp1Pivot=forwardPivots.find(x=>distanceFromEntry(x)>=minTp1Distance&&distanceFromEntry(x)<=maxTp1Distance);
-  const tp1=tp1Pivot?.price??(direction==="LONG"?entry+minTp1Distance:entry-minTp1Distance);
-  const tp2Pivot=forwardPivots.find(x=>(direction==="LONG"?x.price>tp1:x.price<tp1)&&distanceFromEntry(x)>=minTp2Distance&&distanceFromEntry(x)<=maxTp2Distance);
-  // TP2 must remain beyond TP1 when TP1 uses a more distant valid pivot.
-  const tp2FallbackDistance=Math.max(minTp2Distance,Math.abs(tp1-entry)+0.5*riskDistance);
-  const tp2=tp2Pivot?.price??(direction==="LONG"?entry+tp2FallbackDistance:entry-tp2FallbackDistance);
-  return{tp1,tp2,forwardPivots,tp1Source:tp1Pivot?"pivot":"fallback 1.5R",tp2Source:tp2Pivot?"pivot":tp2FallbackDistance===minTp2Distance?"fallback 2R":"fallback beyond TP1"};
-}
-export function calculateTargets(direction:Direction,entry:number,stop:number,c:Candle[]){
-  const closed4h=c.slice(0,-1);
-  const pivots=swings(closed4h,direction==="LONG");
-  return calculateTargetsFromPivots(direction,entry,stop,pivots);
+  return{direction,zone:null,trendlineSlope:tl?.slope??0,trendline:tl?{price:tl.priceAtCurrent,distancePct:tlDistance,r2:tl.r2,reason:trendlineGate.reason}:null,alignment,trigger:{entry1,entry2,signalType:finalSignalType,entry1Reason:entry1?e1.reason:entry1WaitReason(direction,e1),entry2Reason:entry2?"trigger_met":entry2Check.reason,entry1SizeMultiplier:e1.sizeMultiplier,entry1CrossAgeInCandles:e1.crossAgeInCandles,entry1Case:e1.case},exhaustion:exhausted,stopCalc,missing:deduped,allPassed:!!direction&&!!tl?.valid&&((!!signalType&&trendlineGate.valid)||finalSignalType==="ADD")&&!exhausted,dailyTransition:["CHOP","BEAR_LOW","BULL_LOW"].includes(alignment.regime),breakoutRecord:undefined};
 }
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:BreakoutRecord,entry1State?:Entry1State,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:Direction}>=[]){
   void candles1h;void candles15m;void lastBreakout;
@@ -260,7 +239,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push("[GATES] "+JSON.stringify(evaluation));
   const closed4hForTrigger=c.slice(0,-1),stClosed=stoch(closedCloses),stLive=stoch(c.map(x=>x.close)),entry1Debug=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses),closed4hForTrigger,p,stLive);
   debug.push("[TRIGGER] "+pair+" — closedK="+stClosed.k+" closedD="+stClosed.d+" | liveK="+stLive.k+" liveD="+stLive.d+" liveState="+(stLive.k<stLive.d?"BEARISH":stLive.k>stLive.d?"BULLISH":"NEUTRAL")+" | crossAge="+(entry1Debug.crossAgeInCandles===null?"none":entry1Debug.crossAgeInCandles)+" | crossPrice="+(entry1Debug.crossPrice===null?"unknown":r(entry1Debug.crossPrice,5))+" | currentPrice="+r(p,5)+" | priceMovePct="+(entry1Debug.priceMovePct===null?"unknown":r(entry1Debug.priceMovePct,2)+"%")+" | kInRange="+(entry1Debug.kInRange?"YES":"NO")+" | notExtended="+(entry1Debug.notExtended?"YES":"NO")+" | crossDirection="+(entry1Debug.crossDetected??"NONE").toUpperCase()+" | "+(entry1Debug.case==="fresh"?"size=100% (fresh)":entry1Debug.case==="recent"?"size=50% (recent)":entry1Debug.reason)+" | entry1="+(evaluation.trigger.entry1?"YES":"NO"));
-  debug.push("[EXHAUST] "+(evaluation.exhaustion??"clear"));
+  debug.push("[EXHAUST] Stoch RSI only; ADX is not an entry veto");
   if(!evaluation.allPassed){
     debug.push(alignment.regime==="CHOP"?"[WAIT] daily regime CHOP — no directional entry until the daily regime is directional":"[WAIT] "+evaluation.missing.join(", "));
     debug.push("[SIGNAL] none");
@@ -280,10 +259,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
   if(riskSizeMultiplier===0.5)debug.push("[RISK SIZE] "+pair+" | stop risk "+r(riskPct,2)+"% in 3.5–5.0% band | risk size=50%");
-  const targets=calculateTargets(direction,entry,stopResult.stop,c);
-  const tp1=targets.tp1,tp2=targets.tp2;
-  const targetPivotList=targets.forwardPivots.map(x=>priceRound(x.price)+"@"+x.index).join(", ")||"none";
-  debug.push("[TARGETS] "+pair+" "+direction+" | risk="+r(Math.abs(entry-stopResult.stop))+" | forward pivots: ["+targetPivotList+"] | TP1="+priceRound(tp1)+" ("+targets.tp1Source+") | TP2="+priceRound(tp2)+" ("+targets.tp2Source+")");
+  const safetyTarget=direction==="LONG"?entry+15*a:entry-15*a;
+  const tp1=safetyTarget,tp2=safetyTarget;
+  debug.push("[TARGETS] "+pair+" "+direction+" | 15 ATR safety fields only; no operational profit target | TP1="+priceRound(tp1)+" | TP2="+priceRound(tp2));
   const risk=Math.abs(entry-stopResult.stop),actualRr=Math.abs(tp2-entry)/Math.max(risk,EPS);
   const closed4hTimestamp=closed.at(-1)?.timestamp??0,ema8_4h=ema(closedCloses,8).at(-1)??0,ema21_4h=ema(closedCloses,21).at(-1)??0;
   const regimeSizeMultiplier=alignment.sizeMultiplier===0.5?0.5:1,entrySizeMultiplier:1|0.5=signalType==="ENTRY_1"?evaluation.trigger.entry1SizeMultiplier:1;
@@ -296,98 +274,69 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     context:{entryAnchor:"current price",signalClass:"TREND",sizeMultiplier,regimeSizeMultiplier,entrySizeMultiplier,riskSizeMultiplier,riskPct:stopResult.calc.riskPct,entryCrossType:signalType==="ENTRY_1"?evaluation.trigger.entry1Case:null,crossAgeInCandles:signalType==="ENTRY_1"?evaluation.trigger.entry1CrossAgeInCandles:null,structuralAnchor:stopResult.calc.structuralAnchor,liquidationPrice:stopResult.calc.liquidationPrice,stopToLiquidationBufferPct:stopResult.calc.liquidationBufferPct,stopCalc:stopResult.calc,regime:alignment.regime,dailySpreadPct:alignment.dailySpreadPct,dailySpread3dPct:alignment.dailySpread3dPct,dailySpreadDelta:alignment.dailySpreadDelta,ema5_1d:alignment.dailyE5,ema13_1d:alignment.dailyE13,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,ema8_4h:ema8_4h,ema21_4h:ema21_4h,closed4hTimestamp,stochK_4h:st.k,stochD_4h:st.d}
   };
   const activeMatch=activeSignals.find(active=>active.pair===pair&&active.direction===s.direction);
-  if(activeMatch){
-    debug.push(`[SUPPRESSED] ${pair} — active ${s.direction} position already exists | reason=active_position_exists`);
+  if((activeMatch&&signalType!=="ADD")||(signalType==="ADD"&&!activeMatch)){
+    debug.push(`[SUPPRESSED] ${pair} — ${signalType==="ADD"?"ADD requires an active same-direction position":"active position already exists"}`);
     debug.push("[SIGNAL] none");
     debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
-  debug.push("[STOP] "+direction+" | SL "+s.stop+" | "+stopResult.calc.riskPct+"% risk | 1.5 ATR floor");
-  debug.push("[TARGETS SUMMARY] TP1 "+s.tp1+" ("+r(Math.abs(s.tp1-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | TP2 "+s.tp2+" ("+r(Math.abs(s.tp2-s.entry)/Math.max(Math.abs(s.entry-s.stop),EPS),2)+"R) | pivot cap TP1 3R / TP2 4R; fallback minimum 1.5R / 2.0R | RR "+s.rr);
+  debug.push("[STOP] "+direction+" | SL "+s.stop+" | "+stopResult.calc.riskPct+"% risk | 20-bar swing / 2 ATR");
+  debug.push("[TARGETS] 15 ATR dummy safety fields only; exits are Chandelier trailing stop or 4H Stoch RSI extreme + EMA5/13 cross");
   debug.push("[SIGNAL] "+s.direction+" "+s.type+" | entry "+s.entry+" | SL "+s.stop+" | TP1 "+s.tp1+" | TP2 "+s.tp2);
   debug.push("[JARVIS] trade conditions passed — execution remains separate from opportunity guidance");
   debug.push("[ALERT] SURFACE");
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
 }
 
-const EXIT_ALERT_COOLDOWN_MS=4*60*60*1000;
-const exitAlertStore=new Map<string,number>();
-const INDICATOR_EXIT_REASONS=new Set(["4h_ema_reversal_confirmed","1d_ema_reversal_confirmed","4h_rsi_extreme_opposite","chandelier_trailing_stop"]);
 export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number){
-  const x=[...c].sort((a,b)=>a.timestamp-b.timestamp);
-  const exit=(reason:"4h_ema_reversal_confirmed"|"1d_ema_reversal_confirmed"|"4h_rsi_extreme_opposite"|"chandelier_trailing_stop",newStop?:number)=>{
-    if(INDICATOR_EXIT_REASONS.has(reason))exitAlertStore.set(s.pair,now);
-    return{shouldHold:false,reason,managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const,...(newStop===undefined?{}:{newStop})};
-  };
-  // Hard price exits always take priority over an indicator-alert cooldown.
+  void now; void lastExitAlertAt;
+  const ordered=[...c].sort((a,b)=>a.timestamp-b.timestamp);
+  // Only completed 4H candles participate in indicator calculations.
+  const closed4h=ordered.slice(0,-1);
+  if(closed4h.length<14)
+    return{shouldHold:true,reason:"insufficient_closed_4h_history",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
+
+  // The original 20-bar / 2 ATR stop remains the hard initial stop.
   if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))
     return{shouldHold:false,reason:"stop_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
-  if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))
-    return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
-  const q=x.map(z=>z.close);
 
-  const tp1AlreadyHit=!!(s as any).tp1HitAt;
-  if(!tp1AlreadyHit&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))
-    return{shouldHold:true,reason:"tp1_hit_scale_out",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1"}};
+  const closes=closed4h.map(z=>z.close);
+  const st=stoch(closes);
+  const ema5=ema(closes,5),ema13=ema(closes,13);
+  const last=closes.length-1,prev=last-1;
+  const bearishCross=ema5[prev]>=ema13[prev]&&ema5[last]<ema13[last];
+  const bullishCross=ema5[prev]<=ema13[prev]&&ema5[last]>ema13[last];
 
-  const lastExit=lastExitAlertAt??exitAlertStore.get(s.pair)??0;
-  if(lastExit>0&&now-lastExit>=0&&now-lastExit<EXIT_ALERT_COOLDOWN_MS){
-    return{shouldHold:true,reason:"exit_cooldown",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
-  }
+  // Structural exhaustion exit: BOTH the Stoch RSI extreme and the 5/13 EMA
+  // cross must occur on the latest completed 4H candle.
+  if(s.direction==="LONG"&&st.k<20&&bearishCross)
+    return{shouldHold:false,reason:"stoch_extreme_ema5_13_bearish_cross",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
+  if(s.direction==="SHORT"&&st.k>80&&bullishCross)
+    return{shouldHold:false,reason:"stoch_extreme_ema5_13_bullish_cross",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
 
-  // Indicator exits are based only on closed candles. The latest candle is
-  // still forming, so use the two preceding closed 4H RSI readings.
-  const closed4h=x.slice(0,-1),closedRsi=rsiSeries(closed4h.map(z=>z.close));
-  const rsiNow=closedRsi.at(-1)??50,rsiPrev=closedRsi.at(-2)??50;
-  if(s.direction==="LONG"&&rsiNow>=78&&rsiPrev>=78)
-    return exit("4h_rsi_extreme_opposite");
-  if(s.direction==="SHORT"&&rsiNow<=22&&rsiPrev<=22)
-    return exit("4h_rsi_extreme_opposite");
-
-  // Daily EMA 5/13 reversal: require two consecutive completed UTC daily
-  // candles on the adverse side before treating the daily thesis as reversed.
-  const d=daily(x).slice(0,-1),dClose=d.map(z=>z.close),dE5=ema(dClose,5),dE13=ema(dClose,13);
-  if(dE5.length>=2&&dE13.length>=2){
-    const last=dE5.length-1,prev=last-1;
-    const adverseNow=s.direction==="LONG"?dE5[last]<dE13[last]:dE5[last]>dE13[last];
-    const adversePrev=s.direction==="LONG"?dE5[prev]<dE13[prev]:dE5[prev]>dE13[prev];
-    if(adverseNow&&adversePrev)return exit("1d_ema_reversal_confirmed");
-  }
-
-  if(closed4h.length>=6){
-    const trailAt=(bars:Candle[])=>{
-      const window=bars.slice(-5),volatility=atr(bars);
-      return s.direction==="LONG"
-        ? Math.min(...window.map(z=>z.low))-.5*volatility
-        : Math.max(...window.map(z=>z.high))+.5*volatility;
-    };
-    const trail=trailAt(closed4h),previousClosed=closed4h.slice(0,-1),previousTrail=trailAt(previousClosed);
-    const lastClosed=closed4h.at(-1)!,priorClosed=closed4h.at(-2)!;
-    const breachedNow=s.direction==="LONG"?lastClosed.close<=trail:lastClosed.close>=trail;
-    const breachedPrevious=s.direction==="LONG"?priorClosed.close<=previousTrail:priorClosed.close>=previousTrail;
-    const profitPct=s.direction==="LONG"?(p-s.entry)/s.entry:(s.entry-p)/s.entry;
-    const trailImproves=s.direction==="LONG"?trail>s.stop:trail<s.stop;
-    if(profitPct>=.03){
-      if(breachedNow&&breachedPrevious)return exit("chandelier_trailing_stop",trail);
-      if(trailImproves)
-        return{shouldHold:true,reason:"chandelier_stop",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:trail};
+  // Chandelier: highest high / lowest low over the last 10 completed 4H
+  // candles, offset by 3 ATR. The stop only ratchets in the profitable direction.
+  if(closed4h.length>=10){
+    const volatility=atr(closed4h),window=closed4h.slice(-10);
+    if(volatility>0){
+      const chandelier=s.direction==="LONG"
+        ?Math.max(...window.map(z=>z.high))-3*volatility
+        :Math.min(...window.map(z=>z.low))+3*volatility;
+      const breached=s.direction==="LONG"?p<=chandelier:p>=chandelier;
+      const improves=s.direction==="LONG"?chandelier>s.stop:chandelier<s.stop;
+      if(breached)
+        return{shouldHold:false,reason:"chandelier_trailing_stop",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const,newStop:chandelier};
+      if(improves)
+        return{shouldHold:true,reason:"chandelier_stop_update",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:chandelier};
     }
-  }
-
-  if(closed4h.length>=21){
-    const closedCloses=closed4h.map(z=>z.close),e8=ema(closedCloses,8),e21=ema(closedCloses,21);
-    const last=e8.length-1,prev=last-1;
-    const wrongNow=s.direction==="SHORT"?e8[last]>e21[last]:e8[last]<e21[last];
-    const wrongPrev=s.direction==="SHORT"?e8[prev]>e21[prev]:e8[prev]<e21[prev];
-    if(wrongNow&&wrongPrev)return exit("4h_ema_reversal_confirmed");
   }
 
   return{shouldHold:true,reason:"thesis_intact",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
 }
-export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.timestamp>TTL)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE" as const};if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return{valid:false,reason:"sl_hit",exited:true,state:"INVALID" as const};if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return{valid:false,reason:"tp2_hit",exited:true,state:"INVALID" as const};return{valid:true,reason:"active",exited:false,state:"VALID" as const}}
+export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.timestamp>TTL)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE" as const};if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return{valid:false,reason:"sl_hit",exited:true,state:"INVALID" as const};return{valid:true,reason:"active",exited:false,state:"VALID" as const}}
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now=Date.now()){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason})}return{active,exited}}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
-export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2))return"TP_HIT";return"ACTIVE"}
+export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";return"ACTIVE"}
 export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){
   void candles1h;void candles15m;
   const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),q=c.map(x=>x.close),dailyCandles=daily(c).slice(0,-1),dailyCloses=dailyCandles.map(x=>x.close),alignment=trendAlignment(c);
@@ -396,7 +345,7 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
   const fourHDirection=e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL";
   const fourHTacticalDirection=alignment.fourH==="LONG"?"BULL":alignment.fourH==="SHORT"?"BEAR":"NEUTRAL";
   const fourHTacticalLabel="EMA5 "+r(alignment.fourHE5)+" "+(alignment.fourH==="LONG"?">":alignment.fourH==="SHORT"?"<":"=")+" EMA13 "+r(alignment.fourHE13);
-  const gates=evaluateGates(pair,c,c.at(-1)?.close??0),entry1=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses),closed4h,c.at(-1)?.close),exhausted=alignment.aligned?exhaustion(alignment.aligned,rsi(q)):null;
-  const strategyStatus=alignment.regime==="CHOP"?"WAIT — CHOP regime":(alignment.regime==="BEAR_LOW"||alignment.regime==="BULL_LOW")?"WAIT — "+alignment.regime+" regime (transitioning)":exhausted?"WAIT — "+exhausted:gates.missing.includes("price_too_far_from_trendline")?"WAIT — price too far from trendline":!gates.trendline?.price?"WAIT — "+(gates.trendline?.reason??gates.missing[0]??"trendline_unavailable"):gates.missing.includes("breakout_volume_below_1.2x")?"WAIT — breakout volume below 1.2x average":gates.trigger.entry1?"FIRED — ENTRY_1 "+gates.direction:gates.missing.includes("entry_trigger")?"WAIT — "+gates.trigger.entry1Reason:"READY — waiting for 4H Stoch RSI cross at trendline";
+  const gates=evaluateGates(pair,c,c.at(-1)?.close??0),entry1=evaluateEntry1(alignment.aligned,getStochSeries(closedCloses),closed4h,c.at(-1)?.close),exhausted=null;
+  const strategyStatus=alignment.regime==="CHOP"?"WAIT — CHOP regime":exhausted?"WAIT — "+exhausted:gates.missing.includes("price_too_far_from_trendline")?"WAIT — price too far from trendline":!gates.trendline?.price?"WAIT — "+(gates.trendline?.reason??gates.missing[0]??"trendline_unavailable"):gates.missing.includes("breakout_volume_below_1.2x")?"WAIT — breakout volume below 1.2x average":gates.trigger.entry1?"FIRED — ENTRY_1 "+gates.direction:gates.missing.includes("entry_trigger")?"WAIT — "+gates.trigger.entry1Reason:"READY — waiting for 4H Stoch RSI cross at trendline";
   return{pair,price:c.at(-1)?.close??0,trend:alignment.regime,regime:alignment.regime,dailyClose:alignment.dailyClose,dailyE21:alignment.dailyE21,adx:adx(c),rsi:rsi(q),stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK4hPrev:st.pk,stochD4hPrev:st.pd,ema8_4h:e8,ema21_4h:e21,ema8_1d:e8d,ema21_1d:e21d,ema5_1d:alignment.dailyE5,ema13_1d:alignment.dailyE13,dailyDirection:alignment.regime.startsWith("BULL")?"BULL":alignment.regime.startsWith("BEAR")?"BEAR":"CHOP",dailyStrength:alignment.dailyStrength,dailySpreadPct:alignment.dailySpreadPct,dailySpread3dPct:alignment.dailySpread3dPct,dailySpreadDelta:alignment.dailySpreadDelta,dailySlope:alignment.dailySlope,sizeMultiplier:alignment.sizeMultiplier,fourHDirection,fourHTacticalDirection,fourHTacticalLabel,stochK1d:st1d.k,stochD1d:st1d.d,stochK1dPrev:st1d.pk,stochD1dPrev:st1d.pd,ema5_4h:alignment.fourHE5,ema13_4h:alignment.fourHE13,trendlinePrice:gates.trendline?.price??0,distToTrendline:gates.trendline?.distancePct??0,alignedDirection:alignment.aligned,strategyStatus};
 }
