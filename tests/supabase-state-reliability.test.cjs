@@ -50,7 +50,7 @@ test("active state removes bulky context, preserves size, and logs payload bytes
   assert.ok(!state.includes("redis.set(ACTIVE_SIGNALS_KEY, active)"), "legacy cleanup must use the compacting setter");
 });
 
-test("cron batches new positions and commits active state once during reconciliation", () => {
+test("cron persists management ratchets/exits and reconciles active state after batching new positions", () => {
   assert.ok(cron.includes("active=mergeNewSignalsIntoActive(active,newSignals);"));
   assert.ok(cron.includes("one compact write will occur after reconciliation"));
   assert.ok(!cron.includes("await addActiveSignal(signal);"));
