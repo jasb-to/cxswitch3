@@ -117,7 +117,7 @@ export default function Dashboard(){
         <div>STRATEGY STATUS · {status}</div>
         <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {m?.distToTrendline!=null?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
       </div>}
-    </article></article>})}</div></section>
+    </article>})}</div></section>
 
   <section className="mx-auto max-w-7xl px-5 pb-6"><div className="rounded-2xl border border-white/[0.08] bg-[#0b0b0b] p-4"><div className="flex items-center justify-between"><div><div className="text-[9px] uppercase tracking-[0.18em] text-white/25">Cron / signal log</div><div className="mt-1 text-sm font-semibold">Latest system activity</div></div><div className="flex items-center gap-2"><div className="text-[8px] text-white/25">{logs.length} lines</div><button type="button" onClick={()=>copy("logs",logs.join("\n"))} className="inline-flex items-center gap-1 rounded-md border border-white/[0.08] px-2 py-1 text-[8px] uppercase tracking-wider text-white/45">{copied==="logs"?<Check size={10}/>:<Copy size={10}/>} {copied==="logs"?"COPIED":"COPY LOG"}</button></div></div><div className="mt-3 max-h-[420px] overflow-auto rounded-xl border border-white/[0.06] bg-black/30 p-2 select-text" style={{WebkitUserSelect:"text",userSelect:"text"}}>{logs.length?logs.map((line,i)=><div key={`${i}-${line}`} className={`border-l-2 px-3 py-2 text-[9px] leading-5 text-white/55 font-mono mb-1 rounded-r-md select-text ${logClass(line,i)}`} style={{WebkitUserSelect:"text",userSelect:"text"}}>{line}</div>):<div className="p-3 text-[9px] text-white/30">No cron or signal log recorded.</div>}</div></div></section>
 
