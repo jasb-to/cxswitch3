@@ -212,12 +212,11 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
   const trendlineNow=tl?.valid?tl.slope*(closed4h.length-1)+tl.intercept:0;
   const breakoutDistance=trendlineNow>0?(p-trendlineNow)/trendlineNow*100:0;
   const confirming=!!lastClosed&&(direction==="LONG"?lastClosed.close>lastClosed.open:lastClosed.close<lastClosed.open);
-  const correctEmaSide=direction==="LONG"?p>ema8&&p>ema21:p<ema8&&p<ema21;
   const priorTen=closed4h.slice(-11,-1),volumeAverage=priorTen.length===10?priorTen.reduce((sum,x)=>sum+x.volume,0)/10:Infinity;
   const volumeAligned=!!lastClosed&&lastClosed.volume>1.3*volumeAverage;
   const adxValue=adx(c);
   const beyondTrendline=direction==="LONG"?breakoutDistance>=0.8:breakoutDistance<=-0.8;
-  const addReady=!!direction&&!signalType&&!!tl?.valid&&beyondTrendline&&confirming&&correctEmaSide&&volumeAligned;
+  const addReady=!!direction&&!signalType&&!!tl?.valid&&beyondTrendline&&confirming&&volumeAligned;
   const finalSignalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=signalType??(addReady?"ADD":null);
   const exhausted:string|null=null,missing:string[]=[];
   if(["CHOP","BEAR_LOW","BULL_LOW"].includes(alignment.regime))missing.push("regime_transitioning");
@@ -295,7 +294,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
   if(riskSizeMultiplier===0.5)debug.push("[RISK SIZE] "+pair+" | stop risk "+r(riskPct,2)+"% in 3.5–5.0% band | risk size=50%");
-  const targets={tp1:direction==="LONG"?entry+10*a:entry-10*a,tp2:direction==="LONG"?entry+10*a:entry-10*a,forwardPivots:[],tp1Source:"10 ATR safety",tp2Source:"10 ATR safety"};
+  const targets={tp1:direction==="LONG"?entry+15*a:entry-15*a,tp2:direction==="LONG"?entry+15*a:entry-15*a,forwardPivots:[],tp1Source:"15 ATR safety only",tp2Source:"15 ATR safety only"};
   const tp1=targets.tp1,tp2=targets.tp2;
   const targetPivotList=targets.forwardPivots.map(x=>priceRound(x.price)+"@"+x.index).join(", ")||"none";
   debug.push("[TARGETS] "+pair+" "+direction+" | risk="+r(Math.abs(entry-stopResult.stop))+" | forward pivots: ["+targetPivotList+"] | TP1="+priceRound(tp1)+" ("+targets.tp1Source+") | TP2="+priceRound(tp2)+" ("+targets.tp2Source+")");
@@ -317,54 +316,54 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     debug.push("[ALERT] none");
     return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
   }
-  debug.push("[STOP] "+direction+" | SL "+s.stop+" | "+stopResult.calc.riskPct+"% risk | 20-bar swing / 2 ATR floor");
-  debug.push("[TARGETS] 10 ATR safety cap; operational exits are Stoch RSI momentum and Chandelier trailing stop");
+  debug.push("[STOP] "+direction+" | SL "+s.stop+" | "+stopResult.calc.riskPct+"% risk | 20-bar swing / 2 ATR");
+  debug.push("[TARGETS] 15 ATR dummy safety fields only; exits are Chandelier trailing stop or 4H Stoch RSI extreme + EMA5/13 cross");
   debug.push("[SIGNAL] "+s.direction+" "+s.type+" | entry "+s.entry+" | SL "+s.stop+" | TP1 "+s.tp1+" | TP2 "+s.tp2);
   debug.push("[JARVIS] trade conditions passed — execution remains separate from opportunity guidance");
   debug.push("[ALERT] SURFACE");
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
 }
 
-const EXIT_ALERT_COOLDOWN_MS=4*60*60*1000;
-const exitAlertStore=new Map<string,number>();
-const INDICATOR_EXIT_REASONS=new Set(["stoch_momentum_exit","chandelier_trailing_stop"]);
 export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number){
-  const x=[...c].sort((a,b)=>a.timestamp-b.timestamp);
-  const exit=(reason:"stoch_momentum_exit"|"chandelier_trailing_stop",newStop?:number)=>{
-    if(INDICATOR_EXIT_REASONS.has(reason))exitAlertStore.set(s.pair,now);
-    return{shouldHold:false,reason,managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const,...(newStop===undefined?{}:{newStop})};
-  };
-  // Hard price exits always take priority over an indicator-alert cooldown.
+  void now; void lastExitAlertAt;
+  const ordered=[...c].sort((a,b)=>a.timestamp-b.timestamp);
+  // Only completed 4H candles participate in indicator calculations.
+  const closed4h=ordered.slice(0,-1);
+  if(closed4h.length<14)
+    return{shouldHold:true,reason:"insufficient_closed_4h_history",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
+
+  // The original 20-bar / 2 ATR stop remains the hard initial stop.
   if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))
     return{shouldHold:false,reason:"stop_hit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
-  // TP fields are safety caps only; active exits are momentum and trailing-stop based.
-  const q=x.map(z=>z.close);
 
+  const closes=closed4h.map(z=>z.close);
+  const st=stoch(closes);
+  const ema5=ema(closes,5),ema13=ema(closes,13);
+  const last=closes.length-1,prev=last-1;
+  const bearishCross=ema5[prev]>=ema13[prev]&&ema5[last]<ema13[last];
+  const bullishCross=ema5[prev]<=ema13[prev]&&ema5[last]>ema13[last];
 
+  // Structural exhaustion exit: BOTH the Stoch RSI extreme and the 5/13 EMA
+  // cross must occur on the latest completed 4H candle.
+  if(s.direction==="LONG"&&st.k<20&&bearishCross)
+    return{shouldHold:false,reason:"stoch_extreme_ema5_13_bearish_cross",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
+  if(s.direction==="SHORT"&&st.k>80&&bullishCross)
+    return{shouldHold:false,reason:"stoch_extreme_ema5_13_bullish_cross",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
 
-  const lastExit=lastExitAlertAt??exitAlertStore.get(s.pair)??0;
-  if(lastExit>0&&now-lastExit>=0&&now-lastExit<EXIT_ALERT_COOLDOWN_MS){
-    return{shouldHold:true,reason:"exit_cooldown",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
-  }
-
-  // Evaluate momentum on completed 4H candles only.
-  const closed4h=x.slice(0,-1),closedCloses=closed4h.map(z=>z.close),st=stoch(closedCloses);
-  if(s.direction==="LONG"&&st.k<50)return exit("stoch_momentum_exit");
-  if(s.direction==="SHORT"&&st.k>50)return exit("stoch_momentum_exit");
-
-  // Chandelier activates after a favourable move of at least 2 ATR.
+  // Chandelier: highest high / lowest low over the last 10 completed 4H
+  // candles, offset by 3 ATR. The stop only ratchets in the profitable direction.
   if(closed4h.length>=10){
     const volatility=atr(closed4h),window=closed4h.slice(-10);
-    const favourableMove=s.direction==="LONG"?p-s.entry:s.entry-p;
-    if(volatility>0&&favourableMove>=2*volatility){
-      const trail=s.direction==="LONG"
+    if(volatility>0){
+      const chandelier=s.direction==="LONG"
         ?Math.max(...window.map(z=>z.high))-3*volatility
         :Math.min(...window.map(z=>z.low))+3*volatility;
-      const lastClosed=closed4h.at(-1)!;
-      const breached=s.direction==="LONG"?lastClosed.close<=trail:lastClosed.close>=trail;
-      const improves=s.direction==="LONG"?trail>s.stop:trail<s.stop;
-      if(breached)return exit("chandelier_trailing_stop",trail);
-      if(improves)return{shouldHold:true,reason:"chandelier_stop",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:trail};
+      const breached=s.direction==="LONG"?p<=chandelier:p>=chandelier;
+      const improves=s.direction==="LONG"?chandelier>s.stop:chandelier<s.stop;
+      if(breached)
+        return{shouldHold:false,reason:"chandelier_trailing_stop",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const,newStop:chandelier};
+      if(improves)
+        return{shouldHold:true,reason:"chandelier_stop_update",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const,newStop:chandelier};
     }
   }
 
