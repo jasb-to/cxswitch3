@@ -25,6 +25,12 @@ test("a cross on the immediately preceding closed candle remains eligible",()=>{
   assert.equal(result.entry1,true);
   assert.equal(result.crossAgeInCandles,1);
 });
+test("missing daily direction is reported separately from missing Stoch RSI history",()=>{
+  const point={k:40,d:45};
+  assert.equal(strategy.evaluateEntry1(null,[point,point]).reason,"no_directional_alignment");
+  assert.equal(strategy.evaluateEntry1("SHORT",[point]).reason,"insufficient_stoch_history");
+});
+
 test("a cross three candles old is rejected with cross_too_old",()=>{
   const series=[{k:90,d:85},{k:80,d:85},{k:79,d:84},{k:78,d:83},{k:77,d:82}];
   const result=strategy.evaluateEntry1("SHORT",series);
