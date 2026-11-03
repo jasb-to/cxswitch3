@@ -75,7 +75,6 @@ export default function Dashboard(){
     const regime=m?.regime??"—";
     const regimeTone=regime.startsWith("BULL")?"text-green-400":regime.startsWith("BEAR")?"text-red-400":"text-white/65";
     const regimeBadge=regime.startsWith("BULL")?"border-green-500/30 bg-green-500/10":regime.startsWith("BEAR")?"border-red-500/30 bg-red-500/10":"border-white/10 bg-white/[0.04]";
-    const sizePct=Math.round((m?.sizeMultiplier??0)*100);
     const status=String(m?.strategyStatus??"").trim()||"WAIT — no setup";
     const statusUpper=status.toUpperCase();
     const statusTone=statusUpper.startsWith("FIRED")?"text-green-300":statusUpper.startsWith("READY")?"text-yellow-300":statusUpper.startsWith("VETO")||statusUpper.startsWith("INVALID")?"text-red-300":"text-white/55";
