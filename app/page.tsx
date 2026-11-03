@@ -101,7 +101,7 @@ export default function Dashboard(){
       <div className="flex items-center justify-between gap-2 text-[9px] leading-4"><span className="text-white/30 font-bold tracking-wide">JARVIS</span><span className={`rounded border px-2 py-0.5 font-black tracking-wider ${verdictTone}`}>{verdict}</span><button type="button" onClick={()=>setShowDetails(v=>({...v,[pair]:!v[pair]}))} className="ml-auto text-[8px] uppercase tracking-wider text-white/35 hover:text-white/75">{isDetails?"Hide Details":"Show Details"}</button></div>
       {alertSent&&<div className="mt-1 rounded-md border border-white/[0.08] bg-white/[0.025] px-2 py-1.5">
         <div className={`text-[8px] font-black tracking-wide ${a.direction==="LONG"?"text-green-300":"text-red-300"}`}>{isActive?"ACTIVE TRADE":"ALERT SENT"} · {a.direction} {a.type} · ENTRY {money(a.entry)} · SL {money(a.stop)} · TP1 {money(a.tp1)} · TP2 {money(a.tp2??a.target)}</div>
-        {momentum&&<div className="mt-1 text-[8px] text-white/55">4H MOMENTUM · {momentum.managementState==="STAY"?"STAY IN TRADE":"EXIT TRADE"} · {momentum.direction} · P/L {pct(momentum.pnlPct)} · {momentum.reason}</div>}
+        <div className="mt-1 text-[8px] text-white/55">4H MOMENTUM · {momentum?(momentum.managementState==="STAY"?"STAY IN TRADE":"EXIT TRADE")+` · ${momentum.direction} · P/L ${pct(momentum.pnlPct)} · ${momentum.reason}`:"—"}</div>
         {isActive&&mg&&<div className="mt-1 text-[8px] text-white/45">{mg.recommendation} — {mg.reason}{mg.nextAction?` · ${mg.nextAction}`:""}</div>}
       </div>}
       {isDetails&&<div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
