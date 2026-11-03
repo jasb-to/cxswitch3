@@ -96,7 +96,8 @@ type Entry1Evaluation={entry1Long:boolean;entry1Short:boolean;entry1:boolean;dir
 export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSnapshot,closed4h:Candle[]=[],price?:number,liveStoch?:StochPoint):Entry1Evaluation {
   const series=Array.isArray(input)?input:[{k:input.pk,d:input.pd},{k:input.k,d:input.d}],last=series.at(-1);
   const empty=(reason:string):Entry1Evaluation=>({entry1Long:false,entry1Short:false,entry1:false,direction:null,crossDetected:null,crossAge:null,crossAgeInCandles:null,case:null,sizeMultiplier:1,thresholdPassed:false,reason,crossPrice:null,priceMovePct:null,kInRange:false,notExtended:false});
-  if(!aligned||!last||series.length<2)return empty("insufficient_stoch_history");
+  if(!aligned)return empty("no_directional_alignment");
+  if(!last||series.length<2)return empty("insufficient_stoch_history");
   const i=series.length-1,isShort=aligned==="SHORT",live=liveStoch??last,liveCorrect=isShort?live.k<live.d:live.k>live.d,thresholdPassed=isShort?last.k>75:last.k<25;
   let age:number|null=null,crossIndex:number|null=null,crossType:"bearish"|"bullish"|null=null;
   for(let offset=0;offset<=1;offset++){const at=i-offset;if(at<1)continue;const before=series[at-1],now=series[at],bear=before.k>=before.d&&now.k<now.d,bull=before.k<=before.d&&now.k>now.d;if((isShort&&bear)||(!isShort&&bull)){age=offset;crossIndex=at;crossType=isShort?"bearish":"bullish";break;}}
