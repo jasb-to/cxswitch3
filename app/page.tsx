@@ -75,7 +75,6 @@ export default function Dashboard(){
     const regime=m?.regime??"—";
     const regimeTone=regime.startsWith("BULL")?"text-green-400":regime.startsWith("BEAR")?"text-red-400":"text-white/65";
     const regimeBadge=regime.startsWith("BULL")?"border-green-500/30 bg-green-500/10":regime.startsWith("BEAR")?"border-red-500/30 bg-red-500/10":"border-white/10 bg-white/[0.04]";
-    const sizePct=Math.round((m?.sizeMultiplier??0)*100);
     const status=String(m?.strategyStatus??"").trim()||"WAIT — no setup";
     const statusUpper=status.toUpperCase();
     const statusTone=statusUpper.startsWith("FIRED")?"text-green-300":statusUpper.startsWith("READY")?"text-yellow-300":statusUpper.startsWith("VETO")||statusUpper.startsWith("INVALID")?"text-red-300":"text-white/55";
@@ -93,8 +92,8 @@ export default function Dashboard(){
     const momentum=m?.momentumState;
     return <article key={pair} className="bg-[#0b0b0b] p-2.5 sm:p-3 min-w-0 flex flex-col gap-1.5 select-text" style={{WebkitUserSelect:"text",userSelect:"text"}}>
       <div className="flex items-center justify-between gap-1 min-w-0">
-        <div className="flex items-baseline gap-1.5 min-w-0"><span className={`rounded px-1.5 py-0.5 text-[9px] font-black tracking-wide ${regimeBadge} ${regimeTone}`}>{pair}/USD</span><span className="text-[13px] sm:text-base font-semibold truncate">{money(p)}</span></div>
-        <div className={`text-[8px] sm:text-[9px] font-black text-right whitespace-nowrap ${regimeTone}`}>{regime} · {sizePct}% size</div>
+        <div className="flex flex-1 min-w-0 items-baseline gap-1"><span className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[9px] font-black tracking-wide ${regimeBadge} ${regimeTone}`}>{pair}/USD</span><span className="shrink-0 whitespace-nowrap text-[10px] sm:text-sm font-semibold tabular-nums">{money(p)}</span></div>
+        <div className={`text-[8px] sm:text-[9px] font-black text-right whitespace-nowrap ${regimeTone}`}>{regime}</div>
       </div>
       <div className="min-w-0 flex items-start gap-1 text-[9px] leading-4"><span className="shrink-0 text-white/30 font-bold tracking-wide">STATUS</span><span className={`min-w-0 break-words ${statusTone}`}>{status}{trendlineNote}</span></div>
       <div className="min-w-0 flex items-start gap-1 text-[9px] leading-4"><span className="shrink-0 text-white/30 font-bold tracking-wide">STOCH</span><span className={`min-w-0 break-words ${stochTone}`}>{typeof closedK==="number"&&typeof closedD==="number"?`${closedK.toFixed(1)} / ${closedD.toFixed(1)}`:"— / —"} — {stochState}{staleNote}</span></div>
@@ -105,6 +104,7 @@ export default function Dashboard(){
         {isActive&&mg&&<div className="mt-1 text-[8px] text-white/45">{mg.recommendation} — {mg.reason}{mg.nextAction?` · ${mg.nextAction}`:""}</div>}
       </div>}
       {isDetails&&<div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
+        {isActive&&<div>POSITION SIZE · {Math.round((a?.sizeMultiplier??m?.sizeMultiplier??0)*100)}%</div>}
         <div>1D CLOSE / EMA21 · {m?.dailyClose!=null&&m?.dailyE21!=null?`${money(m.dailyClose)} / ${money(m.dailyE21)}`:"—"}</div>
         <div>1D EMA 5/13 · {m?.ema5_1d!=null&&m?.ema13_1d!=null?`${money(m.ema5_1d)} / ${money(m.ema13_1d)}`:"—"}</div>
         <div>4H EMA 5/13 · {m?.ema5_4h!=null&&m?.ema13_4h!=null?`${money(m.ema5_4h)} / ${money(m.ema13_4h)}`:"—"}</div>
