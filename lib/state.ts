@@ -34,7 +34,7 @@ let btcShortCleanupVerified = false;
 let historyCleanupVerified = false;
 
 export interface ActiveTrade {
-  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ENTRY" | "REVERSAL_SHORT" | "REVERSAL_LONG";
+  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD" | "ENTRY" | "REVERSAL_SHORT" | "REVERSAL_LONG";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number;
   tp1HitAt?: number; tp2HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
   status: "ACTIVE"; context?: any; sizeMultiplier?: number; version: number;
@@ -43,7 +43,7 @@ export interface ActiveTrade {
 
 export type HistoryStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "FAILED" | "EXPIRED";
 export interface SignalHistoryEntry {
-  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "REVERSAL_SHORT" | "REVERSAL_LONG";
+  id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD" | "REVERSAL_SHORT" | "REVERSAL_LONG";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number; tp3?: number;
   tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
   status: HistoryStatus; exitReason?: string; exitPrice?: number; exitTimestamp?: number; context?: any; version: number; confirmedManually?: boolean; confirmedAt?: number;
