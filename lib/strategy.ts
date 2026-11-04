@@ -261,7 +261,7 @@ export function generateSignal(
   return{signal:s,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug,breakoutRecord:undefined};
 }
 
-export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number){
+export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number):{shouldHold:boolean;reason:string;managementState:"STAY"|"EXIT";recommendation:"STAY IN TRADE"|"EXIT TRADE";newStop?:number}{
   void now;void lastExitAlertAt;
   const ordered=[...c].sort((a,b)=>a.timestamp-b.timestamp),closed4h=ordered.slice(0,-1);
   if(closed4h.length<22)return{shouldHold:true,reason:"insufficient_closed_4h_history",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
