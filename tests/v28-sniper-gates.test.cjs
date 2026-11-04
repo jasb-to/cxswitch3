@@ -29,7 +29,7 @@ test("V28 trendline uses one shared pair key with seven-day state and 1.2% proxi
 test("ENTRY_1 uses FAST EMA5/13, trendline proximity, Stoch extreme and global filters", () => {
   assert.ok(strategy.includes("entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive)"));
   assert.ok(strategy.includes('stochK<20:direction==="SHORT"?stochK>80:false'));
-  assert.ok(strategy.includes('const momentum=dir==="LONG"?e5>e13:e5<e13'));
+  assert.ok(strategy.includes('const momentum=direction==="LONG"?e5>e13:e5<e13'));
   assert.ok(strategy.includes("RSI exhaustion"));
   assert.ok(strategy.includes("Stoch extreme veto"));
   assert.ok(strategy.includes("ADX >50 with Stoch turning against"));
