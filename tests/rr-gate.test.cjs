@@ -9,15 +9,16 @@ require.extensions[".ts"] = (module, filename) => {
 };
 const strategy = require("../lib/strategy.ts");
 
-test("RR remains informational; target fields are distant safety values and risk sizing remains separate",()=>{
- const source=fs.readFileSync(require.resolve("../lib/strategy.ts"),"utf8");
- assert.match(source,/entry\+15\*a/);
- assert.match(source,/entry-15\*a/);
- assert.doesNotMatch(source,/calculateTargetsFromPivots|export function calculateTargets\(/);
- assert.match(source,/calculateRiskSizeMultiplier\(riskPct\)/);
- assert.doesNotMatch(source,/rr\s*<\s*\d|minimumRR|rrGate|R:R gate/i);
+test("single V28 target is 5 ATR; RR remains informational, not a gate", () => {
+  const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
+  assert.match(source, /entry\+5\*a/);
+  assert.match(source, /entry-5\*a/);
+  assert.match(source, /targetCount:1/);
+  assert.doesNotMatch(source, /entry\+15\*a|entry-15\*a/);
+  assert.doesNotMatch(source, /rr\s*<\s*\d|minimumRR|rrGate|R:R gate/i);
 });
-test("15x leverage is used for modelled liquidation diagnostics",()=>{
- const source=fs.readFileSync(require.resolve("../lib/strategy.ts"),"utf8");
- assert.match(source,/const MAX_LEVERAGE=15/);
+test("15x leverage remains a diagnostic assumption, not an entry gate", () => {
+  const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
+  assert.match(source, /const MAX_LEVERAGE=15/);
+  assert.equal(typeof strategy.calculateLiquidationBufferPct("LONG", 100, 95), "number");
 });
