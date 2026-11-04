@@ -4,6 +4,9 @@ const fs = require("node:fs");
 const strategy = fs.readFileSync("lib/strategy.ts", "utf8");
 const state = fs.readFileSync("lib/state.ts", "utf8");
 const cron = fs.readFileSync("app/api/cron/route.ts", "utf8");
+const telegram = fs.readFileSync("lib/telegram.ts", "utf8");
+const dashboard = fs.readFileSync("app/page.tsx", "utf8");
+const jarvis = fs.readFileSync("lib/jarvis.ts", "utf8");
 
 test("V28 macro daily direction remains EMA 8/21 and fast direction is EMA 5/13", () => {
   assert.ok(strategy.includes("const ema8 = ema(closes, 8)"));
@@ -69,4 +72,20 @@ test("target and stop hits are management exits immediately, with explicit histo
   assert.ok(cron.includes('"expired_ttl","missed_entry","sl_hit","tp_hit"'));
   assert.ok(cron.includes('hold.reason==="tp_hit"?"TP_HIT"'));
   assert.ok(cron.includes('hold.reason==="sl_hit"?"SL_HIT"'));
+  assert.ok(cron.includes('updateSignalHistoryStatus(alert.id,"TP_HIT","tp_hit",price)'));
+  assert.ok(cron.includes('kind:"TARGET_HIT"'));
+});
+
+test("Telegram displays mirrored V28 targets once instead of TRAILING", () => {
+  assert.ok(telegram.includes('singleTarget?\x60TP: \x24{formatPrice(tp1)}\x60'));
+  assert.doesNotMatch(telegram, /TRAILING/);
+});
+
+test("Dashboard and Jarvis expose FAST/MACRO daily bias and trendline distance", () => {
+  assert.ok(dashboard.includes("FAST BIAS (5/13)"));
+  assert.ok(dashboard.includes("MACRO BIAS (8/21)"));
+  assert.ok(dashboard.includes("TL DISTANCE:"));
+  assert.ok(jarvis.includes("FAST bias (1D EMA5/13)"));
+  assert.ok(jarvis.includes("MACRO bias (1D EMA8/21)"));
+  assert.ok(jarvis.includes("Shared 4H trendline distance"));
 });
