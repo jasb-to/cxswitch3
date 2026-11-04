@@ -125,7 +125,7 @@ function checkDailyIntegrity(four,one) {
 function makeTrade(pair,signal,time,variant) {
   const entry=Number(signal.entry),stop=Number(signal.stop),risk=Math.abs(entry-stop);
   if(!(entry>0&&risk>0&&Number.isFinite(risk))) return null;
-  return {pair,direction:signal.direction,entry,stop,target:variant==="V28"?Number(signal.target):null,
+  return {pair,direction:signal.direction,entry,initialStop:stop,stop,target:variant==="V28"?Number(signal.target):null,
     entryTime:time,exitTime:null,exit:null,exitReason:null,pnlPct:null,r:null,pnlUsd:null,
     initialRisk:risk,signalType:signal.scale||signal.type,strategy:variant};
 }
@@ -169,8 +169,12 @@ function runVariant(label,strategy,market,startTs,endTs) {
         if(stopHit) { closeTrade(open,open.stop,bar.timestamp,"initial_stop"); trades.push(open); open=null; continue; }
         if(targetHit) { closeTrade(open,open.target,bar.timestamp,"5ATR_target"); trades.push(open); open=null; continue; }
         const hold=strategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
-        if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) open.stop=hold.newStop;
-        if(hold&&hold.shouldHold===false) { closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit"); trades.push(open); open=null; continue; }
+        // V28 validity has signal-only expiry checks (missed_entry / TTL). Once
+        // filled, these are not position exits; preserve the requested EMA21/Stoch
+        // exit comparison and let the hard stop / 5ATR target manage the position.
+        const v28SignalExpiry=label==="V28"&&hold&&["missed_entry","expired_ttl"].includes(hold.reason);
+        if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) { open.stop=hold.newStop; open._signal.stop=hold.newStop; }
+        if(hold&&hold.shouldHold===false&&!v28SignalExpiry) { closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit"); trades.push(open); open=null; continue; }
         continue;
       }
       let result;
@@ -189,7 +193,7 @@ function runVariant(label,strategy,market,startTs,endTs) {
       if(last) { closeTrade(open,last.close,last.timestamp,"end_of_test"); trades.push(open); }
     }
   }
-  return trades;
+  return trades.sort((a,b)=>a.exitTime-b.exitTime||a.entryTime-b.entryTime);
 }
 function stripInternal(trades) { return trades.map(({_signal,...t})=>t); }
 function writeCsv(file,trades) {
