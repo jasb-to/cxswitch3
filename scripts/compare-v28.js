@@ -125,7 +125,7 @@ function checkDailyIntegrity(four,one) {
 function makeTrade(pair,signal,time,variant,useV28Target) {
   const entry=Number(signal.entry),stop=Number(signal.stop),risk=Math.abs(entry-stop);
   if(!(entry>0&&risk>0&&Number.isFinite(risk))) return null;
-  return {pair,direction:signal.direction,entry,initialStop:stop,stop,target:useV28Target?Number(signal.target):null,
+  return {pair,direction:signal.direction,entry,initialStop:stop,stop,stopType:"initial",target:useV28Target?Number(signal.target):null,
     entryTime:time,exitTime:null,exit:null,exitReason:null,pnlPct:null,r:null,pnlUsd:null,
     initialRisk:risk,signalType:signal.scale||signal.type,strategy:variant};
 }
@@ -176,13 +176,13 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
       if(open) {
         const stopHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
         const targetHit=open.target!==null&&(open.direction==="LONG"?bar.high>=open.target:bar.low<=open.target);
-        if(stopHit) { closeTrade(open,open.stop,bar.timestamp,"initial_stop"); trades.push(open); open=null; continue; }
+        if(stopHit) { closeTrade(open,open.stop,bar.timestamp,open.stopType==="chandelier"?"chandelier_stop_hit":"initial_stop"); trades.push(open); open=null; continue; }
         if(targetHit) { closeTrade(open,open.target,bar.timestamp,"5ATR_target"); trades.push(open); open=null; continue; }
         const hold=exitStrategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
         // V28 missed_entry / TTL are signal validity rules, not exits after a
         // position has been filled. Ignore them in the V28 position simulation.
         const v28SignalExpiry=exitLabel==="V28"&&hold&&["missed_entry","expired_ttl"].includes(hold.reason);
-        if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) { open.stop=hold.newStop; open._signal.stop=hold.newStop; }
+        if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) { open.stop=hold.newStop; open._signal.stop=hold.newStop; open.stopType="chandelier"; }
         if(hold&&hold.shouldHold===false&&!v28SignalExpiry) { closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit"); trades.push(open); open=null; continue; }
         continue;
       }
@@ -215,7 +215,7 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
 }
 function stripInternal(trades) { return trades.map(({_signal,...t})=>t); }
 function writeCsv(file,trades) {
-  const fields=["strategy","pair","direction","signalType","entryTime","entry","initialStop","stop","target","exitTime","exit","exitReason","pnlPct","r","pnlUsd"];
+  const fields=["strategy","pair","direction","signalType","entryTime","entry","initialStop","stop","stopType","target","exitTime","exit","exitReason","pnlPct","r","pnlUsd"];
   const q=v=>'"'+String(v??"").replace(/"/g,'""')+'"';
   fs.writeFileSync(file,[fields.join(","),...trades.map(t=>fields.map(k=>q(t[k])).join(","))].join("\n"));
 }
