@@ -28,6 +28,13 @@ const TELEGRAM_ALERT_TTL_SECONDS = 60*60*6;
 const CLEANUP_KEY = "cxswitch:cleanup:bandwidth_20261002_v1";
 const LEGACY_1D_LOG_KEY = "cxswitch:1d_trend_log_v2";
 
+const STRATEGY_HYSTERESIS_KEY="cxswitch:v28_hysteresis_state";
+const STRATEGY_TRENDLINE_KEY="cxswitch:v28_trendline_state";
+export async function getHysteresisState():Promise<Record<string,unknown>>{return (await redis.get<Record<string,unknown>>(STRATEGY_HYSTERESIS_KEY))??{};}
+export async function setHysteresisState(v:Record<string,unknown>):Promise<void>{if(await redis.set(STRATEGY_HYSTERESIS_KEY,v)!=="OK")throw new Error("V28 hysteresis persistence failed");}
+export async function getTrendlineState():Promise<Record<string,unknown>>{return (await redis.get<Record<string,unknown>>(STRATEGY_TRENDLINE_KEY))??{};}
+export async function setTrendlineState(v:Record<string,unknown>):Promise<void>{if(await redis.set(STRATEGY_TRENDLINE_KEY,v)!=="OK")throw new Error("V28 trendline persistence failed");}
+
 // These cleanup markers are permanent one-time migrations. Cache successful checks
 // within a warm serverless instance so every state read does not issue extra KV queries.
 let btcShortCleanupVerified = false;
