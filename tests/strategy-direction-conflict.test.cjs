@@ -79,13 +79,13 @@ test("MED regimes use full size; daily EMA8/21 and 4H EMA5/13 have separate role
 });
 test("ENTRY_1 uses FAST daily EMA5/13, trendline proximity, Stoch extreme and global filters", () => {
   assert.match(source, /function trend1DEntry1[\s\S]*?ema\(closes,5\)[\s\S]*?ema\(closes,13\)/);
-  assert.match(source, /fastNear&&fastExtreme&&fastFilters\.pass&&!fastActive/);
+  assert.match(source, /entry1TriggerPass\(fast\.direction,fastNear,st\.k,fastFilters\.pass,fastActive\)/);
   assert.match(source, /const momentum=dir==="LONG"\?e5>e13:e5<e13/);
   assert.match(source, /fastFilters\.exhaustion/);
 });
 test("ENTRY_2 and ADD use MACRO daily EMA8/21 with global momentum and exhaustion filters", () => {
   assert.match(source, /function trend1D[\s\S]*?ema\(closes, 8\)[\s\S]*?ema\(closes, 21\)/);
-  assert.match(source, /macroNear&&turning&&!macroExtreme&&macroFilters\.pass&&macroActive/);
+  assert.match(source, /entry2TriggerPass\(macro\.direction,macroNear,st\.k,st\.d,macroFilters\.pass,macroActive\)/);
   assert.match(source, /macroActive&&beyond&&confirming&&macroFilters\.pass/);
 });
 test("FAST is evaluated before MACRO and both directions share exactly one trendline KV key", () => {
