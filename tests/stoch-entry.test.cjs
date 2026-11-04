@@ -25,7 +25,7 @@ test("global Momentum uses 4H EMA5/13 aligned to the one daily direction", () =>
 test("global Exhaustion retains RSI 78/22, Stoch 95/5 and ADX >50 turning-against vetoes", () => {
   assert.equal(strategySource.split('const rsiExhausted=dailyTrend.direction==="LONG"?rv>78:dailyTrend.direction==="SHORT"?rv<22:false;').length - 1, 2);
   assert.equal(strategySource.split('const stochVeto=dailyTrend.direction==="LONG"?st.k>95:dailyTrend.direction==="SHORT"?st.k<5:false;').length - 1, 2);
-  assert.equal(strategySource.split("const adxExhausted=av>50&&turningAgainst;").length - 1, 2);
+  assert.equal(strategySource.split("const adxExhausted=av>50&&turningAgainst;").length - 1, 3);
 });
 
 test("daily direction unavailable with no usable candle history", () => {
