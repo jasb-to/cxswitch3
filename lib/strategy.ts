@@ -27,7 +27,7 @@ function adx(c:Candle[],p=14){if(c.length<p+2)return 0;const tr:number[]=[],pl:n
 function daily(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [...c].sort((a,b)=>a.timestamp-b.timestamp)){const z=new Date(x.timestamp),k=z.toISOString().slice(0,10),b=m.get(k)??[];b.push(x);m.set(k,b)}return[...m.values()].map(b=>({timestamp:b[0].timestamp,open:b[0].open,high:Math.max(...b.map(x=>x.high)),low:Math.min(...b.map(x=>x.low)),close:b.at(-1)!.close,volume:b.reduce((s,x)=>s+x.volume,0)}))}
 export type RegimeStrength="HIGH"|"MED"|"LOW";
 export type RegimeState="BULL_HIGH"|"BULL_MED"|"BULL_LOW"|"CHOP"|"BEAR_LOW"|"BEAR_MED"|"BEAR_HIGH";
-export function regimeAllowsTrading(_state:RegimeState):boolean{return true;}
+export function regimeAllowsTrading(state:RegimeState):boolean{return state==="BEAR_HIGH"||state==="BEAR_MED"||state==="BULL_HIGH"||state==="BULL_MED";}
 export interface ComputedRegime {
   state:RegimeState; direction:Direction|null; sizeMultiplier:0|0.5|1;
   price:number; e21:number; e5:number; e13:number; spread:number; spread3:number; spreadDelta:number;
@@ -69,6 +69,9 @@ export function get4HTrendline(candles:Candle[],direction:Direction,price:number
   const recent=pivots.slice(-5),n=recent.length,sumX=recent.reduce((v,x)=>v+x.index,0),sumY=recent.reduce((v,x)=>v+x.price,0),sumXY=recent.reduce((v,x)=>v+x.index*x.price,0),sumX2=recent.reduce((v,x)=>v+x.index*x.index,0),denom=n*sumX2-sumX*sumX;
   if(!denom)return invalid("degenerate_pivots",recent);
   const slope=(n*sumXY-sumX*sumY)/denom,intercept=(sumY-slope*sumX)/n,r2=calculateTrendlineR2(recent);
+  if(direction==="LONG"&&slope<=0)return invalid("slope_mismatch_long",recent,slope,intercept,r2);
+  if(direction==="SHORT"&&slope>=0)return invalid("slope_mismatch_short",recent,slope,intercept,r2);
+  if(r2<0.60)return invalid("r2_below_0.60",recent,slope,intercept,r2);
   const currentIndex=closed.length-1,priceAtCurrent=slope*currentIndex+intercept;
   if(!Number.isFinite(priceAtCurrent)||priceAtCurrent<=0)return invalid("invalid_trendline_price",recent,slope,intercept,r2);
   return{valid:true,slope,intercept,priceAtCurrent,pivots:recent,r2,touchCount:n,reason:"valid"};
