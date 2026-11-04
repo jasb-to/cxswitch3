@@ -54,7 +54,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
 }
 
 const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_trend_reversal_unprofitable"]);
-const MANAGEMENT_EXIT_REASONS=new Set([...INDICATOR_EXIT_REASONS,"expired_ttl","missed_entry"]);
+const MANAGEMENT_EXIT_REASONS=new Set([...INDICATOR_EXIT_REASONS,"expired_ttl","missed_entry","sl_hit","tp_hit"]);
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 
@@ -100,7 +100,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     }
     if(!hold.shouldHold&&MANAGEMENT_EXIT_REASONS.has(hold.reason)){
       // Commit the exit to history and active state before attempting Telegram delivery.
-      const exitStatus=hold.reason==="expired_ttl"||hold.reason==="missed_entry"?"EXPIRED":"FAILED";
+      const exitStatus=hold.reason==="tp_hit"?"TP_HIT":hold.reason==="sl_hit"?"SL_HIT":hold.reason==="expired_ttl"||hold.reason==="missed_entry"?"EXPIRED":"FAILED";
       await updateSignalHistoryStatus(alert.id,exitStatus,hold.reason,price);
       const activeIndex=active.findIndex((item:any)=>item.id===alert.id);
       if(activeIndex>=0)active.splice(activeIndex,1);
