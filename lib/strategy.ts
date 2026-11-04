@@ -96,8 +96,8 @@ export function getTrendlineStateSnapshot(): Record<string, { direction: "LONG" 
 }
 export async function saveTrendlinesToKV(): Promise<void> {
   const state: Record<string, any> = {};
-  for (const [pair, data] of trendlineStore.entries()) {
-    state[pair] = data;
+  for (const [key, data] of trendlineStore.entries()) {
+    state[key] = data;
   }
   await setTrendlineState(state);
 }
