@@ -16,7 +16,7 @@ test("ENTRY_1 LONG/SHORT use FAST daily EMA5/13 and Stoch extremes without requi
 });
 test("ENTRY_1 is vetoed when 4H EMA5/13 momentum is not aligned or exhaustion is present", () => {
   assert.ok(strategy.includes("fastFilters.pass"));
-  assert.ok(strategy.includes("momentum:dir===\"LONG\"?e5>e13:e5<e13"));
+  assert.ok(strategy.includes('const momentum=dir==="LONG"?e5>e13:e5<e13'));
   assert.ok(strategy.includes("fastFilters.exhaustion"));
 });
 test("ENTRY_2 uses MACRO EMA8/21, trendline proximity, Stoch turn and global filters", () => {
