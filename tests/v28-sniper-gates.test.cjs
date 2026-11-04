@@ -28,8 +28,8 @@ test("ENTRY_1 uses daily EMA5/13 direction plus V28 trendline proximity and Stoc
 });
 
 test("momentum exhaustion filter uses RSI 78/22, Stoch 95/5 and ADX above 50 turning against", () => {
-  assert.ok(strategy.includes('rv>78:rv<22'));
-  assert.ok(strategy.includes('st.k>95:st.k<5'));
+  assert.ok(strategy.includes('rv>78:trend.direction==="SHORT"?rv<22:false'));
+  assert.ok(strategy.includes('st.k>95:trend.direction==="SHORT"?st.k<5:false'));
   assert.ok(strategy.includes('av>50&&against'));
 });
 
