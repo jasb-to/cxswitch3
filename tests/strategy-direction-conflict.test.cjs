@@ -96,7 +96,7 @@ test("stop is the more conservative of the 20-bar swing and 2 ATR boundary", () 
 });
 test("single target is 5 ATR and is recorded as targetCount 1", () => {
   const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
-  assert.match(source, /entry\+5\*a/);
-  assert.match(source, /entry-5\*a/);
+  assert.match(source, /price\+5\*avalue/);
+  assert.match(source, /price-5\*avalue/);
   assert.match(source, /targetCount:1/);
 });
