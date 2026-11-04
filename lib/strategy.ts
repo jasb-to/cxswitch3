@@ -90,6 +90,10 @@ export async function loadTrendlinesFromKV(): Promise<void> {
   }
 }
 
+
+export function getTrendlineStateSnapshot(): Record<string, { direction: "LONG" | "SHORT"; slope: number; intercept: number; lastUpdated: number }> {
+  return Object.fromEntries([...trendlineStore.entries()].map(([key, value]) => [key, { direction: value.direction, slope: value.slope, intercept: value.intercept, lastUpdated: value.lastUpdated }]));
+}
 export async function saveTrendlinesToKV(): Promise<void> {
   const state: Record<string, any> = {};
   for (const [pair, data] of trendlineStore.entries()) {
@@ -291,7 +295,7 @@ function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: nu
 }
 
 // --- STATEFUL TRENDLINE ---
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
+export function getTrendline(key: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
   
@@ -301,7 +305,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
   
-  const existing = trendlineStore.get(pair);
+  const existing = trendlineStore.get(key);
   const maxAge = 7 * 24 * 60 * 60 * 1000;
   
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < maxAge) {
@@ -330,7 +334,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const ssResidual = recentPivots.reduce((s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2), 0);
   const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
   
-  trendlineStore.set(pair, {
+  trendlineStore.set(key, {
     slope,
     intercept,
     pivots: recentPivots,
@@ -472,18 +476,17 @@ export function evaluateGates(
  const closed=c.slice(0,-1),closes=closed.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(closed);
  const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
  const filters=(dir:Direction|null)=>evaluateDirectionalFilters(dir,e5,e13,rv,st.k,st.d,av);
- const fastFilters=filters(fast.direction),fastTl=fast.direction?getTrendline(pair,c,fast.direction):null;
+ const fastFilters=filters(fast.direction),fastTl=fast.direction?getTrendline(pair+":FAST",c,fast.direction):null;
  const fastDist=fastTl&&fastTl.price>0?Math.abs(price-fastTl.price)/fastTl.price*100:Infinity;
  const fastNear=!!fastTl&&fastDist<1.2,fastExtreme=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
  const fastActive=!!fast.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===fast.direction);
  const entry1=entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive);
- // ENTRY_1 gets first evaluation. If it does not fire, the single pair trendline state
- // is recalculated/overwritten for the MACRO direction before ENTRY_2 / ADD checks.
+ // FAST and MACRO trendlines persist independently under separate KV keys.
  let macroTl:ReturnType<typeof getTrendline>=null,macroDist=Infinity,macroNear=false,entry2=false,addReady=false;
  let macroFilters=filters(macro.direction),macroActive=false,beyond=false,confirming=false,volUp=false,stochMomentum=false;
  const last=closed.at(-1),prev=closed.at(-2);
  if(!entry1&&macro.direction){
-   macroTl=getTrendline(pair,c,macro.direction);
+   macroTl=getTrendline(pair+":MACRO",c,macro.direction);
    macroDist=macroTl&&macroTl.price>0?Math.abs(price-macroTl.price)/macroTl.price*100:Infinity;
    macroNear=!!macroTl&&macroDist<1.2;
    macroActive=activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
@@ -527,7 +530,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const price=currentPrice??c.at(-1)!.close,closes=c.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(c);
  const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
  const filters=(dir:Direction|null)=>evaluateDirectionalFilters(dir,e5,e13,rv,st.k,st.d,av);
- const fastFilters=filters(fast.direction),fastTl=fast.direction?getTrendline(pair,c,fast.direction):null;
+ const fastFilters=filters(fast.direction),fastTl=fast.direction?getTrendline(pair+":FAST",c,fast.direction):null;
  const fastDistance=fastTl?Math.abs(price-fastTl.price)/fastTl.price*100:Infinity,fastNear=!!fastTl&&fastDistance<1.2;
  const fastExtreme=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
  const fastActive=!!fast.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===fast.direction);
@@ -535,8 +538,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,signalDirection:Direction|null=null,signalTl:ReturnType<typeof getTrendline>=null;
  if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive)){finalType="ENTRY_1";signalDirection=fast.direction;signalTl=fastTl;}
  else {
-   // One shared KV key per pair: macro evaluation intentionally overwrites FAST trendline state.
-   const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null;
+   // FAST and MACRO use independent persistent trendline state keys.
+   const macroTl=macro.direction?getTrendline(pair+":MACRO",c,macro.direction):null;
    const macroDistance=macroTl?Math.abs(price-macroTl.price)/macroTl.price*100:Infinity,macroNear=!!macroTl&&macroDistance<1.2;
    const macroFilters=filters(macro.direction),macroActive=!!macro.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
    const last=c.at(-1)!,prev=c.at(-2)!,beyond=!!macroTl&&(macro.direction==="LONG"?price>macroTl.price*1.008:price<macroTl.price*0.992);
@@ -570,10 +573,15 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
  void candles1h;void candles15m;
  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),d=aggregateTo1D(c),t=trend1D(d),reg=computeRegime(c),closed=c.slice(0,-1),q=closed.map(x=>x.close),dq=d.slice(0,-1).map(x=>x.close);
  const st=stochRsi(q),st1=stochRsi(dq),dailyCloses=d.map(x=>x.close),e5=ema(q,5).at(-1)??0,e13=ema(q,13).at(-1)??0,e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0,d8=ema(dailyCloses,8).at(-1)??0,d21=ema(dailyCloses,21).at(-1)??0,d5=ema(dailyCloses,5).at(-1)??0,d13=ema(dailyCloses,13).at(-1)??0;
- const storedTrendline=trendlineStore.get(pair),tl=storedTrendline?{price:storedTrendline.slope*(c.length-1)+storedTrendline.intercept,r2:0.85,age:Date.now()-storedTrendline.lastUpdated}:null,price=c.at(-1)?.close??0;
- const entry1Direction=d5>d13?"LONG":d5<d13?"SHORT":"NEUTRAL";
-  const fastDailyDirection=entry1Direction,macroDailyDirection=t.direction??"NEUTRAL";
- return{pair,price,timestamp:Date.now(),trend:reg.state,regime:reg.state,dailyDirection:t.direction==="LONG"?"BULL":t.direction==="SHORT"?"BEAR":"NEUTRAL",fastDailyDirection,macroDailyDirection,entry1DailyDirection:entry1Direction,dailyStrength:t.strength,dailyClose:dq.at(-1)??0,dailyE21:d21,dailyE8:d8,ema8_1d:d8,ema21_1d:d21,ema5_1d:d5,ema13_1d:d13,ema5_4h:e5,ema13_4h:e13,ema8_4h:e8,ema21_4h:e21,fourHTacticalDirection:e5>e13?"BULL":e5<e13?"BEAR":"NEUTRAL",fourHDirection:e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL",alignedDirection:t.direction,trendlineDistancePct:tl?Math.abs(price-tl.price)/tl.price*100:null,stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK1d:st1.k,stochD1d:st1.d,adx:adx(closed),rsi:rsi(q),trendlinePrice:tl?.price??0,distToTrendline:tl?Math.abs(price-tl.price)/tl.price*100:null,sizeMultiplier:reg.sizeMultiplier,strategyStatus:"V28 — "+(t.direction??"NO DAILY TREND")};
+ const price=c.at(-1)?.close??0;
+ const fastTrend=trend1DEntry1(d),fastDailyDirection=fastTrend.direction??"NEUTRAL",macroDailyDirection=t.direction??"NEUTRAL";
+ const fastTl=fastTrend.direction?getTrendline(pair+":FAST",c,fastTrend.direction):null;
+ const macroTl=t.direction?getTrendline(pair+":MACRO",c,t.direction):null;
+ const fastTrendlinePrice=fastTl?.price??0,macroTrendlinePrice=macroTl?.price??0;
+ const fastTrendlineDistance=fastTl&&fastTl.price>0?Math.abs(price-fastTl.price)/fastTl.price*100:null;
+ const macroTrendlineDistance=macroTl&&macroTl.price>0?Math.abs(price-macroTl.price)/macroTl.price*100:null;
+ const entry1Direction=fastDailyDirection;
+ return{pair,price,timestamp:Date.now(),trend:reg.state,regime:reg.state,dailyDirection:t.direction==="LONG"?"BULL":t.direction==="SHORT"?"BEAR":"NEUTRAL",fastDailyDirection,macroDailyDirection,entry1DailyDirection:entry1Direction,dailyStrength:t.strength,dailyClose:dq.at(-1)??0,dailyE21:d21,dailyE8:d8,ema8_1d:d8,ema21_1d:d21,ema5_1d:d5,ema13_1d:d13,ema5_4h:e5,ema13_4h:e13,ema8_4h:e8,ema21_4h:e21,fourHTacticalDirection:e5>e13?"BULL":e5<e13?"BEAR":"NEUTRAL",fourHDirection:e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL",alignedDirection:t.direction,fastTrendlinePrice,fastTrendlineDistance,macroTrendlinePrice,macroTrendlineDistance,trendlineDistancePct:macroTrendlineDistance,stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK1d:st1.k,stochD1d:st1.d,adx:adx(closed),rsi:rsi(q),trendlinePrice:macroTrendlinePrice,distToTrendline:macroTrendlineDistance,sizeMultiplier:reg.sizeMultiplier,strategyStatus:"V28 — "+(t.direction??"NO DAILY TREND")};
 }
 
 // --- VALIDITY ---
