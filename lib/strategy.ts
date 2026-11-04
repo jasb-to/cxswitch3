@@ -36,7 +36,6 @@ type Direction="LONG"|"SHORT";
 function daily(c:Candle[]):Candle[]{return aggregateTo1D(c);}
 export type RegimeStrength="HIGH"|"MED"|"LOW";
 export type RegimeState="BULL_HIGH"|"BULL_MED"|"BULL_LOW"|"CHOP"|"BEAR_LOW"|"BEAR_MED"|"BEAR_HIGH";
-export function regimeAllowsTrading(state:RegimeState):boolean{return state==="BEAR_HIGH"||state==="BEAR_MED"||state==="BULL_HIGH"||state==="BULL_MED";}
 export interface ComputedRegime {
   state:RegimeState; direction:Direction|null; sizeMultiplier:0|0.5|1;
   price:number; e21:number; e5:number; e13:number; spread:number; spread3:number; spreadDelta:number;
@@ -489,6 +488,8 @@ export interface ValidityCheck{valid:boolean;reason:string;exited:boolean}
 export function isSignalStillValid(signal:Signal,p:number,now:number=Date.now()):ValidityCheck{
  const ttl=signal.type==="ADD"?4*60*60*1000:24*60*60*1000;
  if(now-signal.timestamp>ttl)return{valid:false,reason:"expired_ttl",exited:true};
+ const entryBuffer=signal.type==="ADD"?1.005:1.02;
+ if((signal.direction==="LONG"&&p>signal.entry*entryBuffer)||(signal.direction==="SHORT"&&p<signal.entry*(2-entryBuffer)))return{valid:false,reason:"missed_entry",exited:true};
  if((signal.direction==="LONG"&&p<=signal.stop)||(signal.direction==="SHORT"&&p>=signal.stop))return{valid:false,reason:"sl_hit",exited:true};
  const tp=signal.tp1??signal.tp2;if((signal.direction==="LONG"&&p>=tp)||(signal.direction==="SHORT"&&p<=tp))return{valid:false,reason:"tp_hit",exited:true};
  return{valid:true,reason:"active",exited:false};
@@ -503,7 +504,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
  const v=isSignalStillValid(s,p,now);if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE"};
  const dailyTrend=trend1D(aggregateTo1D(c)),rev=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;
  if(rev&&!profit)return{shouldHold:false,reason:"daily_trend_reversal_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE"};
- const st=stochRsi(closed.map(x=>x.close)),opposite=s.direction==="LONG"?st.k<20:st.k>80;
+ const st=stochRsi(c.map(x=>x.close)),opposite=s.direction==="LONG"?st.k<20:st.k>80;
  if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
  return{shouldHold:true,reason:"thesis_intact",managementState:"STAY",recommendation:"STAY IN TRADE"};
 }
