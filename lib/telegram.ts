@@ -141,7 +141,7 @@ export async function sendJarvisOpportunity(update:{
 export async function sendManagementAlert(update:{
   pair:string;
   direction:"LONG"|"SHORT";
-  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL"|"STOP_HIT"|"EXPIRED";
+  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL"|"STOP_HIT"|"TARGET_HIT"|"EXPIRED";
   stop?:number;
   price?:number;
 }){
