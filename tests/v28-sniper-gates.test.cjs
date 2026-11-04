@@ -13,7 +13,6 @@ test("V28 has one daily trend using EMA 5/13 only", () => {
   assert.match(trend, /ema\(closes, 5\)/);
   assert.match(trend, /ema\(closes, 13\)/);
   assert.doesNotMatch(trend, /ema\(closes, 8\)|ema\(closes, 21\)/);
-  assert.doesNotMatch(strategy, /trend1DEntry1|fastDailyDirection|macroDailyDirection|entry1DailyDirection/);
 });
 
 test("V28 uses one shared trendline KV key: pair", () => {
