@@ -72,10 +72,10 @@ test("MED regimes use full size; daily EMA8/21 and 4H EMA5/13 have separate role
   assert.equal(regime.sizeMultiplier, 1);
   assert.equal(snapshot.dailyDirection, "BEAR");
   assert.ok(["BULL", "BEAR", "NEUTRAL"].includes(snapshot.fourHTacticalDirection));
-  assert.match(source, /ema\(closes,8\)/);
-  assert.match(source, /ema\(closes,21\)/);
-  assert.match(source, /ema\(closes,5\)/);
-  assert.match(source, /ema\(closes,13\)/);
+  assert.match(source, /ema\(closes,\s*8\)/);
+  assert.match(source, /ema\(closes,\s*21\)/);
+  assert.match(source, /ema\(closes,\s*5\)/);
+  assert.match(source, /ema\(closes,\s*13\)/);
 });
 test("ENTRY_1 uses FAST daily EMA5/13, trendline proximity, Stoch extreme and global filters", () => {
   assert.match(source, /function trend1DEntry1[\s\S]*?ema\(closes,5\)[\s\S]*?ema\(closes,13\)/);
