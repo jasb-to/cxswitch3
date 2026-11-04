@@ -28,7 +28,7 @@ test("insufficient Stoch history is reported as zero usable smoothed points", ()
   assert.equal(getStochHistoryPointCount(Array.from({ length: 30 }, (_, i) => 100 + i)), 0);
 });
 test("ENTRY_2 retains its separate V28 near-trendline Stoch-turning path", () => {
-  assert.ok(strategy.includes('else if(near&&turning&&!extreme&&exhaustionClear)raw="ENTRY_2"'));
+  assert.ok(strategy.includes('else if(trend.direction&&near&&turning&&!extreme&&exhaustionClear)raw="ENTRY_2"'));
 });
 test("Stoch history diagnostics count usable smoothed points", () => {
   const closes32 = Array.from({ length: 32 }, (_, i) => 100 + Math.sin(i / 2) * 5 + i * 0.1);
