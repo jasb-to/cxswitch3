@@ -467,7 +467,7 @@ export function evaluateGates(
  const dailyDirection=direction==="LONG"?"LONG":direction==="SHORT"?"SHORT":null;
  const regime=computeRegime(c);
  const alignment={daily:dailyDirection,dailyE8,dailyE21,fourHE5:e5,fourHE13:e13,fourH:e5>e13?"LONG":e5<e13?"SHORT":null,regime:regime.state,sizeMultiplier:regime.sizeMultiplier};
- return{direction,zone:null,trendlineSlope:tl?.slope??0,trendline:tl?{price:tl.price,distancePct:dist,r2:tl.r2,reason:"V28 trendline"}:null,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"V28 Stoch extreme + EMA5/13 momentum":missing.join("; "),entry2Reason:entry2?"V28 Stoch turn near trendline":"not_ready",entry1SizeMultiplier:1,entry1CrossAgeInCandles:null,entry1Case:entry1?"fresh":null},exhaustion,stopCalc:null,missing:[...new Set(missing)],allPassed:!!signalType&&filtersPass&&!!tl&&(signalType==="ADD"||near),dailyTransition:false,breakoutRecord:undefined};
+ return{direction,zone:null,trendlineSlope:0,trendline:tl?{price:tl.price,distancePct:dist,r2:tl.r2,reason:"V28 trendline"}:null,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"V28 Stoch extreme + EMA5/13 momentum":missing.join("; "),entry2Reason:entry2?"V28 Stoch turn near trendline":"not_ready",entry1SizeMultiplier:1,entry1CrossAgeInCandles:null,entry1Case:entry1?"fresh":null},exhaustion,stopCalc:null,missing:[...new Set(missing)],allPassed:!!signalType&&filtersPass&&!!tl&&(signalType==="ADD"||near),dailyTransition:false,breakoutRecord:undefined};
 }
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,entry1State?:any,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]):SignalResult{
