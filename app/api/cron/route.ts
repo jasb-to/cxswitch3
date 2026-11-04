@@ -1,11 +1,11 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount, loadHysteresisFromKV, saveHysteresisToKV, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, updateActiveSignalStop, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
@@ -53,7 +53,8 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
-const INDICATOR_EXIT_REASONS=new Set(["chandelier_trailing_stop","stoch_extreme_ema5_13_bearish_cross","stoch_extreme_ema5_13_bullish_cross"]);
+const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_trend_reversal_unprofitable"]);
+const MANAGEMENT_EXIT_REASONS=new Set([...INDICATOR_EXIT_REASONS,"expired_ttl","missed_entry"]);
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 
@@ -97,29 +98,17 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       persistExitCooldown(alert.pair,hold.reason,cooldowns);
       cooldownsChanged=true;
     }
-    if(hold.shouldHold&&hold.reason==="chandelier_stop_update"&&hold.newStop!==undefined){
-      const oldStop=Number(alert.stop);
-      const tighter=alert.direction==="LONG"?hold.newStop>oldStop:hold.newStop<oldStop;
-      if(tighter){
-        const persisted=await updateActiveSignalStop(alert.pair,alert.direction,hold.newStop);
-        if(persisted){
-          alert.stop=hold.newStop;
-          console.log(`[CHANDELIER] ${alert.pair} ${alert.direction} | stop updated ${oldStop} -> ${hold.newStop}`);
-          const key=`management:${alert.id}:trail:${round(Number(hold.newStop))}`;
-          if(await claimTelegramAlert(key))
-            await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"TRAIL",stop:Number(hold.newStop)});
-        }
-      }
-    }else if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)){
+    if(!hold.shouldHold&&MANAGEMENT_EXIT_REASONS.has(hold.reason)){
       // Commit the exit to history and active state before attempting Telegram delivery.
-      await updateSignalHistoryStatus(alert.id,"FAILED",hold.reason,price);
+      const exitStatus=hold.reason==="expired_ttl"||hold.reason==="missed_entry"?"EXPIRED":"FAILED";
+      await updateSignalHistoryStatus(alert.id,exitStatus,hold.reason,price);
       const activeIndex=active.findIndex((item:any)=>item.id===alert.id);
       if(activeIndex>=0)active.splice(activeIndex,1);
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — EXIT @ ${price} (${hold.reason})`);
       alerts.push({pair:alert.pair,direction:alert.direction,status:"management_exit",reason:hold.reason,price});
-      const kind=hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
+      const kind="4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
-      if(await claimTelegramAlert(key))
+      if(hold.reason!=="expired_ttl"&&hold.reason!=="missed_entry"&&await claimTelegramAlert(key))
         await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price});
     }
     } catch(error) {
@@ -131,7 +120,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     try{await setExitAlertCooldowns(cooldowns);}
     catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Batched exit cooldown write failed",error);}
   }
-  // Persist any positions removed by structural or Chandelier exits.
+  // Persist positions removed by V28 stop, target, expiry or indicator exits.
   try{await setActiveSignals(active);}
   catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Active-position state write failed",error);}
   return stateStoreFailed;
@@ -227,6 +216,8 @@ export async function GET(request:Request){
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],stateDegraded=false;
 
 
+  await loadHysteresisFromKV();
+  await loadTrendlinesFromKV();
  await Promise.all(PAIRS.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;try{
   const [c1,c4,c15]=await Promise.all([
     getCandles(krakenPairFormat(pair+"/USD"),60),
@@ -277,7 +268,7 @@ export async function GET(request:Request){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      // Direction is regime-only; 4H EMA5/13 is diagnostic context, not an entry gate.
+      // Daily EMA8/21 sets direction; 4H EMA5/13 confirms ENTRY_1 momentum.
       const conflict=snapshot.regime==="CHOP"||!dailySide;
       let waitReason=snapshot.regime==="CHOP"?"regime CHOP":conflict?"daily regime unavailable":"setup incomplete";
       if(!conflict&&gateDebug){
@@ -366,6 +357,8 @@ export async function GET(request:Request){
     console.log(`[PERF] ${pair} processed in ${Date.now()-pairStarted}ms`);
   }
  }));
+  await saveHysteresisToKV();
+  await saveTrendlinesToKV();
  if(newSignals.length){
    active=mergeNewSignalsIntoActive(active,newSignals);
    console.log(`[STATE ADD] Batched ${newSignals.length} new signal(s) into active state; one compact write will occur after reconciliation`);

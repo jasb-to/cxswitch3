@@ -20,23 +20,23 @@ function candlesFromCloses(closes, range = 0.5) {
   candles.push({ timestamp: closes.length * FOUR_HOURS, open: previous, high: previous + range, low: previous - range, close: previous, volume: 1 });
   return candles;
 }
-const signal = (direction, overrides = {}) => ({ pair: "TEST", direction, entry: 100, stop: direction === "LONG" ? 90 : 110, tp1: direction === "LONG" ? 200 : 1, tp2: direction === "LONG" ? 200 : 1, timestamp: 1, ...overrides });
+const signal = (direction, overrides = {}) => ({ pair: "TEST", direction, entry: 100, stop: direction === "LONG" ? 90 : 110, tp1: direction === "LONG" ? 200 : 1, tp2: direction === "LONG" ? 200 : 1, timestamp: Date.now(), ...overrides });
 
 test("LONG hard stop exits immediately", () => {
   const c = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 100 + i * 0.1));
-  assert.equal(strategy.shouldHold(signal("LONG"), c, 90).reason, "stop_hit");
+  assert.equal(strategy.shouldHold(signal("LONG"), c, 90).reason, "sl_hit");
 });
 test("SHORT hard stop exits immediately", () => {
   const c = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 100 - i * 0.1));
-  assert.equal(strategy.shouldHold(signal("SHORT"), c, 110).reason, "stop_hit");
+  assert.equal(strategy.shouldHold(signal("SHORT"), c, 110).reason, "sl_hit");
 });
 test("LONG single target hit exits", () => {
   const c = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 100 + i * 0.1));
-  assert.equal(strategy.shouldHold(signal("LONG", { tp1: 105 }), c, 105).reason, "target_hit");
+  assert.equal(strategy.shouldHold(signal("LONG", { tp1: 101.5, tp2: 101.5 }), c, 101.5).reason, "tp_hit");
 });
 test("SHORT single target hit exits", () => {
   const c = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 100 - i * 0.1));
-  assert.equal(strategy.shouldHold(signal("SHORT", { tp1: 95 }), c, 95).reason, "target_hit");
+  assert.equal(strategy.shouldHold(signal("SHORT", { tp1: 98.5, tp2: 98.5 }), c, 98.5).reason, "tp_hit");
 });
 test("Chandelier trailing stop logic is absent", () => {
   const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");

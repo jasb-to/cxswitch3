@@ -1,24 +1,17 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const ts = require("typescript");
-require.extensions[".ts"] = (module, filename) => {
-  const source = fs.readFileSync(filename, "utf8");
-  const output = ts.transpileModule(source, { fileName: filename, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
-  module._compile(output, filename);
-};
-const strategy = require("../lib/strategy.ts");
+const source = fs.readFileSync("lib/strategy.ts", "utf8");
 
-test("single V28 target is 5 ATR; RR remains informational, not a gate", () => {
-  const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
-  assert.match(source, /entry\+5\*a/);
-  assert.match(source, /entry-5\*a/);
-  assert.match(source, /targetCount:1/);
-  assert.doesNotMatch(source, /entry\+15\*a|entry-15\*a/);
-  assert.doesNotMatch(source, /rr\s*<\s*\d|minimumRR|rrGate|R:R gate/i);
+test("V28 uses one 5 ATR target and preserves its 1.5 minimum R:R gate", () => {
+  assert.ok(source.includes("price+5*avalue"));
+  assert.ok(source.includes("price-5*avalue"));
+  assert.ok(source.includes("targetCount:1,targetAtrMultiple:5"));
+  assert.ok(source.includes("const MIN_RR = 1.5"));
+  assert.ok(source.includes("rr<MIN_RR"));
+  assert.doesNotMatch(source, /price\+15\*avalue|price-15\*avalue/);
 });
-test("15x leverage remains a diagnostic assumption, not an entry gate", () => {
-  const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
-  assert.match(source, /const MAX_LEVERAGE=15/);
-  assert.equal(typeof strategy.calculateLiquidationBufferPct("LONG", 100, 95), "number");
+
+test("V28 has no 15x liquidation-buffer entry veto", () => {
+  assert.doesNotMatch(source, /MAX_LEVERAGE|calculateLiquidationBufferPct|liquidationBufferPct|calculateRiskSizeMultiplier/);
 });

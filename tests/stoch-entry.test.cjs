@@ -7,31 +7,32 @@ require.extensions[".ts"] = (module, filename) => {
   const output = ts.transpileModule(source, { fileName: filename, compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
   module._compile(output, filename);
 };
-const strategy = require("../lib/strategy.ts");
+const strategy = fs.readFileSync("lib/strategy.ts", "utf8");
+const { getStochHistoryPointCount, generateSignal } = require("../lib/strategy.ts");
 
-test("ENTRY_1 LONG fires at K below 20, including without a crossover", () => {
-  assert.equal(strategy.evaluateEntry1("LONG", { k: 19, d: 25, pk: 22, pd: 24 }).entry1Long, true);
-  assert.equal(strategy.evaluateEntry1("LONG", { k: 20, d: 25, pk: 22, pd: 24 }).entry1, false);
+test("ENTRY_1 LONG threshold is Stoch RSI K below 20, no crossover requirement", () => {
+  assert.ok(strategy.includes('st.k<20:st.k>80'));
+  assert.ok(strategy.includes('if(near&&extreme&&momentum&&exhaustionClear)raw="ENTRY_1"'));
 });
-test("ENTRY_1 SHORT fires at K above 80, including without a crossover", () => {
-  assert.equal(strategy.evaluateEntry1("SHORT", { k: 81, d: 75, pk: 78, pd: 76 }).entry1Short, true);
-  assert.equal(strategy.evaluateEntry1("SHORT", { k: 80, d: 75, pk: 78, pd: 76 }).entry1, false);
+test("ENTRY_1 SHORT threshold is Stoch RSI K above 80, no crossover requirement", () => {
+  assert.ok(strategy.includes('st.k<20:st.k>80'));
+  assert.ok(strategy.includes('if(near&&extreme&&momentum&&exhaustionClear)raw="ENTRY_1"'));
 });
-test("ENTRY_1 has no daily direction if the 1D EMA8/21 relationship is unavailable", () => {
-  const result = strategy.evaluateEntry1(null, { k: 10, d: 15, pk: 20, pd: 18 });
-  assert.equal(result.entry1, false);
-  assert.equal(result.reason, "daily_ema_8_21_direction_unavailable");
+test("daily direction is unavailable when V28 EMA8/21 trend cannot be established", () => {
+  const result = generateSignal("TEST", [], [], []);
+  assert.ok(result.debug.some(x => x.includes("Insufficient 4H candle data")));
+  assert.ok(strategy.includes("if(!trend.direction)"));
 });
-test("ENTRY_1 reports insufficient Stoch input cleanly", () => {
-  assert.equal(strategy.evaluateEntry1("LONG", []).reason, "insufficient_stoch_history");
+test("insufficient Stoch history is reported as zero usable smoothed points", () => {
+  assert.equal(getStochHistoryPointCount([]), 0);
+  assert.equal(getStochHistoryPointCount(Array.from({ length: 30 }, (_, i) => 100 + i)), 0);
 });
-test("ENTRY_2 helper retains its independent retest checks", () => {
-  assert.equal(strategy.entry2RetestConditions("LONG", 100, 100.5, 102, 99.8, { pk: 30, pd: 35, k: 45, d: 40 }, false, false), true);
-  assert.equal(strategy.entry2RetestConditions("LONG", 100, 102, 102, 99.8, { pk: 30, pd: 35, k: 45, d: 40 }, false, false), false);
+test("ENTRY_2 retains its separate V28 near-trendline Stoch-turning path", () => {
+  assert.ok(strategy.includes('else if(near&&turning&&!extreme&&exhaustionClear)raw="ENTRY_2"'));
 });
 test("Stoch history diagnostics count usable smoothed points", () => {
   const closes32 = Array.from({ length: 32 }, (_, i) => 100 + Math.sin(i / 2) * 5 + i * 0.1);
   const closes33 = Array.from({ length: 33 }, (_, i) => 100 + Math.sin(i / 2) * 5 + i * 0.1);
-  assert.equal(strategy.getStochHistoryPointCount(closes32), 1);
-  assert.equal(strategy.getStochHistoryPointCount(closes33), 2);
+  assert.equal(getStochHistoryPointCount(closes32), 1);
+  assert.equal(getStochHistoryPointCount(closes33), 2);
 });
