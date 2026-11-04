@@ -1,4 +1,4 @@
-// lib/jarvis.ts — deterministic observation and review layer for the V28 dual-direction strategy
+// lib/jarvis.ts — deterministic observation and review layer for the single-direction V28 strategy
 import { Redis } from "./supabase-kv";
 
 import { evaluateGates } from "./strategy";
@@ -48,7 +48,7 @@ function directionFromDaily(value:any): "BULL" | "BEAR" | "NEUTRAL" {
 }
 
 function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
-  // 4H EMA5/13 is the mandatory shared momentum gate; daily phase direction remains phase-specific.
+  // 4H EMA5/13 is the mandatory global momentum gate for the single daily direction.
   const tacticalDirection=String(snapshot?.fourHTacticalDirection||"").toUpperCase();
   if(tacticalDirection==="BULL"||tacticalDirection==="LONG")return "BULL";
   if(tacticalDirection==="BEAR"||tacticalDirection==="SHORT")return "BEAR";
