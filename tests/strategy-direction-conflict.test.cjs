@@ -89,7 +89,7 @@ test("ENTRY_2 and ADD use MACRO daily EMA8/21 with global momentum and exhaustio
   assert.match(source, /macroActive&&beyond&&confirming&&macroFilters\.pass/);
 });
 test("FAST is evaluated before MACRO and both directions share exactly one trendline KV key", () => {
-  assert.ok(source.indexOf("fast.direction&&fastNear&&fastExtreme&&fastFilters.pass") < source.indexOf("getTrendline(pair,c,macro.direction)"));
+  assert.ok(source.indexOf("if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive))") < source.indexOf("const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null"));
   assert.doesNotMatch(source, /pair\s*\+\s*["']:\s*ENTRY_1/);
   assert.ok(source.includes("fastDailyDirection,macroDailyDirection"));
   assert.ok(source.includes("trendlineDistancePct"));
