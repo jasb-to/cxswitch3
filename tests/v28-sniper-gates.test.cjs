@@ -87,5 +87,6 @@ test("Dashboard and Jarvis expose FAST/MACRO daily bias and trendline distance",
   assert.ok(dashboard.includes("TL DISTANCE:"));
   assert.ok(jarvis.includes("FAST bias (1D EMA5/13)"));
   assert.ok(jarvis.includes("MACRO bias (1D EMA8/21)"));
+  assert.ok(jarvis.includes("fourHTacticalDirection"));
   assert.ok(jarvis.includes("Shared 4H trendline distance"));
 });
