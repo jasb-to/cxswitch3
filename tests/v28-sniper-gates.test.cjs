@@ -43,7 +43,7 @@ test("ENTRY_2 and ADD use MACRO EMA8/21 and both require the same global directi
 });
 
 test("ENTRY_1 is evaluated before MACRO and trendline state is overwritten under one pair key", () => {
-  assert.ok(strategy.indexOf("fast.direction&&fastNear&&fastExtreme&&fastFilters.pass") < strategy.indexOf("getTrendline(pair,c,macro.direction)"));
+  assert.ok(strategy.indexOf("if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive))") < strategy.indexOf("const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null"));
   assert.ok(strategy.includes("One shared KV key per pair"));
   assert.ok(strategy.includes("trendlineDistancePct"));
 });
