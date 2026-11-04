@@ -87,6 +87,24 @@ test("Telegram displays mirrored V28 targets once instead of TRAILING", () => {
   assert.ok(telegram.includes("Trade closed."));
 });
 
+test("Symbol cards permanently show strategy readiness and hide raw EMA/stoch detail noise", () => {
+  assert.ok(dashboard.includes("DAILY DIRECTION (5/13)"));
+  assert.ok(dashboard.includes("TRENDLINE DIST"));
+  assert.ok(dashboard.includes("MOMENTUM FILTER"));
+  assert.ok(dashboard.includes("MISALIGNED"));
+  assert.ok(dashboard.includes("EXHAUSTION"));
+  assert.ok(dashboard.includes("VETOED"));
+  assert.ok(dashboard.includes("STOCH RSI"));
+  assert.ok(dashboard.includes("m?.stochK4h"));
+  assert.ok(dashboard.includes("m?.stochD4h"));
+  assert.ok(dashboard.includes("strategyBlocked"));
+  assert.ok(dashboard.includes("border-red-500/35"));
+  assert.ok(dashboard.includes("border-emerald-500/35"));
+  for (const noise of ["1D CLOSE / EMA21", "1D EMA 5/13 ·", "4H EMA 5/13 ·", "4H EMA 8/21 ·", "1D STOCH RSI ·"]) {
+    assert.ok(!dashboard.includes(noise), "unexpected raw detail row: " + noise);
+  }
+});
+
 test("Dashboard and Jarvis expose one daily bias, trendline distance and global filters", () => {
   assert.ok(dashboard.includes("DAILY BIAS (5/13)"));
   assert.ok(dashboard.includes("TL DISTANCE:"));
