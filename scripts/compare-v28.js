@@ -160,7 +160,7 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
   const trades=[];
   for(const symbol of SYMBOLS) {
     const rows=market[symbol].four;
-    let open=null;
+    let open=null,entry1State,entry2AlreadyFired=false;
     for(let i=100;i<rows.length;i++) {
       const bar=rows[i];
       if(bar.timestamp>=endTs) break;
@@ -187,12 +187,21 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
         continue;
       }
       let result;
-      try { result=entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,undefined,undefined,false,[]); }
+      try { result=entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,undefined,entry1State,entry2AlreadyFired,[]); }
       catch(e) { throw new Error(label+" "+symbol+" "+new Date(bar.timestamp).toISOString()+" signal error: "+e.message); }
       const signal=result&&result.signal;
       if(!signal) continue;
       const scale=signal.scale||signal.type;
       if(scale!=="ENTRY_1"&&scale!=="ENTRY_2") continue;
+      // Persist the current engine's ENTRY_1 anchor so its stateful ENTRY_2
+      // retest can be evaluated after the first position is no longer active.
+      if(scale==="ENTRY_1"&&signal.context&&signal.context.closed4hTimestamp!==undefined) {
+        entry1State={pair,direction:signal.direction,entry:Number(signal.entry),timestamp:Number(signal.timestamp),
+          context:{closed4hTimestamp:Number(signal.context.closed4hTimestamp)}};
+        entry2AlreadyFired=false;
+      } else if(scale==="ENTRY_2") {
+        entry2AlreadyFired=true;
+      }
       const trade=makeTrade(symbol,signal,bar.timestamp,label,useV28Target);
       if(!trade) continue;
       trade._signal=signal; open=trade;
