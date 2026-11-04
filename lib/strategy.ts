@@ -89,7 +89,6 @@ export function trendAlignment(c:Candle[]):TrendAlignment{
   const dailyDirection:Direction|null=d.length<22?null:dE8>dE21?"LONG":dE8<dE21?"SHORT":null;
   return{regime:regime.state,daily:dailyDirection,fourH,aligned:dailyDirection,dailyClose:d.at(-1)??0,dailyE21:dE21,dailyE5:dE5,dailyE13:dE13,dailyE8:dE8,dailyStrength:regime.strength,dailySpreadPct:regime.spread,dailySpread3dPct:regime.spread3,dailySpreadDelta:regime.spreadDelta,dailySlope:slope,sizeMultiplier:regime.sizeMultiplier,fourHE5:hE5,fourHE13:hE13};
 }
-export interface Entry1State}
 export interface Entry1State { pair:string; direction:Direction; entry:number; timestamp:number; context?:any }
 type StochSnapshot={k:number;d:number;pk:number;pd:number};
 type Entry1Evaluation={entry1Long:boolean;entry1Short:boolean;entry1:boolean;direction:Direction|null;crossDetected:"bullish"|"bearish"|null;crossAge:"last candle"|"previous candle"|null;crossAgeInCandles:number|null;case:"fresh"|"recent"|null;sizeMultiplier:1|0.5;thresholdPassed:boolean;reason:string;crossPrice:number|null;priceMovePct:number|null;kInRange:boolean;notExtended:boolean};
@@ -101,7 +100,7 @@ export function evaluateEntry1(aligned:Direction|null,input:StochPoint[]|StochSn
   const thresholdPassed=aligned==="LONG"?last.k<20:last.k>80;
   return{entry1Long:thresholdPassed&&aligned==="LONG",entry1Short:thresholdPassed&&aligned==="SHORT",entry1:thresholdPassed,direction:thresholdPassed?aligned:null,crossDetected:null,crossAge:null,crossAgeInCandles:null,case:thresholdPassed?"fresh":null,sizeMultiplier:1,thresholdPassed,reason:thresholdPassed?"4H Stoch RSI extreme at V28 trendline":"4H Stoch RSI not at V28 extreme",crossPrice:null,priceMovePct:null,kInRange:thresholdPassed,notExtended:true};
 }
-export function entry2RetestConditionsexport function entry2RetestConditions(direction:Direction,entry:number,price:number,firstWavePrice:number,ema8:number,st:StochSnapshot,adverseCross:boolean,alreadyFired=false){
+export function entry2RetestConditions(direction:Direction,entry:number,price:number,firstWavePrice:number,ema8:number,st:StochSnapshot,adverseCross:boolean,alreadyFired=false){
   const waveMoved=direction==="LONG"?firstWavePrice>=entry*1.015:firstWavePrice<=entry*0.985;
   const pulledBack=Math.abs(price-entry)/Math.max(entry,EPS)<=0.01;
   const correctEmaSide=direction==="LONG"?price>ema8:price<ema8;
@@ -273,7 +272,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
   if(exit4h)return{shouldHold:false,reason:"4h_ema21_stoch_exit",managementState:"EXIT" as const,recommendation:"EXIT TRADE" as const};
   return{shouldHold:true,reason:"thesis_intact",managementState:"STAY" as const,recommendation:"STAY IN TRADE" as const};
 }
-export function isSignalStillValid(export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.timestamp>TTL)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE" as const};if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return{valid:false,reason:"sl_hit",exited:true,state:"INVALID" as const};const target=s.tp1??s.tp2;if((s.direction==="LONG"&&p>=target)||(s.direction==="SHORT"&&p<=target))return{valid:false,reason:"target_hit",exited:true,state:"INVALID" as const};return{valid:true,reason:"active",exited:false,state:"VALID" as const}}
+export function isSignalStillValid(s:Signal,p:number,now=Date.now()){if(now-s.timestamp>TTL)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE" as const};if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return{valid:false,reason:"sl_hit",exited:true,state:"INVALID" as const};const target=s.tp1??s.tp2;if((s.direction==="LONG"&&p>=target)||(s.direction==="SHORT"&&p<=target))return{valid:false,reason:"target_hit",exited:true,state:"INVALID" as const};return{valid:true,reason:"active",exited:false,state:"VALID" as const}}
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now=Date.now()){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason})}return{active,exited}}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if((s.direction==="LONG"&&p<=s.stop)||(s.direction==="SHORT"&&p>=s.stop))return"SL_HIT";if((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1))return"TP_HIT";return"ACTIVE"}
