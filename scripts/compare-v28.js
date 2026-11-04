@@ -303,6 +303,95 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
   }
   return trades.sort((a,b)=>a.exitTime-b.exitTime||a.entryTime-b.entryTime);
 }
+function runMatchedEntries(label,entryStrategy,exitStrategy,exitLabel,useV28Target,market,startTs,endTs) {
+  const trades=[];
+  for(const symbol of SYMBOLS) {
+    const rows=market[symbol].four;
+    let openTrades=[];
+    for(let i=100;i<rows.length;i++) {
+      const bar=rows[i];
+      if(bar.timestamp>=endTs)break;
+      replayNow=bar.timestamp;
+      const history=rows.slice(0,i+1);
+      if(bar.timestamp<startTs) {
+        try { entryStrategy.generateSignal(symbol,[],history,[],bar.close); }
+        catch(e) { throw new Error(label+" warm-up "+symbol+" "+new Date(bar.timestamp).toISOString()+": "+e.message); }
+        continue;
+      }
+      const survivors=[];
+      for(const open of openTrades) {
+        const stopHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
+        if(stopHit) {
+          closeTrade(open,open.stop,bar.timestamp,open.stopType==="initial"?"initial_stop":open.stopType+"_stop_hit");
+          trades.push(open);continue;
+        }
+        if(open.target!==null) {
+          const targetHit=open.direction==="LONG"?bar.high>=open.target:bar.low<=open.target;
+          if(targetHit){closeTrade(open,open.target,bar.timestamp,"5ATR_target");trades.push(open);continue;}
+        } else if(exitLabel==="CURRENT_V38") {
+          const tp1Hit=open.direction==="LONG"?bar.high>=open.tp1:bar.low<=open.tp1;
+          const tp2Hit=open.direction==="LONG"?bar.high>=open.tp2:bar.low<=open.tp2;
+          if(tp1Hit&&!open.tp1Done) {
+            addPartial(open,open.tp1,bar.timestamp,0.5,"tp1_scale_out");
+            open._signal.tp1HitAt=bar.timestamp;
+            open.stop=open.entry;open._signal.stop=open.entry;open.stopType="break_even";
+          }
+          if(open.tp1Done) {
+            const beHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
+            if(beHit){closeTrade(open,open.stop,bar.timestamp,"break_even_after_tp1");trades.push(open);continue;}
+          }
+          if(tp2Hit){closeTrade(open,open.tp2,bar.timestamp,"tp2_target");trades.push(open);continue;}
+        }
+        const hold=exitStrategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
+        const v28SignalExpiry=(exitLabel==="V28"||exitLabel==="V28_CHANDELIER_ONLY")&&hold&&["missed_entry","expired_ttl"].includes(hold.reason);
+        if(hold&&hold.scaleOut&&!open.tp1Done) {
+          const level=Number(hold.scaleOut.level)||open.tp1;
+          addPartial(open,level,bar.timestamp,Number(hold.scaleOut.size)||0.5,"tp1_scale_out");
+          open._signal.tp1HitAt=bar.timestamp;
+        }
+        if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) {
+          open.stop=hold.newStop;open._signal.stop=hold.newStop;
+          open.stopType=Math.abs(open.stop-open.entry)<1e-10?"break_even":"chandelier";
+        }
+        if(hold&&hold.shouldHold===false&&!v28SignalExpiry) {
+          closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit");
+          trades.push(open);continue;
+        }
+        if(exitLabel==="V28_CHANDELIER_ONLY"&&history.length>=5) {
+          const av=atr14(history),last5=history.slice(-5);
+          const trail=open.direction==="LONG"
+            ? Math.min(...last5.map(x=>x.low))-.5*av
+            : Math.max(...last5.map(x=>x.high))+.5*av;
+          const profitPct=open.direction==="LONG"?(bar.close-open.entry)/open.entry:(open.entry-bar.close)/open.entry;
+          const improves=open.direction==="LONG"?trail>open.stop:trail<open.stop;
+          if(profitPct>=.03) {
+            if((open.direction==="LONG"&&bar.close<=trail)||(open.direction==="SHORT"&&bar.close>=trail)) {
+              closeTrade(open,bar.close,bar.timestamp,"chandelier_trailing_stop");
+              trades.push(open);continue;
+            }
+            if(improves){open.stop=trail;open._signal.stop=trail;open.stopType="chandelier";}
+          }
+        }
+        survivors.push(open);
+      }
+      openTrades=survivors;
+      // Generate every V28 signal regardless of other open trades. This gives
+      // all matched exit variants the same entry timestamps and directions.
+      let result;
+      try { result=entryStrategy.generateSignal(symbol,[],history,[],bar.close); }
+      catch(e) { throw new Error(label+" "+symbol+" "+new Date(bar.timestamp).toISOString()+" signal error: "+e.message); }
+      const signal=result&&result.signal;
+      if(!signal)continue;
+      const scale=signal.scale||signal.type;
+      if(scale!=="ENTRY_1"&&scale!=="ENTRY_2")continue;
+      const trade=makeTrade(symbol,signal,bar.timestamp,label,exitLabel,useV28Target);
+      if(trade)openTrades.push(trade);
+    }
+    const last=rows.filter(x=>x.timestamp<endTs).at(-1);
+    if(last)for(const open of openTrades){closeTrade(open,last.close,last.timestamp,"end_of_test");trades.push(open);}
+  }
+  return trades.sort((a,b)=>a.exitTime-b.exitTime||a.entryTime-b.entryTime);
+}
 function stripInternal(trades) { return trades.map(({_signal,...t})=>t); }
 function writeCsv(file,trades) {
   const fields=["strategy","pair","direction","signalType","entryTime","entry","initialStop","stop","stopType","target","tp1","tp2","tp1Exit","tp1PnlUsd","exitTime","exit","exitReason","pnlPct","r","pnlUsd"];
@@ -318,7 +407,9 @@ async function main() {
   console.log("V28 source: "+V28_SHA+" | current source: "+CURRENT_SHA);
   const sources=await Promise.all([fetchSource(V28_SHA,"lib/strategy.ts"),fetchSource(CURRENT_SHA,"lib/strategy.ts"),fetchSource(CURRENT_SHA,"lib/ema-diagnostic.ts")]);
   const emaDiagnostic=compileModule(sources[2],"production-ema-diagnostic");
-  const v28Native=loadStrategy(sources[0],"June V28 native"),v28Matched=loadStrategy(sources[0],"June V28 matched entries");
+  const v28Native=loadStrategy(sources[0],"June V28 native"),v28Matched=loadStrategy(sources[0],"June V28 matched exits");
+  const v28Chandelier=loadStrategy(sources[0],"June V28 plus Chandelier matched exits");
+  const v28Production=loadStrategy(sources[0],"June V28 entries plus production exits");
   const currentDeps={"./ema-diagnostic":emaDiagnostic};
   const currentNative=loadStrategy(sources[1],"Production V38 native",currentDeps),currentMatched=loadStrategy(sources[1],"Production V38 matched exits",currentDeps);
   const versionA=v28Native.CURRENT_SIGNAL_VERSION,versionB=currentNative.CURRENT_SIGNAL_VERSION;
@@ -332,15 +423,21 @@ async function main() {
     integrity[symbol]={fourHourBars:inWindow.length,dailyBars:m.one.filter(c=>c.timestamp>=startTs&&c.timestamp<endTs).length,dailyCheck:checkDailyIntegrity(m.four,m.one)};
     console.log(symbol+": "+JSON.stringify(integrity[symbol]));
   }
-  const v28Chandelier=loadStrategy(sources[0],"June V28 plus Chandelier");
   const tradesA=runVariant("V28_NATIVE",v28Native,v28Native,"V28",true,market,startTs,endTs);
   const tradesB=runVariant("PRODUCTION_V38",currentNative,currentNative,"CURRENT_V38",false,market,startTs,endTs);
-  const tradesC=runVariant("V28_ENTRIES_V28_PLUS_CHANDELIER",v28Chandelier,v28Chandelier,"V28_CHANDELIER_ONLY",true,market,startTs,endTs);
-  const tradesD=runVariant("V28_ENTRIES_PRODUCTION_V38_EXITS",v28Matched,currentMatched,"CURRENT_V38",false,market,startTs,endTs);
-  const a=summarize(tradesA),b=summarize(tradesB),c=summarize(tradesC),d=summarize(tradesD);
+  const tradesC=runMatchedEntries("V28_ENTRIES_V28_EXITS",v28Matched,v28Matched,"V28",true,market,startTs,endTs);
+  const tradesD=runMatchedEntries("V28_ENTRIES_V28_PLUS_CHANDELIER",v28Chandelier,v28Chandelier,"V28_CHANDELIER_ONLY",true,market,startTs,endTs);
+  const tradesE=runMatchedEntries("V28_ENTRIES_PRODUCTION_V38_EXITS",v28Production,currentMatched,"CURRENT_V38",false,market,startTs,endTs);
+  const entryKey=t=>t.pair+"|"+t.entryTime+"|"+t.direction+"|"+t.signalType;
+  const baseKeys=tradesC.map(entryKey).sort();
+  for(const [name,rows] of [["V28+Chandelier",tradesD],["Production V38 exits",tradesE]]) {
+    if(JSON.stringify(rows.map(entryKey).sort())!==JSON.stringify(baseKeys))throw new Error("Matched-entry integrity failed: "+name+" did not receive the exact V28 entry set");
+  }
+  console.log("Matched-entry integrity verified: "+baseKeys.length+" identical entry events across all three exit variants.");
+  const a=summarize(tradesA),b=summarize(tradesB),c=summarize(tradesC),d=summarize(tradesD),e=summarize(tradesE);
   renderFullTable(a,b);
-  renderExitTable(a,c,d);
-  const all=[...stripInternal(tradesA),...stripInternal(tradesB),...stripInternal(tradesC),...stripInternal(tradesD)].sort((x,y)=>x.entryTime-y.entryTime||x.pair.localeCompare(y.pair)||x.strategy.localeCompare(y.strategy));
+  renderExitTable(c,d,e);
+  const all=[...stripInternal(tradesA),...stripInternal(tradesB),...stripInternal(tradesC),...stripInternal(tradesD),...stripInternal(tradesE)].sort((x,y)=>x.entryTime-y.entryTime||x.pair.localeCompare(y.pair)||x.strategy.localeCompare(y.strategy));
   writeCsv("artifacts/trades.csv",all);
   const report={window:{start:start.toISOString(),end:end.toISOString()},
     source:{v28:{commit:V28_SHA,signalVersion:versionA,configuration:"Stoch 20/80; 5 ATR target; 20-bar swing / 2 ATR stop; EMA21 + Stoch exit"},production:{commit:CURRENT_SHA,signalVersion:versionB,configuration:"Stoch 20/80; 1D EMA5/13 direction; TP1 5% / TP2 10%; structural / 1.5 ATR stop; 5-bar / 0.5 ATR Chandelier after +3%; 1D EMA5/13 and 4H EMA8/21 exits"}},
@@ -349,7 +446,7 @@ async function main() {
       drawdown:"realized closed-trade equity drawdown; no intratrade mark-to-market",
       tradeSelection:"ENTRY_1 and ENTRY_2 only; ADD signals excluded; one open position per asset",
       sizing:"fixed $100 initial risk per trade on $10,000 starting equity; no compounding"},
-    dataIntegrity:integrity,summary:{v28Native:a,productionV38Native:b,matchedV28EntriesV28PlusChandelier:c,matchedV28EntriesProductionV38Exits:d},trades:all};
+    dataIntegrity:integrity,summary:{v28Native:a,productionV38Native:b,matchedV28EntriesV28Exits:c,matchedV28EntriesV28PlusChandelier:d,matchedV28EntriesProductionV38Exits:e},trades:all};
   fs.writeFileSync("artifacts/report.json",JSON.stringify(report,null,2));
   console.log("\nTrade records: artifacts/trades.csv ("+all.length+" rows)");
   console.log("Full report: artifacts/report.json");
