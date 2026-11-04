@@ -59,7 +59,8 @@ test("BULL_LOW is reference-only and applies half size", () => {
   assert.equal(alignment.aligned, alignment.daily);
 });
 test("CHOP is reference-only and applies half size without nulling EMA8/21 direction", () => {
-  const candles = candlesFromDaily(trendTargets("chop"));
+  const chopTargets = [...Array.from({ length: 30 }, (_, i) => 100 + i), ...Array.from({ length: 10 }, (_, i) => 129 - i * 2)];
+  const candles = candlesFromDaily(chopTargets);
   const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
   assert.equal(regime.state, "CHOP");
   assert.equal(regime.sizeMultiplier, 0.5);
