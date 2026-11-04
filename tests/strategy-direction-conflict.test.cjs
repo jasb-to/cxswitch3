@@ -88,10 +88,15 @@ test("ENTRY_2 and ADD use MACRO daily EMA8/21 with global momentum and exhaustio
   assert.match(source, /entry2TriggerPass\(macro\.direction,macroNear,st\.k,st\.d,macroFilters\.pass,macroActive\)/);
   assert.match(source, /macroActive&&beyond&&confirming&&macroFilters\.pass/);
 });
-test("FAST is evaluated before MACRO and both directions share exactly one trendline KV key", () => {
-  assert.ok(source.indexOf("if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive))") < source.indexOf("const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null"));
+test("FAST is evaluated before MACRO and each direction has an independent trendline KV key", () => {
+  assert.ok(source.indexOf("if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive))") < source.indexOf('const macroTl=macro.direction?getTrendline(pair+":MACRO",c,macro.direction):null'));
+  assert.match(source, /getTrendline\(key: string, candles: Candle\[\], direction:/);
+  assert.match(source, /trendlineStore\.get\(key\)/);
+  assert.match(source, /trendlineStore\.set\(key,/);
+  assert.ok(source.includes("getTrendlineStateSnapshot"));
   assert.doesNotMatch(source, /pair\s*\+\s*["']:\s*ENTRY_1/);
   assert.ok(source.includes("fastDailyDirection,macroDailyDirection"));
+  assert.ok(source.includes("fastTrendlinePrice,fastTrendlineDistance,macroTrendlinePrice,macroTrendlineDistance"));
   assert.ok(source.includes("trendlineDistancePct"));
 });
 test("V28 stop uses the wider last-20-candle swing or 2 ATR boundary", () => {
@@ -103,4 +108,38 @@ test("V28 uses one 5 ATR target; TP2 is a compatibility mirror", () => {
   assert.ok(source.includes("price+5*avalue"));
   assert.ok(source.includes("price-5*avalue"));
   assert.ok(source.includes("targetCount:1,targetAtrMultiple:5"));
+});
+
+test("FAST and MACRO trendline states persist independently and FAST evaluation cannot overwrite MACRO", () => {
+  const candles = Array.from({ length: 96 }, (_, i) => {
+    const close = 200 + Math.sin(i * 0.55) * 12 + i * 0.05;
+    return { timestamp: Date.UTC(2026, 0, 1) + i * FOUR_HOURS, open: close, high: close + 1, low: close - 1, close, volume: 100 };
+  });
+  const fast = strategy.getTrendline("COLLISION_TEST:FAST", candles, "LONG");
+  const macro = strategy.getTrendline("COLLISION_TEST:MACRO", candles, "SHORT");
+  assert.ok(fast, "FAST trendline should be calculated");
+  assert.ok(macro, "MACRO trendline should be calculated");
+  const before = strategy.getTrendlineStateSnapshot();
+  assert.equal(before["COLLISION_TEST:FAST"].direction, "LONG");
+  assert.equal(before["COLLISION_TEST:MACRO"].direction, "SHORT");
+  const macroBefore = { ...before["COLLISION_TEST:MACRO"] };
+
+  const fastAgain = strategy.getTrendline("COLLISION_TEST:FAST", candles, "LONG");
+  assert.ok(fastAgain, "FAST trendline should reuse its own cached state");
+  const after = strategy.getTrendlineStateSnapshot();
+  assert.deepEqual(after["COLLISION_TEST:MACRO"], macroBefore, "FAST recalculation must not overwrite or delete MACRO state");
+  assert.equal(after["COLLISION_TEST:FAST"].direction, "LONG");
+  assert.equal(after["COLLISION_TEST:MACRO"].direction, "SHORT");
+});
+
+test("market snapshot returns separate FAST and MACRO trendline prices and distances", () => {
+  const candles = Array.from({ length: 240 }, (_, i) => {
+    const close = 200 + Math.sin(i * 0.55) * 12 + i * 0.05;
+    return { timestamp: Date.UTC(2026, 0, 1) + i * FOUR_HOURS, open: close, high: close + 1, low: close - 1, close, volume: 100 };
+  });
+  const snapshot = strategy.getMarketSnapshot("SNAPSHOT_TEST", [], candles, []);
+  assert.ok(Object.hasOwn(snapshot, "fastTrendlinePrice"));
+  assert.ok(Object.hasOwn(snapshot, "fastTrendlineDistance"));
+  assert.ok(Object.hasOwn(snapshot, "macroTrendlinePrice"));
+  assert.ok(Object.hasOwn(snapshot, "macroTrendlineDistance"));
 });
