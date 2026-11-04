@@ -116,6 +116,15 @@ function dailyFrom4h(candles) {
   }
   return [...groups.values()].map(b=>({timestamp:b[0].timestamp,open:b[0].open,high:Math.max(...b.map(x=>x.high)),low:Math.min(...b.map(x=>x.low)),close:b[b.length-1].close,volume:b.reduce((s,x)=>s+x.volume,0)}));
 }
+function atr14(candles) {
+  if(candles.length<2)return 0;
+  const v=[];
+  for(let i=Math.max(1,candles.length-14);i<candles.length;i++){
+    const x=candles[i],p=candles[i-1];
+    v.push(Math.max(x.high-x.low,Math.abs(x.high-p.close),Math.abs(x.low-p.close)));
+  }
+  return v.length?v.reduce((a,b)=>a+b,0)/v.length:0;
+}
 function checkDailyIntegrity(four,one) {
   const agg=dailyFrom4h(four),dailyMap=new Map(one.map(x=>[new Date(x.timestamp).toISOString().slice(0,10),x]));
   let compared=0,mismatches=0,maxDiff=0;
@@ -173,16 +182,26 @@ function summarize(trades) {
     averageR:trades.length?sumR/trades.length:0,maxDrawdownPct:maxDd,netPnlUsd:net,netReturnPct:net/START_EQUITY*100};
 }
 function fmt(n,d=2) { return Number(n).toFixed(d); }
-function renderTable(a,b,c) {
+function renderFullTable(a,b) {
+  const rows=[["Total Trades",a.totalTrades,b.totalTrades],["Win Rate",fmt(a.winRate)+"%",fmt(b.winRate)+"%"],
+    ["Average R",fmt(a.averageR,3),fmt(b.averageR,3)],["Max Drawdown",fmt(a.maxDrawdownPct)+"%",fmt(b.maxDrawdownPct)+"%"],
+    ["Net PnL","$"+fmt(a.netPnlUsd),"$"+fmt(b.netPnlUsd)],["Net Return",fmt(a.netReturnPct)+"%",fmt(b.netReturnPct)+"%"]];
+  console.log("\nFULL STRATEGY COMPARISON");
+  console.log("METRIC                 JUNE V28       PROD V38");
+  console.log("------------------------------------------------");
+  for(const row of rows) console.log(row[0].padEnd(22)+" "+String(row[1]).padStart(12)+" "+String(row[2]).padStart(15));
+}
+function renderExitTable(a,b,c) {
   const rows=[["Total Trades",a.totalTrades,b.totalTrades,c.totalTrades],
     ["Win Rate",fmt(a.winRate)+"%",fmt(b.winRate)+"%",fmt(c.winRate)+"%"],
     ["Average R",fmt(a.averageR,3),fmt(b.averageR,3),fmt(c.averageR,3)],
     ["Max Drawdown",fmt(a.maxDrawdownPct)+"%",fmt(b.maxDrawdownPct)+"%",fmt(c.maxDrawdownPct)+"%"],
     ["Net PnL","$"+fmt(a.netPnlUsd),"$"+fmt(b.netPnlUsd),"$"+fmt(c.netPnlUsd)],
     ["Net Return",fmt(a.netReturnPct)+"%",fmt(b.netReturnPct)+"%",fmt(c.netReturnPct)+"%"]];
-  console.log("\nMETRIC                 JUNE V28       PROD V38         MATCHED V28 ENTRIES");
-  console.log("--------------------------------------------------------------------------");
-  for(const row of rows) console.log(row[0].padEnd(22)+" "+String(row[1]).padStart(12)+" "+String(row[2]).padStart(15)+" "+String(row[3]).padStart(20));
+  console.log("\nMATCHED ENTRY COMPARISON — ALL USE THE SAME V28 ENTRY SIGNALS");
+  console.log("METRIC                 V28 EXITS      V28 + CHANDELIER  PROD V38 EXITS");
+  console.log("-----------------------------------------------------------------------");
+  for(const row of rows) console.log(row[0].padEnd(22)+" "+String(row[1]).padStart(12)+" "+String(row[2]).padStart(17)+" "+String(row[3]).padStart(15));
 }
 function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,market,startTs,endTs) {
   const trades=[];
@@ -202,6 +221,12 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
         continue;
       }
       if(open) {
+        // Continue observing the entry engine while a position is active so
+        // stateful V28 trendlines / production breakout records stay current.
+        try {
+          const observed=entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,lastBreakout);
+          if(entryStrategy.CURRENT_SIGNAL_VERSION===38) lastBreakout=observed?.breakoutRecord;
+        } catch(e) { throw new Error(label+" active-observation "+symbol+" "+new Date(bar.timestamp).toISOString()+": "+e.message); }
         const stopHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
         if(stopHit) {
           closeTrade(open,open.stop,bar.timestamp,open.stopType==="initial"?"initial_stop":open.stopType+"_stop_hit");
@@ -228,7 +253,7 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
           }
         }
         const hold=exitStrategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
-        if(exitLabel==="V28"&&hold&&["missed_entry","expired_ttl"].includes(hold.reason)) continue;
+        const v28SignalExpiry=(exitLabel==="V28"||exitLabel==="V28_CHANDELIER_ONLY")&&hold&&["missed_entry","expired_ttl"].includes(hold.reason);
         if(hold&&hold.scaleOut&&!open.tp1Done) {
           const level=Number(hold.scaleOut.level)||open.tp1;
           addPartial(open,level,bar.timestamp,Number(hold.scaleOut.size)||0.5,"tp1_scale_out");
@@ -238,9 +263,24 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
           open.stop=hold.newStop;open._signal.stop=hold.newStop;
           open.stopType=Math.abs(open.stop-open.entry)<1e-10?"break_even":"chandelier";
         }
-        if(hold&&hold.shouldHold===false) {
+        if(hold&&hold.shouldHold===false&&!v28SignalExpiry) {
           closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit");
           trades.push(open);open=null;continue;
+        }
+        if(exitLabel==="V28_CHANDELIER_ONLY"&&history.length>=5) {
+          const av=atr14(history),last5=history.slice(-5);
+          const trail=open.direction==="LONG"
+            ? Math.min(...last5.map(x=>x.low))-.5*av
+            : Math.max(...last5.map(x=>x.high))+.5*av;
+          const profitPct=open.direction==="LONG"?(bar.close-open.entry)/open.entry:(open.entry-bar.close)/open.entry;
+          const improves=open.direction==="LONG"?trail>open.stop:trail<open.stop;
+          if(profitPct>=.03) {
+            if((open.direction==="LONG"&&bar.close<=trail)||(open.direction==="SHORT"&&bar.close>=trail)) {
+              closeTrade(open,bar.close,bar.timestamp,"chandelier_trailing_stop");
+              trades.push(open);open=null;continue;
+            }
+            if(improves) {open.stop=trail;open._signal.stop=trail;open.stopType="chandelier";}
+          }
         }
         continue;
       }
@@ -292,18 +332,24 @@ async function main() {
     integrity[symbol]={fourHourBars:inWindow.length,dailyBars:m.one.filter(c=>c.timestamp>=startTs&&c.timestamp<endTs).length,dailyCheck:checkDailyIntegrity(m.four,m.one)};
     console.log(symbol+": "+JSON.stringify(integrity[symbol]));
   }
+  const v28Chandelier=loadStrategy(sources[0],"June V28 plus Chandelier");
   const tradesA=runVariant("V28_NATIVE",v28Native,v28Native,"V28",true,market,startTs,endTs);
   const tradesB=runVariant("PRODUCTION_V38",currentNative,currentNative,"CURRENT_V38",false,market,startTs,endTs);
-  const tradesC=runVariant("V28_ENTRIES_PRODUCTION_V38_EXITS",v28Matched,currentMatched,"CURRENT_V38",false,market,startTs,endTs);
-  const a=summarize(tradesA),b=summarize(tradesB),c=summarize(tradesC);
-  renderTable(a,b,c);
-  const all=[...stripInternal(tradesA),...stripInternal(tradesB),...stripInternal(tradesC)].sort((x,y)=>x.entryTime-y.entryTime||x.pair.localeCompare(y.pair)||x.strategy.localeCompare(y.strategy));
+  const tradesC=runVariant("V28_ENTRIES_V28_PLUS_CHANDELIER",v28Chandelier,v28Chandelier,"V28_CHANDELIER_ONLY",true,market,startTs,endTs);
+  const tradesD=runVariant("V28_ENTRIES_PRODUCTION_V38_EXITS",v28Matched,currentMatched,"CURRENT_V38",false,market,startTs,endTs);
+  const a=summarize(tradesA),b=summarize(tradesB),c=summarize(tradesC),d=summarize(tradesD);
+  renderFullTable(a,b);
+  renderExitTable(a,c,d);
+  const all=[...stripInternal(tradesA),...stripInternal(tradesB),...stripInternal(tradesC),...stripInternal(tradesD)].sort((x,y)=>x.entryTime-y.entryTime||x.pair.localeCompare(y.pair)||x.strategy.localeCompare(y.strategy));
   writeCsv("artifacts/trades.csv",all);
   const report={window:{start:start.toISOString(),end:end.toISOString()},
     source:{v28:{commit:V28_SHA,signalVersion:versionA,configuration:"Stoch 20/80; 5 ATR target; 20-bar swing / 2 ATR stop; EMA21 + Stoch exit"},production:{commit:CURRENT_SHA,signalVersion:versionB,configuration:"Stoch 20/80; 1D EMA5/13 direction; TP1 5% / TP2 10%; structural / 1.5 ATR stop; 5-bar / 0.5 ATR Chandelier after +3%; 1D EMA5/13 and 4H EMA8/21 exits"}},
     assumptions:{startingEquityUsd:START_EQUITY,fixedRiskUsdPerTrade:RISK_DOLLARS,feesAndSlippage:"excluded",
-      execution:"signal at 4H close; exits from subsequent 4H candles; stop-first if stop and target both touched; production TP1 scales out 50% and moves stop to entry"},
-    dataIntegrity:integrity,summary:{v28Native:a,productionV38Native:b,matchedV28EntriesProductionV38Exits:c},trades:all};
+      execution:"signal at 4H close; exits from subsequent 4H candles; stop-first if stop and target both touched; production TP1 scales out 50% and moves stop to entry",
+      drawdown:"realized closed-trade equity drawdown; no intratrade mark-to-market",
+      tradeSelection:"ENTRY_1 and ENTRY_2 only; ADD signals excluded; one open position per asset",
+      sizing:"fixed $100 initial risk per trade on $10,000 starting equity; no compounding"},
+    dataIntegrity:integrity,summary:{v28Native:a,productionV38Native:b,matchedV28EntriesV28PlusChandelier:c,matchedV28EntriesProductionV38Exits:d},trades:all};
   fs.writeFileSync("artifacts/report.json",JSON.stringify(report,null,2));
   console.log("\nTrade records: artifacts/trades.csv ("+all.length+" rows)");
   console.log("Full report: artifacts/report.json");
