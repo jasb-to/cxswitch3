@@ -19,7 +19,7 @@ const vm = require("node:vm");
 const { execFileSync } = require("node:child_process");
 
 const REPO = "jasb-to/cxswitch3";
-const V28_SHA = "35d717c";
+const V28_SHA = "35d717cec9c04c5fe6b0898cb238bf2ffdbb6481";
 const CURRENT_SHA = "81d64df974632d8d9f2a355e9e6a9a90c62ed6c0";
 const CURRENT_VERSION = 38;
 const SYMBOLS = ["BTCUSDT", "SOLUSDT", "DOGEUSDT", "ZECUSDT"];
