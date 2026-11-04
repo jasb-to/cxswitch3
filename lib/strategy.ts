@@ -24,10 +24,12 @@ export interface Signal {
  reason:string; timestamp:number; version:number; context?:any;
 }
 
+export interface BreakoutRecord { direction:"LONG"|"SHORT"; price:number; timestamp:number; candleIndex:number; }
 export interface SignalResult {
   signal?: Signal;
   market?: any;
   debug: string[];
+  breakoutRecord?: BreakoutRecord;
 }
 
 export const CURRENT_SIGNAL_VERSION = 28;
