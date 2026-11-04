@@ -484,7 +484,7 @@ export function evaluateGates(
   alignment:{daily:dailyTrend.direction,dailyE5:ema(dailyCandles.map(x=>x.close),5).at(-1)??0,dailyE13:ema(dailyCandles.map(x=>x.close),13).at(-1)??0,fourHE5:e5_4h,fourHE13:e13_4h,fourH:e5_4h>e13_4h?"LONG":e5_4h<e13_4h?"SHORT":null,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion},
   momentumAligned,exhaustion,filtersPass,
   trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline,stochExtreme,stochTurning,beyondTrendline,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:rawType==="ENTRY_1"?"V28 trendline proximity + Stoch extreme + global filters":missing.join("; "),entry2Reason:rawType==="ENTRY_2"?"V28 trendline proximity + Stoch turn + global filters":"not_ready"},
-  exhaustion,stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType&&filtersPass&&!!tl,dailyTransition:false,breakoutRecord:undefined
+  stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType&&filtersPass&&!!tl,dailyTransition:false,breakoutRecord:undefined
  };
 }
 
