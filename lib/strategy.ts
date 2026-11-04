@@ -295,7 +295,7 @@ function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: nu
 }
 
 // --- STATEFUL TRENDLINE ---
-export function getTrendline(key: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
+export function getTrendline(key: string, candles: Candle[], direction: Direction): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
   
