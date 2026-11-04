@@ -474,7 +474,7 @@ export function evaluateGates(
  const filters=(dir:Direction|null)=>evaluateDirectionalFilters(dir,e5,e13,rv,st.k,st.d,av);
  const fastFilters=filters(fast.direction),fastTl=fast.direction?getTrendline(pair,c,fast.direction):null;
  const fastDist=fastTl&&fastTl.price>0?Math.abs(price-fastTl.price)/fastTl.price*100:Infinity;
- const fastNear=!!fastTl&&fastDist<1.2;
+ const fastNear=!!fastTl&&fastDist<1.2,fastExtreme=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
  const fastActive=!!fast.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===fast.direction);
  const entry1=entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive);
  // ENTRY_1 gets first evaluation. If it does not fire, the single pair trendline state
