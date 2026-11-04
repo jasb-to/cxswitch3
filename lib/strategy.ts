@@ -439,6 +439,27 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
   });
 }
 
+export interface DirectionalFilterResult { momentum:boolean; exhaustion:string|null; pass:boolean; }
+export function evaluateDirectionalFilters(direction:Direction|null,e5:number,e13:number,rv:number,stochK:number,stochD:number,adxValue:number):DirectionalFilterResult {
+ if(!direction)return{momentum:false,exhaustion:"daily_direction_unavailable",pass:false};
+ const momentum=direction==="LONG"?e5>e13:e5<e13;
+ const rsiVeto=direction==="LONG"?rv>78:rv<22;
+ const stochVeto=direction==="LONG"?stochK>95:stochK<5;
+ const turningAgainst=direction==="LONG"?stochK<stochD:stochK>stochD;
+ const exhaustion=rsiVeto?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":adxValue>50&&turningAgainst?"ADX >50 with Stoch turning against":null;
+ return{momentum,exhaustion,pass:momentum&&!exhaustion};
+}
+export function entry1TriggerPass(direction:Direction|null,nearTrendline:boolean,stochK:number,filtersPass:boolean,activeMatch:boolean):boolean {
+ const extreme=direction==="LONG"?stochK<20:direction==="SHORT"?stochK>80:false;
+ return !!direction&&nearTrendline&&extreme&&filtersPass&&!activeMatch;
+}
+export function entry2TriggerPass(direction:Direction|null,nearTrendline:boolean,stochK:number,stochD:number,filtersPass:boolean,activeMatch:boolean):boolean {
+ if(!direction)return false;
+ const extreme=direction==="LONG"?stochK<20:stochK>80;
+ const turning=direction==="LONG"?stochK>stochD:stochK<stochD;
+ return nearTrendline&&turning&&!extreme&&filtersPass&&activeMatch;
+}
+
 // --- MAIN SIGNAL ---
 export function evaluateGates(
  pair:string,candles4h:Candle[],currentPrice:number,entry1State?:any,entry2AlreadyFired=false,
@@ -450,12 +471,12 @@ export function evaluateGates(
  const dailyE8=ema(dailyCloses,8).at(-1)??0,dailyE21=ema(dailyCloses,21).at(-1)??0;
  const closed=c.slice(0,-1),closes=closed.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(closed);
  const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
- const filters=(dir:Direction|null)=>{if(!dir)return{momentum:false,exhaustion:"daily_direction_unavailable",pass:false};const momentum=dir==="LONG"?e5>e13:e5<e13;const rsiVeto=dir==="LONG"?rv>78:rv<22;const stochVeto=dir==="LONG"?st.k>95:st.k<5;const against=dir==="LONG"?st.k<st.d:st.k>st.d;const exhaustion=rsiVeto?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":av>50&&against?"ADX >50 with Stoch turning against":null;return{momentum,exhaustion,pass:momentum&&!exhaustion};};
+ const filters=(dir:Direction|null)=>evaluateDirectionalFilters(dir,e5,e13,rv,st.k,st.d,av);
  const fastFilters=filters(fast.direction),fastTl=fast.direction?getTrendline(pair,c,fast.direction):null;
  const fastDist=fastTl&&fastTl.price>0?Math.abs(price-fastTl.price)/fastTl.price*100:Infinity;
  const fastNear=!!fastTl&&fastDist<1.2,fastExtreme=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
  const fastActive=!!fast.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===fast.direction);
- const entry1=!!fast.direction&&fastNear&&fastExtreme&&fastFilters.pass&&!fastActive;
+ const entry1=entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive);
  // ENTRY_1 gets first evaluation. If it does not fire, the single pair trendline state
  // is recalculated/overwritten for the MACRO direction before ENTRY_2 / ADD checks.
  let macroTl:ReturnType<typeof getTrendline>=null,macroDist=Infinity,macroNear=false,entry2=false,addReady=false;
@@ -468,7 +489,7 @@ export function evaluateGates(
    const extreme=macro.direction==="LONG"?st.k<20:st.k>80;
    turning=macro.direction==="LONG"?st.k>st.d:st.k<st.d;
    macroActive=activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
-   entry2=macroNear&&turning&&!extreme&&macroFilters.pass&&macroActive;
+   entry2=entry2TriggerPass(macro.direction,macroNear,st.k,st.d,macroFilters.pass,macroActive);
    beyond=!!macroTl&&(macro.direction==="LONG"?price>macroTl.price*1.008:price<macroTl.price*0.992);
    confirming=!!last&&!!prev&&(macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:last.close<last.open&&last.close<prev.close);
    volUp=!!last&&last.volume>avg(closed.slice(-10).map(x=>x.volume))*1.3;
@@ -507,14 +528,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  if(!fast.direction&&!macro.direction){debug.push("[WAIT] Daily direction unavailable");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const price=currentPrice??c.at(-1)!.close,closes=c.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(c);
  const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
- const filters=(dir:Direction|null)=>{if(!dir)return{momentum:false,exhaustion:"daily_direction_unavailable",pass:false};const momentum=dir==="LONG"?e5>e13:e5<e13;const rsiVeto=dir==="LONG"?rv>78:rv<22;const stochVeto=dir==="LONG"?st.k>95:st.k<5;const against=dir==="LONG"?st.k<st.d:st.k>st.d;const exhaustion=rsiVeto?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":av>50&&against?"ADX >50 with Stoch turning against":null;return{momentum,exhaustion,pass:momentum&&!exhaustion};};
+ const filters=(dir:Direction|null)=>evaluateDirectionalFilters(dir,e5,e13,rv,st.k,st.d,av);
  const fastFilters=filters(fast.direction),fastTl=fast.direction?getTrendline(pair,c,fast.direction):null;
  const fastDistance=fastTl?Math.abs(price-fastTl.price)/fastTl.price*100:Infinity,fastNear=!!fastTl&&fastDistance<1.2;
  const fastExtreme=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
  const fastActive=!!fast.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===fast.direction);
  debug.push("[ENTRY_1] FAST "+(fast.direction??"NONE")+" | TL="+(fastTl?.price.toFixed(2)??"unavailable")+" | distance="+(Number.isFinite(fastDistance)?fastDistance.toFixed(2):"n/a")+"% | near="+fastNear+" | Stoch extreme="+fastExtreme+" | momentum="+fastFilters.momentum+" | exhaustion="+(fastFilters.exhaustion??"clear"));
  let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,signalDirection:Direction|null=null,signalTl:ReturnType<typeof getTrendline>=null;
- if(fast.direction&&fastNear&&fastExtreme&&fastFilters.pass&&!fastActive){finalType="ENTRY_1";signalDirection=fast.direction;signalTl=fastTl;}
+ if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive)){finalType="ENTRY_1";signalDirection=fast.direction;signalTl=fastTl;}
  else {
    // One shared KV key per pair: macro evaluation intentionally overwrites FAST trendline state.
    const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null;
@@ -524,7 +545,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
    const last=c.at(-1)!,prev=c.at(-2)!,beyond=!!macroTl&&(macro.direction==="LONG"?price>macroTl.price*1.008:price<macroTl.price*0.992);
    const confirming=!!macro.direction&&(macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:last.close<last.open&&last.close<prev.close);
    const volUp=last.volume>avg(c.slice(-10).map(x=>x.volume))*1.3,stochMomentum=macro.direction==="LONG"?st.k>st.d:st.k<st.d;
-   const entry2=!!macro.direction&&macroNear&&turning&&!macroExtreme&&macroFilters.pass&&macroActive;
+   const entry2=entry2TriggerPass(macro.direction,macroNear,st.k,st.d,macroFilters.pass,macroActive);
    const add=!!macro.direction&&macroActive&&beyond&&confirming&&macroFilters.pass&&(volUp||stochMomentum||av>20);
    debug.push("[MACRO] "+(macro.direction??"NONE")+" | TL="+(macroTl?.price.toFixed(2)??"unavailable")+" | distance="+(Number.isFinite(macroDistance)?macroDistance.toFixed(2):"n/a")+"% | near="+macroNear+" | momentum="+macroFilters.momentum+" | exhaustion="+(macroFilters.exhaustion??"clear")+" | ENTRY_2="+entry2+" | ADD="+add);
    if(entry2){finalType="ENTRY_2";signalDirection=macro.direction;signalTl=macroTl;}
