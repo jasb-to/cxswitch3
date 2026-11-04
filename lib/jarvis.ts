@@ -254,5 +254,5 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
       :"the 4H 5/13 is aligned with the daily 5/13; a fresh early-range Stoch RSI cross triggers ENTRY_1.";
     return "[JARVIS STATE] "+pair+" — V29 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+"; "+fourHContext+" "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
   }
-  return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the 4H EMA5/13 is aligned "+(dir==="LONG"?"bullish":"bearish")+". Waiting for "+(dir==="LONG"?"a fresh bullish 4H Stoch RSI cross with K below 40":"a fresh bearish 4H Stoch RSI cross with K above 60")+" for ENTRY_1, or the stored ENTRY_1 retest conditions for ENTRY_2. "+stochSummary;
+  return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the 4H EMA5/13 is aligned "+(dir==="LONG"?"bullish":"bearish")+". Waiting for "+(dir==="LONG"?"a fresh bullish 4H Stoch RSI cross with K below 25":"a fresh bearish 4H Stoch RSI cross with K above 75")+" for ENTRY_1, or the stored ENTRY_1 retest conditions for ENTRY_2. "+stochSummary;
 }
