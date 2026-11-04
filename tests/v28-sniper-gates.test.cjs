@@ -50,7 +50,11 @@ test("ENTRY_1 is evaluated before MACRO while each trendline retains its own key
   assert.ok(strategy.includes("FAST and MACRO use independent persistent trendline state keys"));
   assert.ok(strategy.includes("trendlineDistancePct"));
   assert.ok(strategy.includes("getTrendlineStateSnapshot"));
-  assert.ok(strategy.includes("for (const [pair, data] of trendlineStore.entries())"));
+  assert.ok(strategy.includes("for (const [key, data] of trendlineStore.entries())"));
+  assert.ok(strategy.includes("state[key] = data"));
+  assert.ok(strategy.includes("await setTrendlineState(state)"));
+  assert.ok(strategy.includes("for (const [pair, data] of Object.entries(state))"));
+  assert.ok(strategy.includes("trendlineStore.set(pair, data as TrendlineState)"));
 });
 
 test("V28 stop/target arithmetic is preserved and TP2 mirrors the single TP1 target", () => {
