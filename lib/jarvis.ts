@@ -1,4 +1,4 @@
-// lib/jarvis.ts — deterministic observation and review layer; never the V29 trade engine
+// lib/jarvis.ts — deterministic observation and review layer for the V28 dual-direction strategy
 import { Redis } from "./supabase-kv";
 
 import { evaluateGates } from "./strategy";
@@ -48,7 +48,7 @@ function directionFromDaily(value:any): "BULL" | "BEAR" | "NEUTRAL" {
 }
 
 function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
-  // 4H 5/13 is Jarvis's observational/tactical context. It never overrides the 1D V29 direction.
+  // 4H EMA5/13 is the mandatory shared momentum gate; daily phase direction remains phase-specific.
   const tacticalLabel=String(snapshot?.fourH513?.label || snapshot?.fourH513?.stage || "");
   if(tacticalLabel.includes("BEARISH")) return "BEAR";
   if(tacticalLabel.includes("BULLISH")) return "BULL";
@@ -63,8 +63,11 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
   if(signal.signalClass==="REVERSAL" || signal.type==="REVERSAL_SHORT" || signal.type==="REVERSAL_LONG"){
     return { verdict:"WARN", reason:"counter-trend reversal — reduce size, tighter management" };
   }
-  const oneD = directionFromDaily(snapshot?.dailyDirection);
-  const dailyStrength = String(snapshot?.dailyStrength || "NEUTRAL");
+  const fastEntry = signal.type === "ENTRY_1";
+  const oneD = directionFromDaily(fastEntry
+    ? snapshot?.fastDailyDirection ?? snapshot?.entry1DailyDirection
+    : snapshot?.macroDailyDirection ?? snapshot?.dailyDirection);
+  const dailyStrength = fastEntry ? "NEUTRAL" : String(snapshot?.dailyStrength || "NEUTRAL");
   if(oneD === "BULL" && signal.direction === "SHORT" && dailyStrength === "HIGH") {
     return { verdict:"WARN", reason:"SHORT against HIGH-strength BULL 1D context" };
   }
