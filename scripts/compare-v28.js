@@ -529,7 +529,8 @@ async function main() {
     assumptions:{startingEquityUsd:START_EQUITY,fixedRiskUsdPerTrade:RISK_DOLLARS,feesAndSlippage:"excluded",
       execution:"signal at 4H close; exits from subsequent 4H candles; stop-first if stop and target both touched; production TP1 scales out 50% and moves stop to entry",
       drawdown:"realized closed-trade equity drawdown; no intratrade mark-to-market",
-      tradeSelection:"ENTRY_1 and ENTRY_2 only; ADD signals excluded; one open position per asset",
+      tradeSelection:"ENTRY_1 and ENTRY_2 only; ADD signals excluded; native runs use one open position per asset; matched exit runs replay the exact native V28 entry list",
+      matchedExecution:"alternative exit variants may overlap later baseline entries if they hold longer; fixed $100 risk per trade means aggregate open risk can exceed 1% while positions overlap",
       sizing:"fixed $100 initial risk per trade on $10,000 starting equity; no compounding"},
     dataIntegrity:integrity,summary:{v28Native:a,productionV38Native:b,matchedV28EntriesV28Exits:c,matchedV28EntriesV28PlusChandelier:d,matchedV28EntriesProductionV38Exits:e},trades:all};
   fs.writeFileSync("artifacts/report.json",JSON.stringify(report,null,2));
