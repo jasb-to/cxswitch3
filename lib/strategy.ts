@@ -32,6 +32,8 @@ export interface SignalResult {
 
 export const CURRENT_SIGNAL_VERSION = 28;
 const MIN_RR = 1.5;
+type Direction="LONG"|"SHORT";
+function daily(c:Candle[]):Candle[]{return aggregateTo1D(c);}
 export type RegimeStrength="HIGH"|"MED"|"LOW";
 export type RegimeState="BULL_HIGH"|"BULL_MED"|"BULL_LOW"|"CHOP"|"BEAR_LOW"|"BEAR_MED"|"BEAR_HIGH";
 export function regimeAllowsTrading(state:RegimeState):boolean{return state==="BEAR_HIGH"||state==="BEAR_MED"||state==="BULL_HIGH"||state==="BULL_MED";}
@@ -436,11 +438,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const trend=trend1D(dailyCandles),regime=computeRegime(c);
  debug.push("[REGIME] "+regime.state+" | daily="+(trend.direction??"NONE")+" | size="+Math.round(regime.sizeMultiplier*100)+"%");
  if(!trend.direction){debug.push("[WAIT] Daily trend unavailable");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- if(activeSignals.some(x=>x.pair===pair&&x.direction===trend.direction)){debug.push("[SUPPRESSED] active_position_exists");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const tl=getTrendline(pair,c,trend.direction);if(!tl){debug.push("[WAIT] No V28 trendline (need 3 pivots)");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const price=currentPrice??c.at(-1)!.close,dist=(price-tl.price)/tl.price,near=Math.abs(dist)<0.012,closes=c.map(x=>x.close);
  const st=stochRsi(closes),rv=rsi(closes),av=adx(c),e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
- const momentum=trend.direction==="LONG"?e5>e13:e5<e13,extreme=trend.direction==="LONG"?st.k<20:st.k>80,turning=trend.direction==="LONG"?st.k>st.d:st.k<st.d;
+ const momentum=trend.direction==="LONG"?e5>e13:e5<e13,e8=ema(closes,8).at(-1)??0,e21=ema(closes,21).at(-1)??0,emaAligned=trend.direction==="LONG"?price>e8&&price>e21:price<e8&&price<e21,extreme=trend.direction==="LONG"?st.k<20:st.k>80,turning=trend.direction==="LONG"?st.k>st.d:st.k<st.d;
  const against=trend.direction==="LONG"?st.k<st.d:st.k>st.d,exhaustion=trend.direction==="LONG"?rv>78:rv<22,extremeVeto=trend.direction==="LONG"?st.k>95:st.k<5,adxExhausted=av>50&&against;
  const exhaustionClear=!exhaustion&&!extremeVeto&&!adxExhausted;
  const last=c.at(-1)!,prev=c.at(-2)!,beyond=trend.direction==="LONG"?price>tl.price*1.008:price<tl.price*0.992;
@@ -453,7 +454,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let raw:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
  if(near&&extreme&&momentum&&exhaustionClear)raw="ENTRY_1";
  else if(near&&turning&&!extreme&&exhaustionClear)raw="ENTRY_2";
- else if(beyond&&confirming&&momentum&&exhaustionClear&&(volUp||stochMomentum||adxStrong))raw="ADD";
+ else if(beyond&&confirming&&emaAligned&&exhaustionClear&&(volUp||stochMomentum||adxStrong))raw="ADD";
+ if(activeSignals.some(x=>x.pair===pair&&x.direction===trend.direction)&&raw==="ENTRY_1"){debug.push("[SUPPRESSED] active_position_exists");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  debug.push("[TRIGGER] "+(raw??"none")+" | near="+near+" stochExtreme="+extreme+" EMA5/13="+momentum);
  if(!raw){debug.push("[WAIT] "+(exReason??(near&&extreme&&!momentum?"4H EMA5/13 momentum not aligned":near?"waiting for Stoch RSI trigger":"outside 1.2% V28 trendline proximity")));return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const hyst=getHysteresis(pair,now);let finalType=raw;
@@ -485,7 +487,8 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
 // --- VALIDITY ---
 export interface ValidityCheck{valid:boolean;reason:string;exited:boolean}
 export function isSignalStillValid(signal:Signal,p:number,now:number=Date.now()):ValidityCheck{
- if(now-signal.timestamp>24*60*60*1000)return{valid:false,reason:"expired_ttl",exited:true};
+ const ttl=signal.type==="ADD"?4*60*60*1000:24*60*60*1000;
+ if(now-signal.timestamp>ttl)return{valid:false,reason:"expired_ttl",exited:true};
  if((signal.direction==="LONG"&&p<=signal.stop)||(signal.direction==="SHORT"&&p>=signal.stop))return{valid:false,reason:"sl_hit",exited:true};
  const tp=signal.tp1??signal.tp2;if((signal.direction==="LONG"&&p>=tp)||(signal.direction==="SHORT"&&p<=tp))return{valid:false,reason:"tp_hit",exited:true};
  return{valid:true,reason:"active",exited:false};
