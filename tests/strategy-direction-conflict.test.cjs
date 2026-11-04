@@ -133,7 +133,7 @@ test("FAST and MACRO trendline states persist independently and FAST evaluation 
 });
 
 test("market snapshot returns separate FAST and MACRO trendline prices and distances", () => {
-  const candles = Array.from({ length: 96 }, (_, i) => {
+  const candles = Array.from({ length: 240 }, (_, i) => {
     const close = 200 + Math.sin(i * 0.55) * 12 + i * 0.05;
     return { timestamp: Date.UTC(2026, 0, 1) + i * FOUR_HOURS, open: close, high: close + 1, low: close - 1, close, volume: 100 };
   });
