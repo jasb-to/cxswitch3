@@ -20,7 +20,8 @@ const { execFileSync } = require("node:child_process");
 
 const REPO = "jasb-to/cxswitch3";
 const V28_SHA = "35d717c";
-const CURRENT_SHA = "13e648ffef18d15b6107621b0a9b787c103460f6";
+const CURRENT_SHA = "81d64df974632d8d9f2a355e9e6a9a90c62ed6c0";
+const CURRENT_VERSION = 38;
 const SYMBOLS = ["BTCUSDT", "SOLUSDT", "DOGEUSDT", "ZECUSDT"];
 const START_EQUITY = 10000;
 const RISK_DOLLARS = 100;
@@ -86,20 +87,25 @@ async function loadMarketData(tmp,simStart,simEnd) {
   }
   return all;
 }
-async function fetchStrategy(sha) {
-  const url="https://raw.githubusercontent.com/"+REPO+"/"+sha+"/lib/strategy.ts";
+async function fetchSource(sha,filePath) {
+  const url="https://raw.githubusercontent.com/"+REPO+"/"+sha+"/"+filePath;
   return (await fetchWithRetry(url)).toString("utf8");
 }
-function loadStrategy(source,label) {
+function compileModule(source,label,dependencies={}) {
   const ts=require("typescript");
   const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true},reportDiagnostics:true});
   const errors=(js.diagnostics||[]).filter(d=>d.category===ts.DiagnosticCategory.Error);
   if(errors.length) throw new Error(label+" transpile failed: "+errors.map(d=>ts.flattenDiagnosticMessageText(d.messageText,"\n")).join("; "));
   const mod={exports:{}};
-  const sandbox={module:mod,exports:mod.exports,require,process:{env:{}},Date:ReplayDate,console,Buffer,setTimeout,clearTimeout};
-  vm.runInNewContext(js.outputText,sandbox,{filename:label+"-strategy.js",timeout:10000});
-  if(typeof mod.exports.generateSignal!=="function"||typeof mod.exports.shouldHold!=="function") throw new Error(label+" source missing strategy exports");
+  const moduleRequire=(id)=>Object.prototype.hasOwnProperty.call(dependencies,id)?dependencies[id]:require(id);
+  const sandbox={module:mod,exports:mod.exports,require:moduleRequire,process:{env:{}},Date:ReplayDate,console,Buffer,setTimeout,clearTimeout};
+  vm.runInNewContext(js.outputText,sandbox,{filename:label+".js",timeout:10000});
   return mod.exports;
+}
+function loadStrategy(source,label,dependencies={}) {
+  const out=compileModule(source,label+"-strategy",dependencies);
+  if(typeof out.generateSignal!=="function"||typeof out.shouldHold!=="function") throw new Error(label+" source missing strategy exports");
+  return out;
 }
 function dailyFrom4h(candles) {
   const groups=new Map();
@@ -122,17 +128,39 @@ function checkDailyIntegrity(four,one) {
   }
   return {compared,mismatches,maxCloseDifferencePct:+maxDiff.toFixed(4)};
 }
-function makeTrade(pair,signal,time,variant,useV28Target) {
+function makeTrade(pair,signal,time,variant,exitLabel,useV28Target) {
   const entry=Number(signal.entry),stop=Number(signal.stop),risk=Math.abs(entry-stop);
   if(!(entry>0&&risk>0&&Number.isFinite(risk))) return null;
-  return {pair,direction:signal.direction,entry,initialStop:stop,stop,stopType:"initial",target:useV28Target?Number(signal.target):null,
+  const exitSignal={...signal};
+  if(exitLabel==="CURRENT_V38") {
+    if(!Number.isFinite(Number(exitSignal.tp1))) exitSignal.tp1=signal.direction==="LONG"?entry*1.05:entry*0.95;
+    if(!Number.isFinite(Number(exitSignal.tp2))) exitSignal.tp2=signal.direction==="LONG"?entry*1.10:entry*0.90;
+  }
+  return {pair,direction:signal.direction,entry,initialStop:stop,stop,stopType:"initial",
+    target:useV28Target?Number(signal.target):null,
+    tp1:exitLabel==="CURRENT_V38"?Number(exitSignal.tp1):null,
+    tp2:exitLabel==="CURRENT_V38"?Number(exitSignal.tp2):null,
     entryTime:time,exitTime:null,exit:null,exitReason:null,pnlPct:null,r:null,pnlUsd:null,
-    initialRisk:risk,signalType:signal.scale||signal.type,strategy:variant};
+    initialRisk:risk,signalType:signal.scale||signal.type,strategy:variant,
+    remainingFraction:1,realizedPnlUsd:0,realizedPct:0,tp1Done:false,tp1Exit:null,tp1PnlUsd:0,
+    _signal:exitSignal};
+}
+function addPartial(t,price,time,fraction,reason) {
+  const take=Math.min(t.remainingFraction,fraction);
+  if(take<=0)return;
+  const move=t.direction==="LONG"?(price-t.entry)/t.entry:(t.entry-price)/t.entry;
+  const tradeR=move/(t.initialRisk/t.entry),pnl=tradeR*RISK_DOLLARS*take;
+  t.realizedPnlUsd+=pnl;t.realizedPct+=move*100*take;t.remainingFraction-=take;
+  if(reason==="tp1_scale_out"){t.tp1Done=true;t.tp1Exit=price;t.tp1PnlUsd=pnl;t.tp1HitAt=time;}
 }
 function closeTrade(t,price,time,reason) {
-  t.exit=price; t.exitTime=time; t.exitReason=reason;
+  const remain=t.remainingFraction??1;
   const move=t.direction==="LONG"?(price-t.entry)/t.entry:(t.entry-price)/t.entry;
-  t.pnlPct=move*100; t.r=move/(t.initialRisk/t.entry); t.pnlUsd=t.r*RISK_DOLLARS;
+  const tradeR=move/(t.initialRisk/t.entry);
+  t.pnlUsd=(t.realizedPnlUsd??0)+tradeR*RISK_DOLLARS*remain;
+  t.r=t.pnlUsd/RISK_DOLLARS;
+  t.pnlPct=(t.realizedPct??0)+move*100*remain;
+  t.exit=price;t.exitTime=time;t.exitReason=reason;t.remainingFraction=0;
 }
 function summarize(trades) {
   let equity=START_EQUITY,peak=START_EQUITY,maxDd=0,wins=0,sumR=0,net=0;
@@ -152,7 +180,7 @@ function renderTable(a,b,c) {
     ["Max Drawdown",fmt(a.maxDrawdownPct)+"%",fmt(b.maxDrawdownPct)+"%",fmt(c.maxDrawdownPct)+"%"],
     ["Net PnL","$"+fmt(a.netPnlUsd),"$"+fmt(b.netPnlUsd),"$"+fmt(c.netPnlUsd)],
     ["Net Return",fmt(a.netReturnPct)+"%",fmt(b.netReturnPct)+"%",fmt(c.netReturnPct)+"%"]];
-  console.log("\nMETRIC                 JUNE V28       CURRENT V32     MATCHED V28 ENTRIES");
+  console.log("\nMETRIC                 JUNE V28       PROD V38         MATCHED V28 ENTRIES");
   console.log("--------------------------------------------------------------------------");
   for(const row of rows) console.log(row[0].padEnd(22)+" "+String(row[1]).padStart(12)+" "+String(row[2]).padStart(15)+" "+String(row[3]).padStart(20));
 }
@@ -160,62 +188,84 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
   const trades=[];
   for(const symbol of SYMBOLS) {
     const rows=market[symbol].four;
-    let open=null,entry1State,entry2AlreadyFired=false;
+    let open=null,lastBreakout;
     for(let i=100;i<rows.length;i++) {
       const bar=rows[i];
       if(bar.timestamp>=endTs) break;
       replayNow=bar.timestamp;
       const history=rows.slice(0,i+1);
-      // Warm the V28 stateful trendline/hysteresis stores on pre-test candles,
-      // but do not count any warm-up trades in the scored six-month window.
       if(bar.timestamp<startTs) {
-        try { entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,undefined,undefined,false,[]); }
-        catch(e) { throw new Error(label+" warm-up "+symbol+" "+new Date(bar.timestamp).toISOString()+": "+e.message); }
+        try {
+          const warm=entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,lastBreakout);
+          if(entryStrategy.CURRENT_SIGNAL_VERSION===38) lastBreakout=warm?.breakoutRecord;
+        } catch(e) { throw new Error(label+" warm-up "+symbol+" "+new Date(bar.timestamp).toISOString()+": "+e.message); }
         continue;
       }
       if(open) {
         const stopHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
-        const targetHit=open.target!==null&&(open.direction==="LONG"?bar.high>=open.target:bar.low<=open.target);
-        if(stopHit) { closeTrade(open,open.stop,bar.timestamp,open.stopType==="chandelier"?"chandelier_stop_hit":"initial_stop"); trades.push(open); open=null; continue; }
-        if(targetHit) { closeTrade(open,open.target,bar.timestamp,"5ATR_target"); trades.push(open); open=null; continue; }
+        if(stopHit) {
+          closeTrade(open,open.stop,bar.timestamp,open.stopType==="initial"?"initial_stop":open.stopType+"_stop_hit");
+          trades.push(open);open=null;continue;
+        }
+        if(open.target!==null) {
+          const targetHit=open.direction==="LONG"?bar.high>=open.target:bar.low<=open.target;
+          if(targetHit){closeTrade(open,open.target,bar.timestamp,"5ATR_target");trades.push(open);open=null;continue;}
+        } else if(exitLabel==="CURRENT_V38") {
+          const tp1Hit=open.direction==="LONG"?bar.high>=open.tp1:bar.low<=open.tp1;
+          const tp2Hit=open.direction==="LONG"?bar.high>=open.tp2:bar.low<=open.tp2;
+          if(tp1Hit&&!open.tp1Done) {
+            addPartial(open,open.tp1,bar.timestamp,0.5,"tp1_scale_out");
+            open._signal.tp1HitAt=bar.timestamp;
+            open.stop=open.entry;open._signal.stop=open.entry;open.stopType="break_even";
+          }
+          if(tp2Hit) {
+            closeTrade(open,open.tp2,bar.timestamp,"tp2_target");
+            trades.push(open);open=null;continue;
+          }
+          if(open.tp1Done) {
+            const beHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
+            if(beHit){closeTrade(open,open.stop,bar.timestamp,"break_even_after_tp1");trades.push(open);open=null;continue;}
+          }
+        }
         const hold=exitStrategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
-        // V28 missed_entry / TTL are signal validity rules, not exits after a
-        // position has been filled. Ignore them in the V28 position simulation.
-        const v28SignalExpiry=exitLabel==="V28"&&hold&&["missed_entry","expired_ttl"].includes(hold.reason);
-        if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) { open.stop=hold.newStop; open._signal.stop=hold.newStop; open.stopType="chandelier"; }
-        if(hold&&hold.shouldHold===false&&!v28SignalExpiry) { closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit"); trades.push(open); open=null; continue; }
+        if(exitLabel==="V28"&&hold&&["missed_entry","expired_ttl"].includes(hold.reason)) continue;
+        if(hold&&hold.scaleOut&&!open.tp1Done) {
+          const level=Number(hold.scaleOut.level)||open.tp1;
+          addPartial(open,level,bar.timestamp,Number(hold.scaleOut.size)||0.5,"tp1_scale_out");
+          open._signal.tp1HitAt=bar.timestamp;
+        }
+        if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) {
+          open.stop=hold.newStop;open._signal.stop=hold.newStop;
+          open.stopType=Math.abs(open.stop-open.entry)<1e-10?"break_even":"chandelier";
+        }
+        if(hold&&hold.shouldHold===false) {
+          closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit");
+          trades.push(open);open=null;continue;
+        }
         continue;
       }
       let result;
-      try { result=entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,undefined,entry1State,entry2AlreadyFired,[]); }
+      try { result=entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,lastBreakout); }
       catch(e) { throw new Error(label+" "+symbol+" "+new Date(bar.timestamp).toISOString()+" signal error: "+e.message); }
+      if(entryStrategy.CURRENT_SIGNAL_VERSION===38) lastBreakout=result?.breakoutRecord;
       const signal=result&&result.signal;
       if(!signal) continue;
       const scale=signal.scale||signal.type;
       if(scale!=="ENTRY_1"&&scale!=="ENTRY_2") continue;
-      // Persist the current engine's ENTRY_1 anchor so its stateful ENTRY_2
-      // retest can be evaluated after the first position is no longer active.
-      if(scale==="ENTRY_1"&&signal.context&&signal.context.closed4hTimestamp!==undefined) {
-        entry1State={pair:symbol,direction:signal.direction,entry:Number(signal.entry),timestamp:Number(signal.timestamp),
-          context:{closed4hTimestamp:Number(signal.context.closed4hTimestamp)}};
-        entry2AlreadyFired=false;
-      } else if(scale==="ENTRY_2") {
-        entry2AlreadyFired=true;
-      }
-      const trade=makeTrade(symbol,signal,bar.timestamp,label,useV28Target);
+      const trade=makeTrade(symbol,signal,bar.timestamp,label,exitLabel,useV28Target);
       if(!trade) continue;
-      trade._signal=signal; open=trade;
+      open=trade;
     }
     if(open) {
       const last=rows.filter(x=>x.timestamp<endTs).at(-1);
-      if(last) { closeTrade(open,last.close,last.timestamp,"end_of_test"); trades.push(open); }
+      if(last){closeTrade(open,last.close,last.timestamp,"end_of_test");trades.push(open);}
     }
   }
   return trades.sort((a,b)=>a.exitTime-b.exitTime||a.entryTime-b.entryTime);
 }
 function stripInternal(trades) { return trades.map(({_signal,...t})=>t); }
 function writeCsv(file,trades) {
-  const fields=["strategy","pair","direction","signalType","entryTime","entry","initialStop","stop","stopType","target","exitTime","exit","exitReason","pnlPct","r","pnlUsd"];
+  const fields=["strategy","pair","direction","signalType","entryTime","entry","initialStop","stop","stopType","target","tp1","tp2","tp1Exit","tp1PnlUsd","exitTime","exit","exitReason","pnlPct","r","pnlUsd"];
   const q=v=>'"'+String(v??"").replace(/"/g,'""')+'"';
   fs.writeFileSync(file,[fields.join(","),...trades.map(t=>fields.map(k=>q(t[k])).join(","))].join("\n"));
 }
@@ -226,13 +276,15 @@ async function main() {
   console.log("Scored window: "+start.toISOString().slice(0,10)+" through "+new Date(endTs-1).toISOString().slice(0,10));
   console.log("Warm-up starts: "+addMonths(start,-1).toISOString().slice(0,10));
   console.log("V28 source: "+V28_SHA+" | current source: "+CURRENT_SHA);
-  const sources=await Promise.all([fetchStrategy(V28_SHA),fetchStrategy(CURRENT_SHA)]);
+  const sources=await Promise.all([fetchSource(V28_SHA,"lib/strategy.ts"),fetchSource(CURRENT_SHA,"lib/strategy.ts"),fetchSource(CURRENT_SHA,"lib/ema-diagnostic.ts")]);
+  const emaDiagnostic=compileModule(sources[2],"production-ema-diagnostic");
   const v28Native=loadStrategy(sources[0],"June V28 native"),v28Matched=loadStrategy(sources[0],"June V28 matched entries");
-  const currentNative=loadStrategy(sources[1],"Current main native"),currentMatched=loadStrategy(sources[1],"Current main matched exits");
+  const currentDeps={"./ema-diagnostic":emaDiagnostic};
+  const currentNative=loadStrategy(sources[1],"Production V38 native",currentDeps),currentMatched=loadStrategy(sources[1],"Production V38 matched exits",currentDeps);
   const versionA=v28Native.CURRENT_SIGNAL_VERSION,versionB=currentNative.CURRENT_SIGNAL_VERSION;
-  console.log("Loaded source versions: V28="+versionA+", current="+versionB);
+  console.log("Loaded source versions: V28="+versionA+", production="+versionB);
   if(versionA!==28) throw new Error("Expected V28 version 28, got "+versionA);
-  if(versionB!==32) throw new Error("Pinned current source is not version 32, got "+versionB);
+  if(versionB!==CURRENT_VERSION) throw new Error("Expected production version "+CURRENT_VERSION+", got "+versionB);
   const market=await loadMarketData(tmp,startTs,endTs),integrity={};
   for(const symbol of SYMBOLS) {
     const m=market[symbol],inWindow=m.four.filter(c=>c.timestamp>=startTs&&c.timestamp<endTs);
@@ -241,17 +293,17 @@ async function main() {
     console.log(symbol+": "+JSON.stringify(integrity[symbol]));
   }
   const tradesA=runVariant("V28_NATIVE",v28Native,v28Native,"V28",true,market,startTs,endTs);
-  const tradesB=runVariant("CURRENT_V32",currentNative,currentNative,"CURRENT",false,market,startTs,endTs);
-  const tradesC=runVariant("V28_ENTRIES_CURRENT_EXITS",v28Matched,currentMatched,"CURRENT",true,market,startTs,endTs);
+  const tradesB=runVariant("PRODUCTION_V38",currentNative,currentNative,"CURRENT_V38",false,market,startTs,endTs);
+  const tradesC=runVariant("V28_ENTRIES_PRODUCTION_V38_EXITS",v28Matched,currentMatched,"CURRENT_V38",false,market,startTs,endTs);
   const a=summarize(tradesA),b=summarize(tradesB),c=summarize(tradesC);
   renderTable(a,b,c);
   const all=[...stripInternal(tradesA),...stripInternal(tradesB),...stripInternal(tradesC)].sort((x,y)=>x.entryTime-y.entryTime||x.pair.localeCompare(y.pair)||x.strategy.localeCompare(y.strategy));
   writeCsv("artifacts/trades.csv",all);
   const report={window:{start:start.toISOString(),end:end.toISOString()},
-    source:{v28:{commit:V28_SHA,signalVersion:versionA},current:{commit:CURRENT_SHA,signalVersion:versionB}},
+    source:{v28:{commit:V28_SHA,signalVersion:versionA,configuration:"Stoch 20/80; 5 ATR target; 20-bar swing / 2 ATR stop; EMA21 + Stoch exit"},production:{commit:CURRENT_SHA,signalVersion:versionB,configuration:"Stoch 20/80; 1D EMA5/13 direction; TP1 5% / TP2 10%; structural / 1.5 ATR stop; 5-bar / 0.5 ATR Chandelier after +3%; 1D EMA5/13 and 4H EMA8/21 exits"}},
     assumptions:{startingEquityUsd:START_EQUITY,fixedRiskUsdPerTrade:RISK_DOLLARS,feesAndSlippage:"excluded",
-      execution:"signal at 4H close; exits from subsequent 4H candles; stop-first if stop and target both touched"},
-    dataIntegrity:integrity,summary:{v28Native:a,currentV32Native:b,matchedV28EntriesCurrentExits:c},trades:all};
+      execution:"signal at 4H close; exits from subsequent 4H candles; stop-first if stop and target both touched; production TP1 scales out 50% and moves stop to entry"},
+    dataIntegrity:integrity,summary:{v28Native:a,productionV38Native:b,matchedV28EntriesProductionV38Exits:c},trades:all};
   fs.writeFileSync("artifacts/report.json",JSON.stringify(report,null,2));
   console.log("\nTrade records: artifacts/trades.csv ("+all.length+" rows)");
   console.log("Full report: artifacts/report.json");
