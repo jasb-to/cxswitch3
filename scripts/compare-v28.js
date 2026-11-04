@@ -196,7 +196,7 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
       // Persist the current engine's ENTRY_1 anchor so its stateful ENTRY_2
       // retest can be evaluated after the first position is no longer active.
       if(scale==="ENTRY_1"&&signal.context&&signal.context.closed4hTimestamp!==undefined) {
-        entry1State={pair,direction:signal.direction,entry:Number(signal.entry),timestamp:Number(signal.timestamp),
+        entry1State={pair:symbol,direction:signal.direction,entry:Number(signal.entry),timestamp:Number(signal.timestamp),
           context:{closed4hTimestamp:Number(signal.context.closed4hTimestamp)}};
         entry2AlreadyFired=false;
       } else if(scale==="ENTRY_2") {
