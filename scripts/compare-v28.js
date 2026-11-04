@@ -243,13 +243,13 @@ function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,mark
             open._signal.tp1HitAt=bar.timestamp;
             open.stop=open.entry;open._signal.stop=open.entry;open.stopType="break_even";
           }
-          if(tp2Hit) {
-            closeTrade(open,open.tp2,bar.timestamp,"tp2_target");
-            trades.push(open);open=null;continue;
-          }
           if(open.tp1Done) {
             const beHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
             if(beHit){closeTrade(open,open.stop,bar.timestamp,"break_even_after_tp1");trades.push(open);open=null;continue;}
+          }
+          if(tp2Hit) {
+            closeTrade(open,open.tp2,bar.timestamp,"tp2_target");
+            trades.push(open);open=null;continue;
           }
         }
         const hold=exitStrategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
