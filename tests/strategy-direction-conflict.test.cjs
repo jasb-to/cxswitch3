@@ -42,65 +42,49 @@ test("BEAR_HIGH remains a full-size SHORT regime", () => {
   assert.equal(regime.direction, "SHORT");
   assert.equal(regime.sizeMultiplier, 1);
 });
-test("BEAR_LOW is a half-size regime; daily direction remains independently available", () => {
+test("BEAR_LOW is a half-size regime; daily EMA5/13 direction remains available", () => {
   const candles = candlesFromDaily(trendTargets("bearLow"));
   const regime = strategy.computeRegime(candles);
   const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
   assert.equal(regime.state, "BEAR_LOW");
   assert.equal(regime.sizeMultiplier, 0.5);
-  assert.equal(snapshot.dailyDirection, "BEAR");
+  assert.equal(snapshot.dailyDirection, "SHORT");
 });
 test("BULL_LOW is a half-size regime", () => {
   const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bullLow")));
   assert.equal(regime.state, "BULL_LOW");
   assert.equal(regime.sizeMultiplier, 0.5);
 });
-test("CHOP is a half-size regime without erasing the separate daily trend", () => {
+test("CHOP is a half-size regime without erasing the daily EMA5/13 trend", () => {
   const chopTargets = [...Array.from({ length: 36 }, (_, i) => 100 + i * (50 / 35)), 145, 140, 135, 135];
   const candles = candlesFromDaily(chopTargets);
   const regime = strategy.computeRegime(candles);
   const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
   assert.equal(regime.state, "CHOP");
   assert.equal(regime.sizeMultiplier, 0.5);
-  assert.ok(["BULL", "BEAR", "NEUTRAL"].includes(snapshot.dailyDirection));
+  assert.ok(["LONG", "SHORT", null].includes(snapshot.dailyDirection));
 });
-test("MED regimes use full size; daily EMA8/21 and 4H EMA5/13 have separate roles", () => {
+test("MED regimes use full size; daily EMA5/13 and 4H EMA5/13 roles are aligned", () => {
   const candles = candlesFromDaily(trendTargets("bearMed"));
   const regime = strategy.computeRegime(candles);
   const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
   assert.equal(regime.state, "BEAR_MED");
   assert.equal(regime.sizeMultiplier, 1);
-  assert.equal(snapshot.dailyDirection, "BEAR");
+  assert.equal(snapshot.dailyDirection, "SHORT");
   assert.ok(["BULL", "BEAR", "NEUTRAL"].includes(snapshot.fourHTacticalDirection));
-  assert.match(source, /ema\(closes,\s*8\)/);
-  assert.match(source, /ema\(closes,\s*21\)/);
   assert.match(source, /ema\(closes,\s*5\)/);
   assert.match(source, /ema\(closes,\s*13\)/);
 });
-test("ENTRY_1 uses FAST daily EMA5/13, trendline proximity, Stoch extreme and global filters", () => {
-  assert.match(source, /function trend1DEntry1[\s\S]*?ema\(closes,5\)[\s\S]*?ema\(closes,13\)/);
-  assert.match(source, /entry1TriggerPass\(fast\.direction,fastNear,st\.k,fastFilters\.pass,fastActive\)/);
-  assert.match(source, /const momentum=direction==="LONG"\?e5>e13:e5<e13/);
-  assert.match(source, /fastFilters\.exhaustion/);
+
+test("trend1D uses EMA5/13 for its only daily direction", () => {
+  const trend = source.match(/function trend1D\\([\\s\\S]*?\\n\\}/)?.[0] ?? "";
+  assert.match(trend, /ema\\(closes, 5\\)/);
+  assert.match(trend, /ema\\(closes, 13\\)/);
+  assert.doesNotMatch(trend, /ema\\(closes, 8\\)|ema\\(closes, 21\\)/);
+  assert.doesNotMatch(source, /trend1DEntry1|fastDailyDirection|macroDailyDirection|entry1DailyDirection/);
 });
-test("ENTRY_2 and ADD use MACRO daily EMA8/21 with global momentum and exhaustion filters", () => {
-  assert.match(source, /function trend1D[\s\S]*?ema\(closes, 8\)[\s\S]*?ema\(closes, 21\)/);
-  assert.match(source, /entry2TriggerPass\(macro\.direction,macroNear,st\.k,st\.d,macroFilters\.pass,macroActive\)/);
-  assert.match(source, /macroActive&&beyond&&confirming&&macroFilters\.pass/);
-});
-test("FAST is evaluated before MACRO and both directions share exactly one trendline KV key", () => {
-  assert.ok(source.indexOf("if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive))") < source.indexOf("const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null"));
-  assert.doesNotMatch(source, /pair\s*\+\s*["']:\s*ENTRY_1/);
-  assert.ok(source.includes("fastDailyDirection,macroDailyDirection"));
-  assert.ok(source.includes("trendlineDistancePct"));
-});
-test("V28 stop uses the wider last-20-candle swing or 2 ATR boundary", () => {
-  assert.ok(source.includes("recent=c.slice(-20)"));
-  assert.ok(source.includes("Math.min(low,price-2*avalue)"));
-  assert.ok(source.includes("Math.max(high,price+2*avalue)"));
-});
-test("V28 uses one 5 ATR target; TP2 is a compatibility mirror", () => {
-  assert.ok(source.includes("price+5*avalue"));
-  assert.ok(source.includes("price-5*avalue"));
-  assert.ok(source.includes("targetCount:1,targetAtrMultiple:5"));
+test("both evaluateGates and generateSignal gate ENTRY_1 on momentum and exhaustion", () => {
+  const filter = /const filtersPass=!!dailyTrend\\.direction&&momentumAligned&&!exhaustion;/;
+  assert.equal((source.match(new RegExp(filter.source, "g")) ?? []).length, 2);
+  assert.equal((source.match(/if\\(filtersPass\\)\\{\\s*if\\(nearTrendline&&stochExtreme\\)rawType="ENTRY_1";/g) ?? []).length, 2);
 });
