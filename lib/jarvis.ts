@@ -215,44 +215,32 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   if(!c.length)return "[JARVIS STATE] "+pair+" — Status unavailable.";
   const p=Number(market?.currentPrice??market?.price??c.at(-1)?.close??0);
   const evaluation=evaluateGates(pair,c,p);
-  const dailyDir=directionFromDaily(market?.dailyDirection ?? market?.trend);
+  const fastDaily=String(market?.fastDailyDirection??market?.entry1DailyDirection??"NEUTRAL").toUpperCase();
+  const macroDaily=String(market?.macroDailyDirection??market?.dailyDirection??"NEUTRAL").toUpperCase();
   const fourH=directionFrom4H(market);
-  const dailyText=dailyDir==="BULL"?"bullish":dailyDir==="BEAR"?"bearish":"neutral";
+  const fastText=fastDaily==="LONG"||fastDaily==="BULL"?"LONG":fastDaily==="SHORT"||fastDaily==="BEAR"?"SHORT":"NEUTRAL";
+  const macroText=macroDaily==="LONG"||macroDaily==="BULL"?"LONG":macroDaily==="SHORT"||macroDaily==="BEAR"?"SHORT":"NEUTRAL";
+  const tlDistance=Number(market?.trendlineDistancePct??market?.distToTrendline);
+  const tlText=Number.isFinite(tlDistance)?" Shared 4H trendline distance "+tlDistance.toFixed(2)+"%.":" Trendline distance unavailable.";
   const fourHText=fourH==="BULL"?"bullish":fourH==="BEAR"?"bearish":"neutral";
-
-  // One human-readable situation summary. The dashboard already shows the raw indicators.
-  // Jarvis explains the relationship between timeframes rather than repeating indicator labels.
+  const globalFilters="Both entry phases require 4H EMA5/13 momentum alignment and the RSI/Stoch/ADX exhaustion veto.";
   if(!evaluation.direction){
-    const dailyCloses=dailyState(c).map(x=>x.close);
-    const e5d=Number(market?.ema5_1d??emaState(dailyCloses,5).at(-1)??0);
-    const e13d=Number(market?.ema13_1d??emaState(dailyCloses,13).at(-1)??0);
-    const tacticalSide=String(market?.fourHTacticalDirection??"NEUTRAL").toUpperCase();
-    const expectedSide=dailyDir==="BULL"?"BULL":dailyDir==="BEAR"?"BEAR":"NEUTRAL";
-    if(dailyDir&&tacticalSide!=="NEUTRAL"&&tacticalSide!==expectedSide){
-      return "[JARVIS STATE] "+pair+" — 1D is "+dailyText+"; 4H EMA 5/13 is "+(tacticalSide==="BULL"?"bullish":"bearish")+" against the daily direction. Waiting for the 4H EMA 5/13 to turn toward the daily bias and a fresh directional StochRSI cross.";
-    }
-    return "[JARVIS STATE] "+pair+" — No valid entry direction yet. 1D EMA5 "+Math.round(e5d).toLocaleString("en-US")+" / EMA13 "+Math.round(e13d).toLocaleString("en-US")+". The 4H is "+fourHText+" context; V29 is waiting for closed-candle 1D/4H EMA5/13 alignment and the specified Stoch RSI trigger.";
+    return "[JARVIS STATE] "+pair+" — FAST bias (1D EMA5/13): "+fastText+"; MACRO bias (1D EMA8/21): "+macroText+". ENTRY_1 is evaluated first using FAST bias, trendline proximity and Stoch extreme. If it does not trigger, ENTRY_2/ADD use MACRO bias and the same per-pair trendline state. "+fourHText+" 4H context."+tlText+" "+globalFilters+" Waiting for a valid phase-specific trigger.";
   }
-
   const dir=evaluation.direction;
   const st=evaluation.trigger;
   const q=c.map(x=>x.close);
   const rawStoch=stochState(q);
-  const kNow=rawStoch.k;
-  const dNow=rawStoch.d;
+  const kNow=rawStoch.k,dNow=rawStoch.d;
   let stochSummary="Stoch is waiting for confirmation.";
-  if(st.entry1) stochSummary="Stoch timing is ready for ENTRY_1.";
-  else if(st.entry2) stochSummary="Stoch timing is supporting ENTRY_2.";
-  else if(dir==="LONG" && kNow>dNow) stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
-  else if(dir==="SHORT" && kNow<dNow) stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
-
+  if(st.entry1) stochSummary="Stoch is at the FAST-direction extreme for ENTRY_1.";
+  else if(st.entry2) stochSummary="Stoch is turning in the MACRO direction for ENTRY_2.";
+  else if(dir==="LONG"&&kNow>dNow)stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
+  else if(dir==="SHORT"&&kNow<dNow)stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
   if(signal){
-    const stopCtx=signal.context?.stopCalc;
-    const riskText=stopCtx?" Stop "+signal.stop.toFixed(2)+" ("+stopCtx.riskPct.toFixed(1)+"% risk).":"";
-    const fourHContext=signal.type==="ENTRY_2"
-      ?"the 4H is "+fourHText+"; ENTRY_2 also requires price on the correct side of EMA8 and no adverse EMA8/21 cross since ENTRY_1."
-      :"the 4H 5/13 is aligned with the daily 5/13; a fresh early-range Stoch RSI cross triggers ENTRY_1.";
-    return "[JARVIS STATE] "+pair+" — V29 has fired "+signal.type+" "+(dir==="LONG"?"LONG":"SHORT")+" at market. The 1D is "+dailyText+"; "+fourHContext+" "+stochSummary+" TP1 "+signal.tp1.toFixed(2)+", TP2 "+signal.tp2.toFixed(2)+"."+riskText;
+    const phase=signal.type==="ENTRY_1"?"FAST daily EMA5/13":"MACRO daily EMA8/21";
+    return "[JARVIS STATE] "+pair+" — "+signal.type+" "+dir+" fired using "+phase+". "+globalFilters+tlText+" "+stochSummary+" TP "+signal.tp1.toFixed(2)+".";
   }
-  return "[JARVIS STATE] "+pair+" — The 1D is "+dailyText+" and the 4H EMA5/13 is aligned "+(dir==="LONG"?"bullish":"bearish")+". Waiting for "+(dir==="LONG"?"a fresh bullish 4H Stoch RSI cross with K below 40":"a fresh bearish 4H Stoch RSI cross with K above 60")+" for ENTRY_1, or the stored ENTRY_1 retest conditions for ENTRY_2. "+stochSummary;
+  return "[JARVIS STATE] "+pair+" — FAST bias "+fastText+"; MACRO bias "+macroText+". "+globalFilters+tlText+" Waiting for "+(dir==="LONG"?"a FAST Stoch extreme near the trendline, or a MACRO Stoch turn/breakout":"a FAST Stoch extreme near the trendline, or a MACRO Stoch turn/breakout")+".";
+
 }
