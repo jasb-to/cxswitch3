@@ -12,16 +12,16 @@ const { getStochHistoryPointCount, generateSignal } = require("../lib/strategy.t
 
 test("ENTRY_1 LONG threshold is Stoch RSI K below 20, no crossover requirement", () => {
   assert.ok(strategy.includes('st.k<20:st.k>80'));
-  assert.ok(strategy.includes('if(near&&extreme&&momentum&&exhaustionClear)raw="ENTRY_1"'));
+  assert.ok(strategy.includes('if(entry1Near&&entry1Extreme&&entry1Trend.direction)raw="ENTRY_1"'));
 });
 test("ENTRY_1 SHORT threshold is Stoch RSI K above 80, no crossover requirement", () => {
   assert.ok(strategy.includes('st.k<20:st.k>80'));
-  assert.ok(strategy.includes('if(near&&extreme&&momentum&&exhaustionClear)raw="ENTRY_1"'));
+  assert.ok(strategy.includes('if(entry1Near&&entry1Extreme&&entry1Trend.direction)raw="ENTRY_1"'));
 });
-test("daily direction is unavailable when V28 EMA8/21 trend cannot be established", () => {
+test("daily direction is unavailable when neither 5/13 ENTRY_1 nor 8/21 primary trend can be established", () => {
   const result = generateSignal("TEST", [], [], []);
   assert.ok(result.debug.some(x => x.includes("Insufficient 4H candle data")));
-  assert.ok(strategy.includes("if(!trend.direction)"));
+  assert.ok(strategy.includes("if(!trend.direction&&!entry1Trend.direction)"));
 });
 test("insufficient Stoch history is reported as zero usable smoothed points", () => {
   assert.equal(getStochHistoryPointCount([]), 0);
