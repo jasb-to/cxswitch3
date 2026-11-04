@@ -78,7 +78,7 @@ test("MED regimes use full size; daily EMA5/13 and 4H EMA5/13 roles are aligned"
 
 test("trend1D uses EMA5/13 for its only daily direction", () => {
   const trendStart = source.indexOf("function trend1D(");
-  const trendEnd = source.indexOf("\\n}", trendStart);
+  const trendEnd = source.indexOf(String.fromCharCode(10) + "}", trendStart);
   const trend = source.slice(trendStart, trendEnd);
   assert.ok(trend.includes("ema(closes, 5)"));
   assert.ok(trend.includes("ema(closes, 13)"));
@@ -91,7 +91,7 @@ test("trend1D uses EMA5/13 for its only daily direction", () => {
 });
 test("both evaluateGates and generateSignal gate ENTRY_1 on momentum and exhaustion", () => {
   const filter = "const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;";
-  const entryGate = 'if(filtersPass){\\n  if(nearTrendline&&stochExtreme)rawType="ENTRY_1";';
   assert.equal(source.split(filter).length - 1, 2);
-  assert.equal(source.split(entryGate).length - 1, 2);
+  assert.equal(source.split('if(filtersPass){').length - 1, 2);
+  assert.equal(source.split('if(nearTrendline&&stochExtreme)rawType="ENTRY_1";').length - 1, 2);
 });
