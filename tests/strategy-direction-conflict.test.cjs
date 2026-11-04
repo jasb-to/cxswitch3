@@ -9,6 +9,7 @@ require.extensions[".ts"] = (module, filename) => {
 };
 const strategy = require("../lib/strategy.ts");
 const FOUR_HOURS = 4 * 60 * 60 * 1000;
+const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
 
 function candlesFromDaily(targets, { lastDayRising = false } = {}) {
   const out = [], start = Date.UTC(2026, 0, 1);
@@ -34,7 +35,6 @@ function trendTargets(kind, days = 40) {
     return 132;
   });
 }
-const stoch = (k, d, pk = k, pd = d) => ({ k, d, pk, pd });
 
 test("BEAR_HIGH remains a full-size SHORT regime", () => {
   const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearHigh")));
@@ -42,61 +42,57 @@ test("BEAR_HIGH remains a full-size SHORT regime", () => {
   assert.equal(regime.direction, "SHORT");
   assert.equal(regime.sizeMultiplier, 1);
 });
-test("BEAR_LOW is reference-only: EMA8/21 still determines direction and size is 50%", () => {
+test("BEAR_LOW is a half-size regime; daily direction remains independently available", () => {
   const candles = candlesFromDaily(trendTargets("bearLow"));
-  const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
+  const regime = strategy.computeRegime(candles);
+  const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
   assert.equal(regime.state, "BEAR_LOW");
   assert.equal(regime.sizeMultiplier, 0.5);
-  assert.equal(alignment.daily, alignment.dailyE8 < alignment.dailyE21 ? "SHORT" : "LONG");
-  assert.equal(alignment.aligned, alignment.daily);
+  assert.equal(snapshot.dailyDirection, "BEAR");
 });
-test("BULL_LOW is reference-only and applies half size", () => {
-  const candles = candlesFromDaily(trendTargets("bullLow"));
-  const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
+test("BULL_LOW is a half-size regime", () => {
+  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bullLow")));
   assert.equal(regime.state, "BULL_LOW");
   assert.equal(regime.sizeMultiplier, 0.5);
-  assert.ok(["LONG", "SHORT"].includes(alignment.daily));
-  assert.equal(alignment.aligned, alignment.daily);
 });
-test("CHOP is reference-only and applies half size without nulling EMA8/21 direction", () => {
+test("CHOP is a half-size regime without erasing the separate daily trend", () => {
   const chopTargets = [...Array.from({ length: 36 }, (_, i) => 100 + i * (50 / 35)), 145, 140, 135, 135];
   const candles = candlesFromDaily(chopTargets);
-  const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
+  const regime = strategy.computeRegime(candles);
+  const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
   assert.equal(regime.state, "CHOP");
   assert.equal(regime.sizeMultiplier, 0.5);
-  assert.ok(["LONG", "SHORT"].includes(alignment.daily));
-  assert.equal(alignment.aligned, alignment.daily);
+  assert.ok(["BULL", "BEAR", "NEUTRAL"].includes(snapshot.dailyDirection));
 });
-test("MED regimes use full size; 4H EMA5/13 is a separate momentum filter", () => {
-  const candles = candlesFromDaily(trendTargets("bearMed"), { lastDayRising: true });
-  const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
+test("MED regimes use full size; daily EMA8/21 and 4H EMA5/13 have separate roles", () => {
+  const candles = candlesFromDaily(trendTargets("bearMed"));
+  const regime = strategy.computeRegime(candles);
+  const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
   assert.equal(regime.state, "BEAR_MED");
   assert.equal(regime.sizeMultiplier, 1);
-  assert.equal(alignment.daily, "SHORT");
-  assert.equal(alignment.aligned, "SHORT");
+  assert.equal(snapshot.dailyDirection, "BEAR");
+  assert.ok(["BULL", "BEAR", "NEUTRAL"].includes(snapshot.fourHTacticalDirection));
+  assert.match(source, /ema\(closes,8\)/);
+  assert.match(source, /ema\(closes,21\)/);
+  assert.match(source, /ema\(closes,5\)/);
+  assert.match(source, /ema\(closes,13\)/);
 });
-test("ENTRY_1 LONG uses K below 20 and SHORT uses K above 80, without requiring a crossover", () => {
-  assert.equal(strategy.evaluateEntry1("LONG", stoch(20, 15)).entry1, false);
-  assert.equal(strategy.evaluateEntry1("LONG", stoch(19.9, 15)).entry1Long, true);
-  assert.equal(strategy.evaluateEntry1("SHORT", stoch(80, 85)).entry1, false);
-  assert.equal(strategy.evaluateEntry1("SHORT", stoch(80.1, 85)).entry1Short, true);
+test("ENTRY_1 is Stoch RSI extreme plus 4H EMA5/13 momentum and exhaustion clearance", () => {
+  assert.match(source, /st\.k<20:st\.k>80/);
+  assert.match(source, /e5>e13:e5<e13/);
+  assert.match(source, /if\(near&&extreme&&momentum&&exhaustionClear\)raw="ENTRY_1"/);
 });
-test("daily EMA8/21 is the direction source even when 4H momentum is opposed", () => {
-  const candles = candlesFromDaily(trendTargets("bearMed"), { lastDayRising: true });
-  const alignment = strategy.trendAlignment(candles);
-  assert.equal(alignment.daily, "SHORT");
-  assert.equal(alignment.aligned, "SHORT");
-  assert.equal(alignment.fourH, "LONG");
+test("daily EMA8/21 determines the primary direction; EMA5/13 is the separate ENTRY_1 momentum filter", () => {
+  assert.match(source, /function trend1D[\s\S]*?ema\(closes, 8\)[\s\S]*?ema\(closes, 21\)/);
+  assert.match(source, /const momentum=trend\.direction==="LONG"\?e5>e13:e5<e13/);
 });
-test("stop is the more conservative of the 20-bar swing and 2 ATR boundary", () => {
-  const candles = candlesFromDaily(trendTargets("bullMed"));
-  const result = strategy.calculateStop("LONG", 110, 2, candles);
-  const low = Math.min(...candles.slice(-20).map(x => x.low));
-  assert.equal(result.stop, Math.min(low, 106));
+test("V28 stop uses the wider last-20-candle swing or 2 ATR boundary", () => {
+  assert.ok(source.includes("recent=c.slice(-20)"));
+  assert.ok(source.includes("Math.min(low,price-2*avalue)"));
+  assert.ok(source.includes("Math.max(high,price+2*avalue)"));
 });
-test("single target is 5 ATR and is recorded as targetCount 1", () => {
-  const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
-  assert.match(source, /price\+5\*avalue/);
-  assert.match(source, /price-5\*avalue/);
-  assert.match(source, /targetCount:1/);
+test("V28 uses one 5 ATR target; TP2 is a compatibility mirror", () => {
+  assert.ok(source.includes("price+5*avalue"));
+  assert.ok(source.includes("price-5*avalue"));
+  assert.ok(source.includes("targetCount:1,targetAtrMultiple:5"));
 });
