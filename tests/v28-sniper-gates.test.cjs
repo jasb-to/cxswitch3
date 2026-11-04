@@ -27,8 +27,8 @@ test("V28 trendline uses one shared pair key with seven-day state and 1.2% proxi
 });
 
 test("ENTRY_1 uses FAST EMA5/13, trendline proximity, Stoch extreme and global filters", () => {
-  assert.ok(strategy.includes("fastNear&&fastExtreme&&fastFilters.pass&&!fastActive"));
-  assert.ok(strategy.includes('const fastExtreme=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false'));
+  assert.ok(strategy.includes("entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive)"));
+  assert.ok(strategy.includes('stochK<20:direction==="SHORT"?stochK>80:false'));
   assert.ok(strategy.includes('const momentum=dir==="LONG"?e5>e13:e5<e13'));
   assert.ok(strategy.includes("RSI exhaustion"));
   assert.ok(strategy.includes("Stoch extreme veto"));
@@ -36,7 +36,7 @@ test("ENTRY_1 uses FAST EMA5/13, trendline proximity, Stoch extreme and global f
 });
 
 test("ENTRY_2 and ADD use MACRO EMA8/21 and both require the same global directional filters", () => {
-  assert.ok(strategy.includes("macroNear&&turning&&!macroExtreme&&macroFilters.pass&&macroActive"));
+  assert.ok(strategy.includes("entry2TriggerPass(macro.direction,macroNear,st.k,st.d,macroFilters.pass,macroActive)"));
   assert.ok(strategy.includes("macroActive&&beyond&&confirming&&macroFilters.pass"));
   assert.ok(strategy.includes("ENTRY_2/ADD 4H EMA5/13 momentum misaligned"));
   assert.ok(strategy.includes("ENTRY_2/ADD exhaustion veto"));
