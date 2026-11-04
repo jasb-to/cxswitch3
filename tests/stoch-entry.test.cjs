@@ -10,29 +10,26 @@ require.extensions[".ts"] = (module, filename) => {
 const strategy = fs.readFileSync("lib/strategy.ts", "utf8");
 const { getStochHistoryPointCount, generateSignal } = require("../lib/strategy.ts");
 
-test("ENTRY_1 LONG threshold is Stoch RSI K below 20, no crossover requirement", () => {
-  assert.ok(strategy.includes('st.k<20:st.k>80'));
-  assert.ok(strategy.includes('if(entry1Near&&entry1Extreme&&entry1Trend.direction)raw="ENTRY_1"'));
+test("ENTRY_1 LONG/SHORT use FAST daily EMA5/13 and Stoch extremes without requiring a crossover", () => {
+  assert.ok(strategy.includes("fast.direction===\"LONG\"?st.k<20:fast.direction===\"SHORT\"?st.k>80:false"));
+  assert.ok(strategy.includes("fastNear&&fastExtreme&&fastFilters.pass&&!fastActive"));
 });
-test("ENTRY_1 SHORT threshold is Stoch RSI K above 80, no crossover requirement", () => {
-  assert.ok(strategy.includes('st.k<20:st.k>80'));
-  assert.ok(strategy.includes('if(entry1Near&&entry1Extreme&&entry1Trend.direction)raw="ENTRY_1"'));
+test("ENTRY_1 is vetoed when 4H EMA5/13 momentum is not aligned or exhaustion is present", () => {
+  assert.ok(strategy.includes("fastFilters.pass"));
+  assert.ok(strategy.includes("momentum:dir===\"LONG\"?e5>e13:e5<e13"));
+  assert.ok(strategy.includes("fastFilters.exhaustion"));
 });
-test("daily direction is unavailable when neither 5/13 ENTRY_1 nor 8/21 primary trend can be established", () => {
+test("ENTRY_2 uses MACRO EMA8/21, trendline proximity, Stoch turn and global filters", () => {
+  assert.ok(strategy.includes("macroNear&&turning&&!macroExtreme&&macroFilters.pass&&macroActive"));
+});
+test("ADD uses MACRO EMA8/21 breakout confirmation and global filters", () => {
+  assert.ok(strategy.includes("macroActive&&beyond&&confirming&&macroFilters.pass"));
+});
+test("daily direction unavailable with no usable candle history", () => {
   const result = generateSignal("TEST", [], [], []);
   assert.ok(result.debug.some(x => x.includes("Insufficient 4H candle data")));
-  assert.ok(strategy.includes("if(!trend.direction&&!entry1Trend.direction)"));
 });
 test("insufficient Stoch history is reported as zero usable smoothed points", () => {
   assert.equal(getStochHistoryPointCount([]), 0);
   assert.equal(getStochHistoryPointCount(Array.from({ length: 30 }, (_, i) => 100 + i)), 0);
-});
-test("ENTRY_2 retains its separate V28 near-trendline Stoch-turning path", () => {
-  assert.ok(strategy.includes('else if(trend.direction&&near&&turning&&!extreme&&exhaustionClear)raw="ENTRY_2"'));
-});
-test("Stoch history diagnostics count usable smoothed points", () => {
-  const closes32 = Array.from({ length: 32 }, (_, i) => 100 + Math.sin(i / 2) * 5 + i * 0.1);
-  const closes33 = Array.from({ length: 33 }, (_, i) => 100 + Math.sin(i / 2) * 5 + i * 0.1);
-  assert.equal(getStochHistoryPointCount(closes32), 1);
-  assert.equal(getStochHistoryPointCount(closes33), 2);
 });
