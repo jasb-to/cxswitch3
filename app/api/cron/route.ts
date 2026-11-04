@@ -5,7 +5,7 @@ import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCoun
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, updateActiveSignalStop, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { loadHysteresisFromKV, saveHysteresisToKV, loadTrendlinesFromKV, saveTrendlinesToKV, getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, updateActiveSignalStop, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
@@ -53,7 +53,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
-const INDICATOR_EXIT_REASONS=new Set(["chandelier_trailing_stop","stoch_extreme_ema5_13_bearish_cross","stoch_extreme_ema5_13_bullish_cross"]);
+const INDICATOR_EXIT_REASONS=new Set(["chandelier_trailing_stop","stoch_extreme_ema5_13_bearish_cross","stoch_extreme_ema5_13_bullish_cross","stoch_extreme_opposite_exit","daily_trend_reversal_unprofitable"]);
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 
@@ -227,6 +227,8 @@ export async function GET(request:Request){
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],stateDegraded=false;
 
 
+  await loadHysteresisFromKV();
+  await loadTrendlinesFromKV();
  await Promise.all(PAIRS.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;try{
   const [c1,c4,c15]=await Promise.all([
     getCandles(krakenPairFormat(pair+"/USD"),60),
@@ -366,6 +368,8 @@ export async function GET(request:Request){
     console.log(`[PERF] ${pair} processed in ${Date.now()-pairStarted}ms`);
   }
  }));
+  await saveHysteresisToKV();
+  await saveTrendlinesToKV();
  if(newSignals.length){
    active=mergeNewSignalsIntoActive(active,newSignals);
    console.log(`[STATE ADD] Batched ${newSignals.length} new signal(s) into active state; one compact write will occur after reconciliation`);
