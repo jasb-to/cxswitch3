@@ -435,7 +435,7 @@ export function evaluateGates(
 ):any{
  void entry1State;void entry2AlreadyFired;
  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),price=currentPrice??c.at(-1)?.close??0;
- const daily=aggregateTo1D(c),trend=trend1D(daily),direction=trend.direction;
+ const daily=aggregateTo1D(c),trend=trend1D(daily),direction=trend.direction,dailyCloses=daily.map(x=>x.close),dailyE8=ema(dailyCloses,8).at(-1)??0,dailyE21=ema(dailyCloses,21).at(-1)??0;
  const closed=c.slice(0,-1),closes=closed.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(closed);
  const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
  const momentumAligned=direction==="LONG"?e5>e13:direction==="SHORT"?e5<e13:false;
@@ -466,7 +466,7 @@ export function evaluateGates(
  if(!signalType)missing.push("V28 Stoch RSI / trendline trigger not met");
  const dailyDirection=direction==="LONG"?"LONG":direction==="SHORT"?"SHORT":null;
  const regime=computeRegime(c);
- const alignment={daily:dailyDirection,dailyE8:trend.dailyE8??0,dailyE21:trend.dailyE21??0,fourHE5:e5,fourHE13:e13,fourH:e5>e13?"LONG":e5<e13?"SHORT":null,regime:regime.state,sizeMultiplier:regime.sizeMultiplier};
+ const alignment={daily:dailyDirection,dailyE8,dailyE21,fourHE5:e5,fourHE13:e13,fourH:e5>e13?"LONG":e5<e13?"SHORT":null,regime:regime.state,sizeMultiplier:regime.sizeMultiplier};
  return{direction,zone:null,trendlineSlope:tl?.slope??0,trendline:tl?{price:tl.price,distancePct:dist,r2:tl.r2,reason:"V28 trendline"}:null,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"V28 Stoch extreme + EMA5/13 momentum":missing.join("; "),entry2Reason:entry2?"V28 Stoch turn near trendline":"not_ready",entry1SizeMultiplier:1,entry1CrossAgeInCandles:null,entry1Case:entry1?"fresh":null},exhaustion,stopCalc:null,missing:[...new Set(missing)],allPassed:!!signalType&&filtersPass&&!!tl&&(signalType==="ADD"||near),dailyTransition:false,breakoutRecord:undefined};
 }
 
