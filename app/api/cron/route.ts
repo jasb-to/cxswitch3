@@ -279,7 +279,7 @@ export async function GET(request:Request){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      // Direction is regime-only; 4H EMA5/13 is diagnostic context, not an entry gate.
+      // Daily EMA8/21 sets direction; 4H EMA5/13 confirms ENTRY_1 momentum.
       const conflict=snapshot.regime==="CHOP"||!dailySide;
       let waitReason=snapshot.regime==="CHOP"?"regime CHOP":conflict?"daily regime unavailable":"setup incomplete";
       if(!conflict&&gateDebug){
