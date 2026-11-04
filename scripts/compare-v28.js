@@ -122,10 +122,10 @@ function checkDailyIntegrity(four,one) {
   }
   return {compared,mismatches,maxCloseDifferencePct:+maxDiff.toFixed(4)};
 }
-function makeTrade(pair,signal,time,variant) {
+function makeTrade(pair,signal,time,variant,useV28Target) {
   const entry=Number(signal.entry),stop=Number(signal.stop),risk=Math.abs(entry-stop);
   if(!(entry>0&&risk>0&&Number.isFinite(risk))) return null;
-  return {pair,direction:signal.direction,entry,initialStop:stop,stop,target:variant==="V28"?Number(signal.target):null,
+  return {pair,direction:signal.direction,entry,initialStop:stop,stop,target:useV28Target?Number(signal.target):null,
     entryTime:time,exitTime:null,exit:null,exitReason:null,pnlPct:null,r:null,pnlUsd:null,
     initialRisk:risk,signalType:signal.scale||signal.type,strategy:variant};
 }
@@ -145,46 +145,55 @@ function summarize(trades) {
     averageR:trades.length?sumR/trades.length:0,maxDrawdownPct:maxDd,netPnlUsd:net,netReturnPct:net/START_EQUITY*100};
 }
 function fmt(n,d=2) { return Number(n).toFixed(d); }
-function renderTable(a,b) {
-  const rows=[["Total Trades",a.totalTrades,b.totalTrades],["Win Rate",fmt(a.winRate)+"%",fmt(b.winRate)+"%"],
-    ["Average R",fmt(a.averageR,3),fmt(b.averageR,3)],["Max Drawdown",fmt(a.maxDrawdownPct)+"%",fmt(b.maxDrawdownPct)+"%"],
-    ["Net PnL","$"+fmt(a.netPnlUsd),"$"+fmt(b.netPnlUsd)],["Net Return",fmt(a.netReturnPct)+"%",fmt(b.netReturnPct)+"%"]];
-  console.log("\nMETRIC                 JUNE V28       CURRENT MAIN");
-  console.log("--------------------------------------------------");
-  for(const row of rows) console.log(row[0].padEnd(22)+" "+String(row[1]).padStart(12)+" "+String(row[2]).padStart(15));
+function renderTable(a,b,c) {
+  const rows=[["Total Trades",a.totalTrades,b.totalTrades,c.totalTrades],
+    ["Win Rate",fmt(a.winRate)+"%",fmt(b.winRate)+"%",fmt(c.winRate)+"%"],
+    ["Average R",fmt(a.averageR,3),fmt(b.averageR,3),fmt(c.averageR,3)],
+    ["Max Drawdown",fmt(a.maxDrawdownPct)+"%",fmt(b.maxDrawdownPct)+"%",fmt(c.maxDrawdownPct)+"%"],
+    ["Net PnL","$"+fmt(a.netPnlUsd),"$"+fmt(b.netPnlUsd),"$"+fmt(c.netPnlUsd)],
+    ["Net Return",fmt(a.netReturnPct)+"%",fmt(b.netReturnPct)+"%",fmt(c.netReturnPct)+"%"]];
+  console.log("\nMETRIC                 JUNE V28       CURRENT V32     MATCHED V28 ENTRIES");
+  console.log("--------------------------------------------------------------------------");
+  for(const row of rows) console.log(row[0].padEnd(22)+" "+String(row[1]).padStart(12)+" "+String(row[2]).padStart(15)+" "+String(row[3]).padStart(20));
 }
-function runVariant(label,strategy,market,startTs,endTs) {
+function runVariant(label,entryStrategy,exitStrategy,exitLabel,useV28Target,market,startTs,endTs) {
   const trades=[];
   for(const symbol of SYMBOLS) {
     const rows=market[symbol].four;
     let open=null;
     for(let i=100;i<rows.length;i++) {
       const bar=rows[i];
-      if(bar.timestamp<startTs||bar.timestamp>=endTs) continue;
+      if(bar.timestamp>=endTs) break;
       replayNow=bar.timestamp;
       const history=rows.slice(0,i+1);
+      // Warm the V28 stateful trendline/hysteresis stores on pre-test candles,
+      // but do not count any warm-up trades in the scored six-month window.
+      if(bar.timestamp<startTs) {
+        try { entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,undefined,undefined,false,[]); }
+        catch(e) { throw new Error(label+" warm-up "+symbol+" "+new Date(bar.timestamp).toISOString()+": "+e.message); }
+        continue;
+      }
       if(open) {
         const stopHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
         const targetHit=open.target!==null&&(open.direction==="LONG"?bar.high>=open.target:bar.low<=open.target);
         if(stopHit) { closeTrade(open,open.stop,bar.timestamp,"initial_stop"); trades.push(open); open=null; continue; }
         if(targetHit) { closeTrade(open,open.target,bar.timestamp,"5ATR_target"); trades.push(open); open=null; continue; }
-        const hold=strategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
-        // V28 validity has signal-only expiry checks (missed_entry / TTL). Once
-        // filled, these are not position exits; preserve the requested EMA21/Stoch
-        // exit comparison and let the hard stop / 5ATR target manage the position.
-        const v28SignalExpiry=label==="V28"&&hold&&["missed_entry","expired_ttl"].includes(hold.reason);
+        const hold=exitStrategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
+        // V28 missed_entry / TTL are signal validity rules, not exits after a
+        // position has been filled. Ignore them in the V28 position simulation.
+        const v28SignalExpiry=exitLabel==="V28"&&hold&&["missed_entry","expired_ttl"].includes(hold.reason);
         if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) { open.stop=hold.newStop; open._signal.stop=hold.newStop; }
         if(hold&&hold.shouldHold===false&&!v28SignalExpiry) { closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit"); trades.push(open); open=null; continue; }
         continue;
       }
       let result;
-      try { result=strategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,undefined,undefined,false,[]); }
+      try { result=entryStrategy.generateSignal(symbol,[],history,[],bar.close,bar.timestamp,undefined,undefined,false,[]); }
       catch(e) { throw new Error(label+" "+symbol+" "+new Date(bar.timestamp).toISOString()+" signal error: "+e.message); }
       const signal=result&&result.signal;
       if(!signal) continue;
       const scale=signal.scale||signal.type;
       if(scale!=="ENTRY_1"&&scale!=="ENTRY_2") continue;
-      const trade=makeTrade(symbol,signal,bar.timestamp,label);
+      const trade=makeTrade(symbol,signal,bar.timestamp,label,useV28Target);
       if(!trade) continue;
       trade._signal=signal; open=trade;
     }
@@ -209,8 +218,9 @@ async function main() {
   console.log("Warm-up starts: "+addMonths(start,-1).toISOString().slice(0,10));
   console.log("V28 source: "+V28_SHA+" | current source: "+CURRENT_SHA);
   const sources=await Promise.all([fetchStrategy(V28_SHA),fetchStrategy(CURRENT_SHA)]);
-  const v28=loadStrategy(sources[0],"June V28"),current=loadStrategy(sources[1],"Current main");
-  const versionA=v28.CURRENT_SIGNAL_VERSION,versionB=current.CURRENT_SIGNAL_VERSION;
+  const v28Native=loadStrategy(sources[0],"June V28 native"),v28Matched=loadStrategy(sources[0],"June V28 matched entries");
+  const currentNative=loadStrategy(sources[1],"Current main native"),currentMatched=loadStrategy(sources[1],"Current main matched exits");
+  const versionA=v28Native.CURRENT_SIGNAL_VERSION,versionB=currentNative.CURRENT_SIGNAL_VERSION;
   console.log("Loaded source versions: V28="+versionA+", current="+versionB);
   if(versionA!==28) throw new Error("Expected V28 version 28, got "+versionA);
   if(versionB!==32) throw new Error("Pinned current source is not version 32, got "+versionB);
@@ -221,16 +231,18 @@ async function main() {
     integrity[symbol]={fourHourBars:inWindow.length,dailyBars:m.one.filter(c=>c.timestamp>=startTs&&c.timestamp<endTs).length,dailyCheck:checkDailyIntegrity(m.four,m.one)};
     console.log(symbol+": "+JSON.stringify(integrity[symbol]));
   }
-  const tradesA=runVariant("V28",v28,market,startTs,endTs),tradesB=runVariant("CURRENT",current,market,startTs,endTs);
-  const a=summarize(tradesA),b=summarize(tradesB);
-  renderTable(a,b);
-  const all=[...stripInternal(tradesA),...stripInternal(tradesB)].sort((x,y)=>x.entryTime-y.entryTime||x.pair.localeCompare(y.pair)||x.strategy.localeCompare(y.strategy));
+  const tradesA=runVariant("V28_NATIVE",v28Native,v28Native,"V28",true,market,startTs,endTs);
+  const tradesB=runVariant("CURRENT_V32",currentNative,currentNative,"CURRENT",false,market,startTs,endTs);
+  const tradesC=runVariant("V28_ENTRIES_CURRENT_EXITS",v28Matched,currentMatched,"CURRENT",true,market,startTs,endTs);
+  const a=summarize(tradesA),b=summarize(tradesB),c=summarize(tradesC);
+  renderTable(a,b,c);
+  const all=[...stripInternal(tradesA),...stripInternal(tradesB),...stripInternal(tradesC)].sort((x,y)=>x.entryTime-y.entryTime||x.pair.localeCompare(y.pair)||x.strategy.localeCompare(y.strategy));
   writeCsv("artifacts/trades.csv",all);
   const report={window:{start:start.toISOString(),end:end.toISOString()},
     source:{v28:{commit:V28_SHA,signalVersion:versionA},current:{commit:CURRENT_SHA,signalVersion:versionB}},
     assumptions:{startingEquityUsd:START_EQUITY,fixedRiskUsdPerTrade:RISK_DOLLARS,feesAndSlippage:"excluded",
       execution:"signal at 4H close; exits from subsequent 4H candles; stop-first if stop and target both touched"},
-    dataIntegrity:integrity,summary:{v28:a,current:b},trades:all};
+    dataIntegrity:integrity,summary:{v28Native:a,currentV32Native:b,matchedV28EntriesCurrentExits:c},trades:all};
   fs.writeFileSync("artifacts/report.json",JSON.stringify(report,null,2));
   console.log("\nTrade records: artifacts/trades.csv ("+all.length+" rows)");
   console.log("Full report: artifacts/report.json");
