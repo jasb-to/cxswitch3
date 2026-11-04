@@ -487,7 +487,7 @@ export function evaluateGates(
  const dailyDirection=direction==="LONG"?"LONG":direction==="SHORT"?"SHORT":null;
  const regime=computeRegime(c);
  const alignment={daily:dailyDirection,dailyE8,dailyE21,dailyE5,dailyE13,entry1Daily:entry1Trend.direction,fourHE5:e5,fourHE13:e13,fourH:e5>e13?"LONG":e5<e13?"SHORT":null,regime:regime.state,sizeMultiplier:regime.sizeMultiplier};
- return{direction,zone:null,trendlineSlope:0,trendline:tl?{price:tl.price,distancePct:dist,r2:tl.r2,reason:"V28 trendline"}:null,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"Daily EMA5/13 + V28 trendline proximity + Stoch extreme":missing.join("; "),entry1Direction:entry1Trend.direction,entry1Trendline:entry1Tl?{price:entry1Tl.price,distancePct:entry1Dist}:null,entry2Reason:entry2?"V28 Stoch turn near trendline":"not_ready",entry1SizeMultiplier:1,entry1CrossAgeInCandles:null,entry1Case:entry1?"fresh":null},exhaustion,stopCalc:null,missing:[...new Set(missing)],allPassed:signalType==="ENTRY_1"||(!!signalType&&filtersPass&&!!tl&&(signalType==="ADD"||near)),dailyTransition:false,breakoutRecord:undefined};
+ return{direction:signalType==="ENTRY_1"?entry1Trend.direction:direction,zone:null,trendlineSlope:0,trendline:tl?{price:tl.price,distancePct:dist,r2:tl.r2,reason:"V28 trendline"}:null,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"Daily EMA5/13 + V28 trendline proximity + Stoch extreme":missing.join("; "),entry1Direction:entry1Trend.direction,entry1Trendline:entry1Tl?{price:entry1Tl.price,distancePct:entry1Dist}:null,entry2Reason:entry2?"V28 Stoch turn near trendline":"not_ready",entry1SizeMultiplier:1,entry1CrossAgeInCandles:null,entry1Case:entry1?"fresh":null},exhaustion,stopCalc:null,missing:[...new Set(missing)],allPassed:signalType==="ENTRY_1"||(!!signalType&&filtersPass&&!!tl&&(signalType==="ADD"||near)),dailyTransition:false,breakoutRecord:undefined};
 }
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,entry1State?:any,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]):SignalResult{
@@ -538,8 +538,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  if(!raw){debug.push("[WAIT] "+(entry1Trend.direction&&!entry1Near?"ENTRY_1 outside 1.2% trendline proximity":entry1Near&&!entry1Extreme?"waiting for ENTRY_1 Stoch RSI extreme":exReason??(near?"waiting for Stoch RSI trigger":"outside trendline proximity")));return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const hyst=getHysteresis(pair,now);let finalType=raw;
  if(hyst.lastSignalType==="ADD")finalType="ADD";
- else if(hyst.lastSignalType==="ENTRY_2"&&raw!=="ADD")finalType="ENTRY_2";
- else if(hyst.lastSignalType==="ENTRY_1"&&raw!=="ADD")finalType=raw==="ENTRY_2"?"ENTRY_2":"ENTRY_1";
+ else if(hyst.lastSignalType==="ENTRY_2"&&raw==="ENTRY_2")finalType="ENTRY_2";
+ else if(hyst.lastSignalType==="ENTRY_1"&&raw==="ENTRY_1")finalType="ENTRY_1";
  if(hyst.lastSignalType&&finalType===hyst.lastSignalType&&hyst.lastSignalPrice>0){const move=Math.abs(price-hyst.lastSignalPrice)/hyst.lastSignalPrice;if(move<HYSTERESIS_BAND){debug.push("[WAIT] Hysteresis lock "+finalType);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}}
  if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType,price,now);
  const signalDirection:Direction=finalType==="ENTRY_1"?entry1Trend.direction!:trend.direction!;
