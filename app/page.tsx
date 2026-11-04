@@ -114,7 +114,7 @@ export default function Dashboard(){
         <div>1D STOCH RSI · {typeof m?.stochK1d==="number"&&typeof m?.stochD1d==="number"?`K ${m.stochK1d.toFixed(1)} / D ${m.stochD1d.toFixed(1)}`:"—"}</div>
         <div>JARVIS STATE · {m?.jarvisState??j?.currentAnalysis??j?.reason??"—"}</div>
         <div>JARVIS REASON · {j?.reason??a?.jarvisReason??"—"}</div>
-        <div>4H 5/13 · {m?.fourH513?.label??"—"} · 4H DIRECTION · {m?.fourHDirection??"—"} · FAST 1D · {m?.fastDailyDirection??"—"} · MACRO 1D · {m?.macroDailyDirection??"—"}</div>
+        <div>DAILY BIAS (5/13) · {m?.dailyDirection??"—"} · 4H MOMENTUM · {m?.momentumAligned?"ALIGNED":"BLOCKED"} · EXHAUSTION · {m?.exhaustion??"CLEAR"}</div>
         <div>STRUCTURE · {m?.structureShift?.reason??"—"}</div>
         <div>STRATEGY STATUS · {status}</div>
         <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {m?.distToTrendline!=null?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
