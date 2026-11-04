@@ -106,7 +106,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       if(activeIndex>=0)active.splice(activeIndex,1);
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — EXIT @ ${price} (${hold.reason})`);
       alerts.push({pair:alert.pair,direction:alert.direction,status:"management_exit",reason:hold.reason,price});
-      const kind="4H_REVERSAL";
+      const kind=hold.reason==="tp_hit"?"TARGET_HIT":hold.reason==="sl_hit"?"STOP_HIT":"4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
       if(hold.reason!=="expired_ttl"&&hold.reason!=="missed_entry"&&await claimTelegramAlert(key))
         await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price});
