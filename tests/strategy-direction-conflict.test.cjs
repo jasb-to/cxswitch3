@@ -85,7 +85,7 @@ test("ENTRY_1 uses daily EMA5/13 direction and only the V28 trendline/Stoch extr
 });
 test("daily EMA8/21 remains the separate direction path for ENTRY_2 and ADD", () => {
   assert.match(source, /function trend1D[\s\S]*?ema\(closes, 8\)[\s\S]*?ema\(closes, 21\)/);
-  assert.match(source, /else if\(trend\.direction&&near&&turning&&!extreme&&!exhaustionClear\)/);
+  assert.match(source, /else if\(trend\.direction&&near&&turning&&!extreme&&exhaustionClear\)/);
   assert.match(source, /else if\(trend\.direction&&beyond&&confirming&&emaAligned&&exhaustionClear/);
 });
 test("V28 stop uses the wider last-20-candle swing or 2 ATR boundary", () => {
