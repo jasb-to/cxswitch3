@@ -53,7 +53,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
-const INDICATOR_EXIT_REASONS=new Set(["chandelier_trailing_stop","stoch_extreme_ema5_13_bearish_cross","stoch_extreme_ema5_13_bullish_cross","stoch_extreme_opposite_exit","daily_trend_reversal_unprofitable"]);
+const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_trend_reversal_unprofitable"]);
 const MANAGEMENT_EXIT_REASONS=new Set([...INDICATOR_EXIT_REASONS,"expired_ttl","missed_entry"]);
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
@@ -98,20 +98,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       persistExitCooldown(alert.pair,hold.reason,cooldowns);
       cooldownsChanged=true;
     }
-    if(hold.shouldHold&&hold.reason==="chandelier_stop_update"&&hold.newStop!==undefined){
-      const oldStop=Number(alert.stop);
-      const tighter=alert.direction==="LONG"?hold.newStop>oldStop:hold.newStop<oldStop;
-      if(tighter){
-        const persisted=await updateActiveSignalStop(alert.pair,alert.direction,hold.newStop);
-        if(persisted){
-          alert.stop=hold.newStop;
-          console.log(`[CHANDELIER] ${alert.pair} ${alert.direction} | stop updated ${oldStop} -> ${hold.newStop}`);
-          const key=`management:${alert.id}:trail:${round(Number(hold.newStop))}`;
-          if(await claimTelegramAlert(key))
-            await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"TRAIL",stop:Number(hold.newStop)});
-        }
-      }
-    }else if(!hold.shouldHold&&MANAGEMENT_EXIT_REASONS.has(hold.reason)){
+    if(!hold.shouldHold&&MANAGEMENT_EXIT_REASONS.has(hold.reason)){
       // Commit the exit to history and active state before attempting Telegram delivery.
       const exitStatus=hold.reason==="expired_ttl"||hold.reason==="missed_entry"?"EXPIRED":"FAILED";
       await updateSignalHistoryStatus(alert.id,exitStatus,hold.reason,price);
@@ -119,7 +106,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       if(activeIndex>=0)active.splice(activeIndex,1);
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — EXIT @ ${price} (${hold.reason})`);
       alerts.push({pair:alert.pair,direction:alert.direction,status:"management_exit",reason:hold.reason,price});
-      const kind=hold.reason==="chandelier_trailing_stop"?"TRAIL_EXIT":"4H_REVERSAL";
+      const kind="4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
       if(hold.reason!=="expired_ttl"&&hold.reason!=="missed_entry"&&await claimTelegramAlert(key))
         await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price});
@@ -133,7 +120,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     try{await setExitAlertCooldowns(cooldowns);}
     catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Batched exit cooldown write failed",error);}
   }
-  // Persist any positions removed by structural or Chandelier exits.
+  // Persist positions removed by V28 stop, target, expiry or indicator exits.
   try{await setActiveSignals(active);}
   catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Active-position state write failed",error);}
   return stateStoreFailed;
