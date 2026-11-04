@@ -151,6 +151,8 @@ export async function sendManagementAlert(update:{
     ? `⌛ EXPIRED — ${update.pair} ${update.direction} signal expired or price moved beyond the V28 entry window.`
     : update.kind==="STOP_HIT"
     ? `🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price)}.`
+    : update.kind==="TARGET_HIT"
+      ? `🎯 TARGET HIT — ${update.pair} ${update.direction} reached ${formatPrice(update.price)}. Trade closed.`
     : update.kind==="TRAIL"
     ? `CX — ${update.pair} ${update.direction}. Trail stop raised to ${formatPrice(update.stop)}.`
     : update.kind==="TRAIL_EXIT"
