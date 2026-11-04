@@ -480,7 +480,7 @@ export function evaluateGates(
  // ENTRY_1 gets first evaluation. If it does not fire, the single pair trendline state
  // is recalculated/overwritten for the MACRO direction before ENTRY_2 / ADD checks.
  let macroTl:ReturnType<typeof getTrendline>=null,macroDist=Infinity,macroNear=false,entry2=false,addReady=false;
- let macroFilters=filters(macro.direction),macroActive=false,turning=false,beyond=false,confirming=false,volUp=false,stochMomentum=false;
+ let macroFilters=filters(macro.direction),macroActive=false,beyond=false,confirming=false,volUp=false,stochMomentum=false;
  const last=closed.at(-1),prev=closed.at(-2);
  if(!entry1&&macro.direction){
    macroTl=getTrendline(pair,c,macro.direction);
