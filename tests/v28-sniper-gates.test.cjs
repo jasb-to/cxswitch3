@@ -74,11 +74,13 @@ test("target and stop hits are management exits immediately, with explicit histo
   assert.ok(cron.includes('hold.reason==="sl_hit"?"SL_HIT"'));
   assert.ok(cron.includes('updateSignalHistoryStatus(alert.id,"TP_HIT","tp_hit",price)'));
   assert.ok(cron.includes('kind:"TARGET_HIT"'));
+  assert.ok(cron.includes('hold.reason==="tp_hit"?"TARGET_HIT"'));
 });
 
 test("Telegram displays mirrored V28 targets once instead of TRAILING", () => {
   assert.ok(telegram.includes('singleTarget?\x60TP: \x24{formatPrice(tp1)}\x60'));
   assert.doesNotMatch(telegram, /TRAILING/);
+  assert.ok(telegram.includes("Trade closed."));
 });
 
 test("Dashboard and Jarvis expose FAST/MACRO daily bias and trendline distance", () => {
