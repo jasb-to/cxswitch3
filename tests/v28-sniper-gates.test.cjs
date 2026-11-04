@@ -91,7 +91,10 @@ test("Telegram displays mirrored V28 targets once instead of TRAILING", () => {
 test("Dashboard and Jarvis expose FAST/MACRO daily bias and trendline distance", () => {
   assert.ok(dashboard.includes("FAST BIAS (5/13)"));
   assert.ok(dashboard.includes("MACRO BIAS (8/21)"));
-  assert.ok(dashboard.includes("TL DISTANCE:"));
+  assert.ok(dashboard.includes("FAST TL:"));
+  assert.ok(dashboard.includes("MACRO TL:"));
+  assert.ok(dashboard.includes("FAST TRENDLINE"));
+  assert.ok(dashboard.includes("MACRO TRENDLINE"));
   assert.ok(jarvis.includes("FAST bias (1D EMA5/13)"));
   assert.ok(jarvis.includes("MACRO bias (1D EMA8/21)"));
   assert.ok(jarvis.includes("fourHTacticalDirection"));
