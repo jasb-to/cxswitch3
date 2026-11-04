@@ -24,6 +24,7 @@ export interface Signal {
  reason:string; timestamp:number; version:number; context?:any;
 }
 
+export interface Entry1State { pair:string; direction:"LONG"|"SHORT"; entry:number; timestamp:number; context?:any; }
 export interface BreakoutRecord { direction:"LONG"|"SHORT"; price:number; timestamp:number; candleIndex:number; }
 export interface SignalResult {
   signal?: Signal;
