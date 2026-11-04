@@ -197,7 +197,7 @@ function runVariant(label,strategy,market,startTs,endTs) {
 }
 function stripInternal(trades) { return trades.map(({_signal,...t})=>t); }
 function writeCsv(file,trades) {
-  const fields=["strategy","pair","direction","signalType","entryTime","entry","stop","target","exitTime","exit","exitReason","pnlPct","r","pnlUsd"];
+  const fields=["strategy","pair","direction","signalType","entryTime","entry","initialStop","stop","target","exitTime","exit","exitReason","pnlPct","r","pnlUsd"];
   const q=v=>'"'+String(v??"").replace(/"/g,'""')+'"';
   fs.writeFileSync(file,[fields.join(","),...trades.map(t=>fields.map(k=>q(t[k])).join(","))].join("\n"));
 }
