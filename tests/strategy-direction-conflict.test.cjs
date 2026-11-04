@@ -77,14 +77,16 @@ test("MED regimes use full size; daily EMA8/21 and 4H EMA5/13 have separate role
   assert.match(source, /ema\(closes,5\)/);
   assert.match(source, /ema\(closes,13\)/);
 });
-test("ENTRY_1 is Stoch RSI extreme plus 4H EMA5/13 momentum and exhaustion clearance", () => {
-  assert.match(source, /st\.k<20:st\.k>80/);
-  assert.match(source, /e5>e13:e5<e13/);
-  assert.match(source, /if\(near&&extreme&&momentum&&exhaustionClear\)raw="ENTRY_1"/);
+test("ENTRY_1 uses daily EMA5/13 direction and only the V28 trendline/Stoch extreme trigger", () => {
+  assert.match(source, /function trend1DEntry1[\s\S]*?ema\(closes,5\)[\s\S]*?ema\(closes,13\)/);
+  assert.match(source, /if\(entry1Near&&entry1Extreme&&entry1Trend\.direction\)raw="ENTRY_1"/);
+  assert.match(source, /const entry1=!!entry1Trend\.direction&&entry1Near&&entry1Extreme&&!entry1ActiveMatch/);
+  assert.doesNotMatch(source, /if\(entry1Near&&entry1Extreme&&[^\n]*(momentum|exhaustionClear)/);
 });
-test("daily EMA8/21 determines the primary direction; EMA5/13 is the separate ENTRY_1 momentum filter", () => {
+test("daily EMA8/21 remains the separate direction path for ENTRY_2 and ADD", () => {
   assert.match(source, /function trend1D[\s\S]*?ema\(closes, 8\)[\s\S]*?ema\(closes, 21\)/);
-  assert.match(source, /const momentum=trend\.direction==="LONG"\?e5>e13:e5<e13/);
+  assert.match(source, /else if\(trend\.direction&&near&&turning&&!extreme&&!exhaustionClear\)/);
+  assert.match(source, /else if\(trend\.direction&&beyond&&confirming&&emaAligned&&exhaustionClear/);
 });
 test("V28 stop uses the wider last-20-candle swing or 2 ATR boundary", () => {
   assert.ok(source.includes("recent=c.slice(-20)"));
