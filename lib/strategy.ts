@@ -551,7 +551,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]):any{
  void candles1h;void candles15m;
  const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),d=aggregateTo1D(c),t=trend1D(d),reg=computeRegime(c),closed=c.slice(0,-1),q=closed.map(x=>x.close),dq=d.slice(0,-1).map(x=>x.close);
- const st=stochRsi(q),st1=stochRsi(dq),e5=ema(q,5).at(-1)??0,e13=ema(q,13).at(-1)??0,e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0,d8=ema(dq,8).at(-1)??0,d21=ema(dq,21).at(-1)??0,d5=ema(dq,5).at(-1)??0,d13=ema(dq,13).at(-1)??0;
+ const st=stochRsi(q),st1=stochRsi(dq),dailyCloses=d.map(x=>x.close),e5=ema(q,5).at(-1)??0,e13=ema(q,13).at(-1)??0,e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0,d8=ema(dailyCloses,8).at(-1)??0,d21=ema(dailyCloses,21).at(-1)??0,d5=ema(dailyCloses,5).at(-1)??0,d13=ema(dailyCloses,13).at(-1)??0;
  const storedTrendline=trendlineStore.get(pair),tl=storedTrendline?{price:storedTrendline.slope*(c.length-1)+storedTrendline.intercept,r2:0.85,age:Date.now()-storedTrendline.lastUpdated}:null,price=c.at(-1)?.close??0;
  const entry1Direction=d5>d13?"LONG":d5<d13?"SHORT":"NEUTRAL";
   const fastDailyDirection=entry1Direction,macroDailyDirection=t.direction??"NEUTRAL";
