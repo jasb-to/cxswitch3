@@ -133,15 +133,23 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
     const price=Number(market?.currentPrice??market?.price);
     if(!Number.isFinite(price)||price<=0)continue;
-    const stop=Number(alert.stop);
+    const stop=Number(alert.stop),target=Number(alert.tp1??alert.tp2??alert.target);
     const stopHit=Number.isFinite(stop)&&stop>0&&(alert.direction==="LONG"?price<=stop:price>=stop);
+    const targetHit=Number.isFinite(target)&&target>0&&(alert.direction==="LONG"?price>=target:price<=target);
     if(stopHit){
-      await updateSignalHistoryStatus(alert.id,"SL_HIT","stop_hit",price);
+      await updateSignalHistoryStatus(alert.id,"SL_HIT","sl_hit",price);
       active=active.filter((item:any)=>item.id!==alert.id);
       alerts.push({pair:alert.pair,direction:alert.direction,status:"sl_hit",price,level:stop});
       const exitKey=`management:${alert.id}:exit:hard_stop`;
       if(await claimTelegramAlert(exitKey))await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"STOP_HIT",price});
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — SL_HIT @ ${price} (SL ${stop})`);
+    }else if(targetHit){
+      await updateSignalHistoryStatus(alert.id,"TP_HIT","tp_hit",price);
+      active=active.filter((item:any)=>item.id!==alert.id);
+      alerts.push({pair:alert.pair,direction:alert.direction,status:"tp_hit",price,level:target});
+      const exitKey=`management:${alert.id}:exit:hard_target`;
+      if(await claimTelegramAlert(exitKey))await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"TARGET_HIT",price});
+      console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — TP_HIT @ ${price} (TP ${target})`);
     }
     } catch(error) {
       console.error(`[RECONCILE] ${alert.pair} ${alert.direction} failed; retaining position for next run`,error);
