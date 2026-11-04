@@ -25,9 +25,9 @@ export async function sendAlert(signal:any){
   const entry=Number(signal.price??signal.entry);
   const rawTp1=Number(signal.takeProfit1??signal.tp1);
   const rawTp2=Number(signal.takeProfit2??signal.tp2);
-  const trailingTargets=Number.isFinite(rawTp1)&&Number.isFinite(rawTp2)&&rawTp1===rawTp2;
-  const tp1=trailingTargets?"TRAILING":rawTp1;
-  const tp2=trailingTargets?"TRAILING":rawTp2;
+  const singleTarget=Number.isFinite(rawTp1)&&Number.isFinite(rawTp2)&&rawTp1===rawTp2;
+  const tp1=rawTp1;
+  const tp2=rawTp2;
   const stop=Number(signal.stopLoss??signal.stop);
   const riskDistance=Number.isFinite(entry)&&Number.isFinite(stop)?Math.abs(entry-stop):0;
   const rrTp1=riskDistance>0&&Number.isFinite(Number(tp1))?Math.abs(Number(tp1)-entry)/riskDistance:null;
@@ -58,16 +58,16 @@ export async function sendAlert(signal:any){
     `${dir} ${signal.symbol} — ${signal.bias}`,
     `Entry: ${formatPrice(entry)} · MARKET`,
     `SL: ${formatPrice(stop)}`,
-    `TP1: ${trailingTargets?"TRAILING":formatPrice(tp1)}`,
-    `TP2: ${trailingTargets?"TRAILING":formatPrice(tp2)}`,
-    `RR (TP1): ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
-    `RR (TP2): ${rrTp2==null?"-":rrTp2.toFixed(2)+"R"}`,
+    singleTarget?`TP: ${formatPrice(tp1)}`:`TP1: ${formatPrice(tp1)}`,
+    ...(singleTarget?[]:[`TP2: ${formatPrice(tp2)}`]),
+    `RR${singleTarget?"":" (TP1)"}: ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
+    ...(singleTarget?[]:[`RR (TP2): ${rrTp2==null?"-":rrTp2.toFixed(2)+"R"}`]),
     `Size: ${sizeText}`,
     jarvis?.verdict ? `JARVIS: ${jarvis.verdict}` : "",
     reasonText
   ].filter(Boolean).join("\n");
 
-  // Identical TP fields are V28 15 ATR safety placeholders; display as TRAILING, not executable targets.
+  // V28 mirrors its single executable target into tp1 and tp2 for compatibility; display it once.
 
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines}),signal:AbortSignal.timeout(6000)});
   if(!response.ok){
@@ -141,7 +141,7 @@ export async function sendJarvisOpportunity(update:{
 export async function sendManagementAlert(update:{
   pair:string;
   direction:"LONG"|"SHORT";
-  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL"|"STOP_HIT"|"EXPIRED";
+  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL"|"STOP_HIT"|"TARGET_HIT"|"EXPIRED";
   stop?:number;
   price?:number;
 }){
@@ -151,6 +151,8 @@ export async function sendManagementAlert(update:{
     ? `⌛ EXPIRED — ${update.pair} ${update.direction} signal expired or price moved beyond the V28 entry window.`
     : update.kind==="STOP_HIT"
     ? `🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price)}.`
+    : update.kind==="TARGET_HIT"
+      ? `🎯 TARGET HIT — ${update.pair} ${update.direction} reached ${formatPrice(update.price)}. Trade closed.`
     : update.kind==="TRAIL"
     ? `CX — ${update.pair} ${update.direction}. Trail stop raised to ${formatPrice(update.stop)}.`
     : update.kind==="TRAIL_EXIT"

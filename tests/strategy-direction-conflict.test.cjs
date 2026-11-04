@@ -72,21 +72,27 @@ test("MED regimes use full size; daily EMA8/21 and 4H EMA5/13 have separate role
   assert.equal(regime.sizeMultiplier, 1);
   assert.equal(snapshot.dailyDirection, "BEAR");
   assert.ok(["BULL", "BEAR", "NEUTRAL"].includes(snapshot.fourHTacticalDirection));
-  assert.match(source, /ema\(closes,8\)/);
-  assert.match(source, /ema\(closes,21\)/);
-  assert.match(source, /ema\(closes,5\)/);
-  assert.match(source, /ema\(closes,13\)/);
+  assert.match(source, /ema\(closes,\s*8\)/);
+  assert.match(source, /ema\(closes,\s*21\)/);
+  assert.match(source, /ema\(closes,\s*5\)/);
+  assert.match(source, /ema\(closes,\s*13\)/);
 });
-test("ENTRY_1 uses daily EMA5/13 direction and only the V28 trendline/Stoch extreme trigger", () => {
+test("ENTRY_1 uses FAST daily EMA5/13, trendline proximity, Stoch extreme and global filters", () => {
   assert.match(source, /function trend1DEntry1[\s\S]*?ema\(closes,5\)[\s\S]*?ema\(closes,13\)/);
-  assert.match(source, /if\(entry1Near&&entry1Extreme&&entry1Trend\.direction\)raw="ENTRY_1"/);
-  assert.match(source, /const entry1=!!entry1Trend\.direction&&entry1Near&&entry1Extreme&&!entry1ActiveMatch/);
-  assert.doesNotMatch(source, /if\(entry1Near&&entry1Extreme&&[^\n]*(momentum|exhaustionClear)/);
+  assert.match(source, /entry1TriggerPass\(fast\.direction,fastNear,st\.k,fastFilters\.pass,fastActive\)/);
+  assert.match(source, /const momentum=direction==="LONG"\?e5>e13:e5<e13/);
+  assert.match(source, /fastFilters\.exhaustion/);
 });
-test("daily EMA8/21 remains the separate direction path for ENTRY_2 and ADD", () => {
+test("ENTRY_2 and ADD use MACRO daily EMA8/21 with global momentum and exhaustion filters", () => {
   assert.match(source, /function trend1D[\s\S]*?ema\(closes, 8\)[\s\S]*?ema\(closes, 21\)/);
-  assert.match(source, /else if\(trend\.direction&&near&&turning&&!extreme&&exhaustionClear\)/);
-  assert.match(source, /else if\(trend\.direction&&beyond&&confirming&&emaAligned&&exhaustionClear/);
+  assert.match(source, /entry2TriggerPass\(macro\.direction,macroNear,st\.k,st\.d,macroFilters\.pass,macroActive\)/);
+  assert.match(source, /macroActive&&beyond&&confirming&&macroFilters\.pass/);
+});
+test("FAST is evaluated before MACRO and both directions share exactly one trendline KV key", () => {
+  assert.ok(source.indexOf("if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive))") < source.indexOf("const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null"));
+  assert.doesNotMatch(source, /pair\s*\+\s*["']:\s*ENTRY_1/);
+  assert.ok(source.includes("fastDailyDirection,macroDailyDirection"));
+  assert.ok(source.includes("trendlineDistancePct"));
 });
 test("V28 stop uses the wider last-20-candle swing or 2 ATR boundary", () => {
   assert.ok(source.includes("recent=c.slice(-20)"));

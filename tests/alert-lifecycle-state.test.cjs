@@ -24,10 +24,12 @@ test("every sent entry alert is tracked without confirming a user-entered trade"
   assert.ok(!cron.includes("/api/confirm-trade"));
 });
 
-test("alert lifecycle persists hard-stop exits but never closes on TP1 or TP2", () => {
+test("alert lifecycle reconciles hard-stop and single-target exits immediately", () => {
   assert.ok(cron.includes("async function reconcileAlertOutcomes"));
-  assert.ok(cron.includes('updateSignalHistoryStatus(alert.id,"SL_HIT","stop_hit",price)'));
-  assert.doesNotMatch(cron, /targetHit|tp2_hit|updateSignalHistoryStatus\(alert\.id,"TP_HIT"/);
+  assert.ok(cron.includes('updateSignalHistoryStatus(alert.id,"SL_HIT","sl_hit",price)'));
+  assert.ok(cron.includes("targetHit"));
+  assert.ok(cron.includes('updateSignalHistoryStatus(alert.id,"TP_HIT","tp_hit",price)'));
+  assert.ok(cron.includes('kind:"TARGET_HIT",price'));
   assert.ok(cron.includes("await updateHistoryMilestonesBatch(active.map"));
   assert.ok(!cron.includes("await updateHistoryMilestones(alert.id,price);"));
   assert.ok(cron.includes("active=await reconcileAlertOutcomes(active,marketData,alerts);"));

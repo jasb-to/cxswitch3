@@ -54,7 +54,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
 }
 
 const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_trend_reversal_unprofitable"]);
-const MANAGEMENT_EXIT_REASONS=new Set([...INDICATOR_EXIT_REASONS,"expired_ttl","missed_entry"]);
+const MANAGEMENT_EXIT_REASONS=new Set([...INDICATOR_EXIT_REASONS,"expired_ttl","missed_entry","sl_hit","tp_hit"]);
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 
@@ -100,13 +100,13 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     }
     if(!hold.shouldHold&&MANAGEMENT_EXIT_REASONS.has(hold.reason)){
       // Commit the exit to history and active state before attempting Telegram delivery.
-      const exitStatus=hold.reason==="expired_ttl"||hold.reason==="missed_entry"?"EXPIRED":"FAILED";
+      const exitStatus=hold.reason==="tp_hit"?"TP_HIT":hold.reason==="sl_hit"?"SL_HIT":hold.reason==="expired_ttl"||hold.reason==="missed_entry"?"EXPIRED":"FAILED";
       await updateSignalHistoryStatus(alert.id,exitStatus,hold.reason,price);
       const activeIndex=active.findIndex((item:any)=>item.id===alert.id);
       if(activeIndex>=0)active.splice(activeIndex,1);
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — EXIT @ ${price} (${hold.reason})`);
       alerts.push({pair:alert.pair,direction:alert.direction,status:"management_exit",reason:hold.reason,price});
-      const kind="4H_REVERSAL";
+      const kind=hold.reason==="tp_hit"?"TARGET_HIT":hold.reason==="sl_hit"?"STOP_HIT":"4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
       if(hold.reason!=="expired_ttl"&&hold.reason!=="missed_entry"&&await claimTelegramAlert(key))
         await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price});
@@ -133,15 +133,23 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
     const price=Number(market?.currentPrice??market?.price);
     if(!Number.isFinite(price)||price<=0)continue;
-    const stop=Number(alert.stop);
+    const stop=Number(alert.stop),target=Number(alert.tp1??alert.tp2??alert.target);
     const stopHit=Number.isFinite(stop)&&stop>0&&(alert.direction==="LONG"?price<=stop:price>=stop);
+    const targetHit=Number.isFinite(target)&&target>0&&(alert.direction==="LONG"?price>=target:price<=target);
     if(stopHit){
-      await updateSignalHistoryStatus(alert.id,"SL_HIT","stop_hit",price);
+      await updateSignalHistoryStatus(alert.id,"SL_HIT","sl_hit",price);
       active=active.filter((item:any)=>item.id!==alert.id);
       alerts.push({pair:alert.pair,direction:alert.direction,status:"sl_hit",price,level:stop});
       const exitKey=`management:${alert.id}:exit:hard_stop`;
       if(await claimTelegramAlert(exitKey))await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"STOP_HIT",price});
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — SL_HIT @ ${price} (SL ${stop})`);
+    }else if(targetHit){
+      await updateSignalHistoryStatus(alert.id,"TP_HIT","tp_hit",price);
+      active=active.filter((item:any)=>item.id!==alert.id);
+      alerts.push({pair:alert.pair,direction:alert.direction,status:"tp_hit",price,level:target});
+      const exitKey=`management:${alert.id}:exit:hard_target`;
+      if(await claimTelegramAlert(exitKey))await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"TARGET_HIT",price});
+      console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — TP_HIT @ ${price} (TP ${target})`);
     }
     } catch(error) {
       console.error(`[RECONCILE] ${alert.pair} ${alert.direction} failed; retaining position for next run`,error);
