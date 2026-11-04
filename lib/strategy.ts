@@ -4,7 +4,7 @@
 // EXIT: Stoch extreme opposite (matches chart)
 // ALERTS: ENTRY_1 and ADD only (ENTRY_2 is internal, no alert)
 
-import { getHysteresisState, setHysteresisState, getTrendlineState, setTrendlineState } from "@/lib/state";
+import { getHysteresisState, setHysteresisState, getTrendlineState, setTrendlineState } from "./state";
 
 export interface Candle {
   timestamp: number;
@@ -469,7 +469,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  else{stop=trend.direction==="LONG"?Math.min(tl.price*0.995,price-1.5*avalue):Math.max(tl.price*1.005,price+1.5*avalue);const floor=trend.direction==="LONG"?price+(price-stop)*MIN_RR:price-(stop-price)*MIN_RR;target=trend.direction==="LONG"?Math.max(high,floor):Math.min(low,floor);}
  const rr=trend.direction==="LONG"?(target-price)/(price-stop):(price-target)/(stop-price);if(!Number.isFinite(rr)||rr<MIN_RR)return{debug:["[SIGNAL BLOCKED] R:R "+rr.toFixed(2)+" < "+MIN_RR]};
  const size=regime.sizeMultiplier===0.5?0.5:1;
- const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:trend.direction,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(rr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:trend.direction+" "+finalType+" | V28 daily EMA8/21 + trendline proximity + Stoch RSI | 4H EMA5/13 momentum + exhaustion | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{regime:regime.state,regimeSizeMultiplier:size,trendlinePrice:tl.price,trendlineR2:tl.r2,ema5_4h:e5,ema13_4h:e13}};
+ const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:trend.direction,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(rr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:trend.direction+" "+finalType+" | V28 daily EMA8/21 + trendline proximity + Stoch RSI | 4H EMA5/13 momentum + exhaustion | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{targetCount:1,targetAtrMultiple:5,regime:regime.state,regimeSizeMultiplier:size,trendlinePrice:tl.price,trendlineR2:tl.r2,ema5_4h:e5,ema13_4h:e13}};
  debug.push("[STOP] "+signal.stop+" | V28 swing/ATR stop");debug.push("[TARGET] "+signal.tp1+" | V28 ATR/swing target; TP2 mirrors TP1");debug.push("[SIGNAL] "+signal.direction+" "+signal.type+" entry="+signal.entry+" SL="+signal.stop+" TP="+signal.tp1+" RR="+signal.rr);
  return{signal,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
 }
