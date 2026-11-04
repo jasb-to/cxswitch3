@@ -77,14 +77,21 @@ test("MED regimes use full size; daily EMA5/13 and 4H EMA5/13 roles are aligned"
 });
 
 test("trend1D uses EMA5/13 for its only daily direction", () => {
-  const trend = source.match(/function trend1D\\([\\s\\S]*?\\n\\}/)?.[0] ?? "";
-  assert.match(trend, /ema\\(closes, 5\\)/);
-  assert.match(trend, /ema\\(closes, 13\\)/);
-  assert.doesNotMatch(trend, /ema\\(closes, 8\\)|ema\\(closes, 21\\)/);
-  assert.doesNotMatch(source, /trend1DEntry1|fastDailyDirection|macroDailyDirection|entry1DailyDirection/);
+  const trendStart = source.indexOf("function trend1D(");
+  const trendEnd = source.indexOf("\\n}", trendStart);
+  const trend = source.slice(trendStart, trendEnd);
+  assert.ok(trend.includes("ema(closes, 5)"));
+  assert.ok(trend.includes("ema(closes, 13)"));
+  assert.ok(!trend.includes("ema(closes, 8)"));
+  assert.ok(!trend.includes("ema(closes, 21)"));
+  assert.ok(!source.includes("trend1DEntry1"));
+  assert.ok(!source.includes("fastDailyDirection"));
+  assert.ok(!source.includes("macroDailyDirection"));
+  assert.ok(!source.includes("entry1DailyDirection"));
 });
 test("both evaluateGates and generateSignal gate ENTRY_1 on momentum and exhaustion", () => {
-  const filter = /const filtersPass=!!dailyTrend\\.direction&&momentumAligned&&!exhaustion;/;
-  assert.equal((source.match(new RegExp(filter.source, "g")) ?? []).length, 2);
-  assert.equal((source.match(/if\\(filtersPass\\)\\{\\s*if\\(nearTrendline&&stochExtreme\\)rawType="ENTRY_1";/g) ?? []).length, 2);
+  const filter = "const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;";
+  const entryGate = 'if(filtersPass){\\n  if(nearTrendline&&stochExtreme)rawType="ENTRY_1";';
+  assert.equal(source.split(filter).length - 1, 2);
+  assert.equal(source.split(entryGate).length - 1, 2);
 });
