@@ -88,14 +88,17 @@ export default function Dashboard(){
     const verdict=j?.verdict??a?.jarvisVerdict??"GOOD";
     const verdictTone=verdict==="GOOD"?"text-green-300 border-green-500/25 bg-green-500/10":verdict==="VETO"?"text-red-300 border-red-500/25 bg-red-500/10":"text-yellow-300 border-yellow-500/25 bg-yellow-500/10";
     const isDetails=!!showDetails[pair];
+    const strategyBlocked=m?.momentumAligned===false||!!m?.exhaustion;
+    const strategyReady=m?.dailyDirection!=null&&m?.momentumAligned===true&&!m?.exhaustion;
+    const cardBorder=strategyBlocked?"border-red-500/35":strategyReady?"border-emerald-500/35":"border-amber-500/25";
     const alertSent=!!a;
     const momentum=m?.momentumState;
-    return <article key={pair} className="bg-[#0b0b0b] rounded-xl border border-white/[0.07] p-3 sm:p-3.5 min-w-0 flex flex-col gap-2 select-text" style={{WebkitUserSelect:"text",userSelect:"text"}}>
+    return <article key={pair} className={`bg-[#0b0b0b] rounded-xl border ${cardBorder} p-3 sm:p-3.5 min-w-0 flex flex-col gap-2 select-text`} style={{WebkitUserSelect:"text",userSelect:"text"}}>
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 min-w-0">
         <div className="flex items-center gap-2 min-w-0"><span className={`rounded px-2 py-1 text-[10px] font-black tracking-wide ${regimeBadge} ${regimeTone}`}>{pair}/USD</span><span className="text-base sm:text-lg font-semibold tabular-nums whitespace-nowrap">{money(p)}</span></div>
         <div className={`rounded border px-2 py-1 text-[9px] font-black text-right whitespace-nowrap shrink-0 ${regimeTone}`}>{regime}</div>
       </div>
-      <div className="flex items-center justify-between gap-2 text-[9px] leading-4"><div><div className="text-white/30 font-bold tracking-wide">DAILY BIAS (5/13)</div><div className={directionClass(m?.dailyDirection??"NEUTRAL")}>{m?.dailyDirection??"—"}</div></div><div className="text-right"><div className="text-white/30 font-bold tracking-wide">MOMENTUM</div><div className={m?.momentumAligned?"text-emerald-400":"text-amber-400"}>{m?.momentumAligned?"ALIGNED":"BLOCKED"}</div></div></div><div className="text-[9px] text-white/45">TL DISTANCE: {typeof m?.trendlineDistancePct==="number"?m.trendlineDistancePct.toFixed(2)+"%":typeof m?.distToTrendline==="number"?m.distToTrendline.toFixed(2)+"%":"—"}</div>{m?.exhaustion&&<div className="text-[9px] text-amber-400">EXHAUSTION: {m.exhaustion}</div>}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-2 text-[9px] leading-4"><div><div className="text-white/35 font-bold tracking-wide">DAILY DIRECTION (5/13)</div><div className={`font-black ${directionClass(m?.dailyDirection??"NEUTRAL")}`}>{m?.dailyDirection??"—"}</div></div><div><div className="text-white/35 font-bold tracking-wide">TRENDLINE DIST</div><div className="font-semibold tabular-nums text-white/80">{typeof m?.trendlineDistancePct==="number"?m.trendlineDistancePct.toFixed(2)+"%":typeof m?.distToTrendline==="number"?m.distToTrendline.toFixed(2)+"%":"—"}</div></div><div><div className="text-white/35 font-bold tracking-wide">MOMENTUM FILTER</div><div className={`font-black ${m?.momentumAligned===true?"text-emerald-400":"text-red-400"}`}>{m?.momentumAligned===true?"ALIGNED":m?.momentumAligned===false?"MISALIGNED":"WAITING"}</div></div><div><div className="text-white/35 font-bold tracking-wide">EXHAUSTION</div><div className={`font-black ${m?.exhaustion?"text-red-400":"text-emerald-400"}`}>{m?.exhaustion?"VETOED":"CLEAR"}</div>{m?.exhaustion&&<div className="mt-0.5 break-words text-[8px] text-red-300/80">{m.exhaustion}</div>}</div></div><div className={`flex items-center justify-between gap-2 text-[9px] leading-4 ${strategyBlocked?"text-white/25":"text-white/70"}`}><span className="font-bold tracking-wide">STOCH RSI</span><span className="font-semibold tabular-nums">K {typeof m?.stochK4h==="number"?m.stochK4h.toFixed(1):"—"} / D {typeof m?.stochD4h==="number"?m.stochD4h.toFixed(1):"—"}</span></div>
       <div className="min-w-0 grid grid-cols-[3.5rem_minmax(0,1fr)] items-start gap-2 text-[11px] leading-5"><span className="pt-0.5 text-[9px] text-white/35 font-bold tracking-wide">STATUS</span><span className={`min-w-0 whitespace-normal break-words [overflow-wrap:anywhere] ${statusTone}`}>{status}{trendlineNote}</span></div>
       
       <div className="min-w-0 flex items-start gap-1 text-[9px] leading-4"><span className="pt-0.5 text-[9px] text-white/35 font-bold tracking-wide">STOCH</span><span className={`min-w-0 whitespace-normal break-words [overflow-wrap:anywhere] ${stochTone}`}>{typeof closedK==="number"&&typeof closedD==="number"?`${closedK.toFixed(1)} / ${closedD.toFixed(1)}`:"— / —"} — {stochState}{staleNote}</span></div>
@@ -107,13 +110,8 @@ export default function Dashboard(){
       </div>}
       {isDetails&&<div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
         {isActive&&<div>POSITION SIZE · {Math.round((m?.sizeMultiplier??a?.sizeMultiplier??0)*100)}% size</div>}
-        <div>1D EMA 5/13 · {m?.ema5_1d!=null&&m?.ema13_1d!=null?`${money(m.ema5_1d)} / ${money(m.ema13_1d)}`:"—"}</div>
-        <div>4H EMA 5/13 · {m?.ema5_4h!=null&&m?.ema13_4h!=null?`${money(m.ema5_4h)} / ${money(m.ema13_4h)}`:"—"}</div>
-        <div>4H EMA 8/21 · {m?.ema8_4h!=null&&m?.ema21_4h!=null?`${money(m.ema8_4h)} / ${money(m.ema21_4h)}`:"—"}</div>
-        <div>1D STOCH RSI · {typeof m?.stochK1d==="number"&&typeof m?.stochD1d==="number"?`K ${m.stochK1d.toFixed(1)} / D ${m.stochD1d.toFixed(1)}`:"—"}</div>
         <div>JARVIS STATE · {m?.jarvisState??j?.currentAnalysis??j?.reason??"—"}</div>
         <div>JARVIS REASON · {j?.reason??a?.jarvisReason??"—"}</div>
-        <div>DAILY BIAS (5/13) · {m?.dailyDirection??"—"} · 4H MOMENTUM · {m?.momentumAligned?"ALIGNED":"BLOCKED"} · EXHAUSTION · {m?.exhaustion??"CLEAR"}</div>
         <div>STRUCTURE · {m?.structureShift?.reason??"—"}</div>
         <div>STRATEGY STATUS · {status}</div>
         <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {m?.distToTrendline!=null?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
