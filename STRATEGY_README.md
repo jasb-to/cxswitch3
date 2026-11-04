@@ -1,53 +1,49 @@
 # CXSwitch V28 — Strategy Reference
 
-The production strategy lives in `lib/strategy.ts`. This document describes the active architecture only; obsolete experiments and legacy exchange modules are intentionally removed.
+The production strategy lives in lib/strategy.ts. This document describes the single-direction V28 architecture.
 
-## Direction and timeframe hierarchy
+## Direction and global filters
 
-- **1D EMA 5/13:** macro directional bias. EMA 5 above EMA 13 = LONG bias; EMA 5 below EMA 13 = SHORT bias, with the existing neutral/transition handling.
-- **4H EMA 8/21:** longer-move direction and trade management. This remains the primary 4H management/reversal reference.
-- **4H EMA 5/13:** faster visual diagnostic only. It helps show tactical direction changes but does not replace the 4H EMA 8/21 management hierarchy.
-- **Jarvis:** observes, explains and reviews the setup; it does not create or flip a trading direction.
+- **One daily direction:** aggregate 4H candles into daily candles and compare EMA 5 with EMA 13. EMA 5 above EMA 13 = LONG; otherwise SHORT once at least 25 daily candles are available.
+- **One shared trendline:** each pair has one trendline state and one KV key, using the pair symbol as the key.
+- **Global 4H momentum:** EMA 5/13 must align with the daily direction for every entry type.
+- **Global exhaustion:** block LONG when RSI >78 or Stoch K >95; block SHORT when RSI <22 or Stoch K <5. Also block when ADX >50 and Stoch K/D is turning against the daily direction.
+- The global filters apply equally to ENTRY_1, ENTRY_2 and ADD.
 
-## Entries
+## Original V28 triggers
 
-### Entry 1 — early location setup
+The engine evaluates the following triggers in order. The first matching trigger is selected.
 
-ENTRY_1 is deliberately simple:
+### ENTRY_1 — trendline proximity + Stoch extreme
 
-- the 1D direction must be established;
-- price must be near the validated 4H structural trendline/zone;
-- the setup must be inside the configured location tolerance;
-- StochRSI must be in the directional extreme (LONG <20 / SHORT >80);
-- exhaustion protection remains active.
+- Price is within 1.2% of the shared trendline.
+- LONG Stoch K <20; SHORT Stoch K >80.
+- Global 4H momentum and exhaustion filters must pass.
 
-ENTRY_1 is an early setup. A structural breakout is not required for ENTRY_1.
+### ENTRY_2 — trendline proximity + Stoch turn
 
-### Entry 2 — persistent break → retest
+- Price is within 1.2% of the shared trendline.
+- Stoch turns with the daily direction: LONG K > D; SHORT K < D.
+- Stoch must not still be at the directional extreme.
+- Global 4H momentum and exhaustion filters must pass.
 
-ENTRY_2 is stateful and follows:
+### ADD — confirmed trendline break
 
-**BREAK → REMEMBER BREAK → PULLBACK → RETEST RECORDED BREAKOUT LEVEL → REJECTION/CONFIRMATION → STOCH CONFIRMATION → ENTRY_2**
-
-The breakout level is recorded from the closed structural-break candle and persisted by pair.
-
-- Breakout state remains valid for **48 hours**.
-- Retest tolerance is **1.5%** of the recorded breakout level.
-- LONG retest requires price to return to the level and close back above it with directional confirmation.
-- SHORT retest requires price to return to the level and close back below it with directional confirmation.
-- StochRSI confirmation remains LONG K 20–55 / SHORT K 45–80 with the existing K/D timing requirement.
-- The state is cleared after the ENTRY_2 lifecycle is consumed so the same retest cannot repeatedly fire.
+- Price breaks beyond the shared trendline by 0.8% in the daily direction.
+- The latest candle confirms direction by candle colour and closing beyond the previous close.
+- Price is aligned with 4H EMA 8/21.
+- At least one of volume expansion (>1.3× the recent 10-candle average), Stoch momentum, or ADX >20 is present.
+- Global 4H momentum and exhaustion filters must pass.
 
 ## Risk and management
 
-- R:R is **risk/target information, not an entry gate**.
-- Stops retain the structural/ATR calculation and liquidation-buffer checks.
-- TP1/TP2 and position management remain separate from entry qualification.
-- Existing 4H/1D reversal, chandelier and breakeven management logic remains active.
-- Telegram alert lifecycle and deduplication remain active.
+- ENTRY_1 and ENTRY_2 use the wider of the recent 20-candle swing boundary and a 2 ATR stop.
+- ADD retains the 0.5% trendline buffer and 1.5 ATR stop floor.
+- The V28 5 ATR target is retained for ENTRY_1/ENTRY_2; TP2 mirrors TP1 for compatibility.
+- The existing minimum R:R check, hysteresis, trendline KV persistence, signal lifecycle, stop/target management and Telegram alert handling remain in place.
+- tp_hit remains a management exit and reconciles signal history to TP_HIT.
+- Telegram displays the mirrored single target once, not as a trailing target.
 
 ## Deliberately not used
 
-The active strategy does **not** use Fib gates, weekly gates, daily pre-break gates, tactical direction overrides, counter-trend gates, MACD/ADX gates, confidence-score gates, or an additional multi-stage direction state machine.
-
-Legacy experimental 1D trend-engine modules, alternate MEXC/CoinGecko market-data modules, and the unused structure-shift module have been removed to keep the production path auditable.
+There is no separate FAST/MACRO daily track, no second trendline evaluation, and no separate ENTRY_1/ENTRY_2 direction or filter helper. All three entry types use the same daily direction and the same global 4H filters.

@@ -1,4 +1,4 @@
-// lib/jarvis.ts — deterministic observation and review layer for the V28 dual-direction strategy
+// lib/jarvis.ts — deterministic observation and review layer for the single-direction V28 strategy
 import { Redis } from "./supabase-kv";
 
 import { evaluateGates } from "./strategy";
@@ -48,7 +48,7 @@ function directionFromDaily(value:any): "BULL" | "BEAR" | "NEUTRAL" {
 }
 
 function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
-  // 4H EMA5/13 is the mandatory shared momentum gate; daily phase direction remains phase-specific.
+  // 4H EMA5/13 is the mandatory global momentum gate for the single daily direction.
   const tacticalDirection=String(snapshot?.fourHTacticalDirection||"").toUpperCase();
   if(tacticalDirection==="BULL"||tacticalDirection==="LONG")return "BULL";
   if(tacticalDirection==="BEAR"||tacticalDirection==="SHORT")return "BEAR";
@@ -66,11 +66,8 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
   if(signal.signalClass==="REVERSAL" || signal.type==="REVERSAL_SHORT" || signal.type==="REVERSAL_LONG"){
     return { verdict:"WARN", reason:"counter-trend reversal — reduce size, tighter management" };
   }
-  const fastEntry = signal.type === "ENTRY_1";
-  const oneD = directionFromDaily(fastEntry
-    ? snapshot?.fastDailyDirection ?? snapshot?.entry1DailyDirection
-    : snapshot?.macroDailyDirection ?? snapshot?.dailyDirection);
-  const dailyStrength = fastEntry ? "NEUTRAL" : String(snapshot?.dailyStrength || "NEUTRAL");
+  const oneD = directionFromDaily(snapshot?.dailyDirection);
+  const dailyStrength = String(snapshot?.dailyStrength || "NEUTRAL");
   if(oneD === "BULL" && signal.direction === "SHORT" && dailyStrength === "HIGH") {
     return { verdict:"WARN", reason:"SHORT against HIGH-strength BULL 1D context" };
   }
@@ -221,32 +218,20 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   if(!c.length)return "[JARVIS STATE] "+pair+" — Status unavailable.";
   const p=Number(market?.currentPrice??market?.price??c.at(-1)?.close??0);
   const evaluation=evaluateGates(pair,c,p);
-  const fastDaily=String(market?.fastDailyDirection??market?.entry1DailyDirection??"NEUTRAL").toUpperCase();
-  const macroDaily=String(market?.macroDailyDirection??market?.dailyDirection??"NEUTRAL").toUpperCase();
-  const fourH=directionFrom4H(market);
-  const fastText=fastDaily==="LONG"||fastDaily==="BULL"?"LONG":fastDaily==="SHORT"||fastDaily==="BEAR"?"SHORT":"NEUTRAL";
-  const macroText=macroDaily==="LONG"||macroDaily==="BULL"?"LONG":macroDaily==="SHORT"||macroDaily==="BEAR"?"SHORT":"NEUTRAL";
+  const daily=String(market?.dailyDirection??evaluation.direction??"NEUTRAL").toUpperCase();
+  const dailyText=daily==="LONG"||daily==="SHORT"?daily:"NEUTRAL";
+  const momentum=market?.momentumAligned??evaluation.momentumAligned;
+  const exhaustion=market?.exhaustion??evaluation.exhaustion;
   const tlDistance=Number(market?.trendlineDistancePct??market?.distToTrendline);
-  const tlText=Number.isFinite(tlDistance)?" Shared 4H trendline distance "+tlDistance.toFixed(2)+"%.":" Trendline distance unavailable.";
-  const fourHText=fourH==="BULL"?"bullish":fourH==="BEAR"?"bearish":"neutral";
-  const globalFilters="Both entry phases require 4H EMA5/13 momentum alignment and the RSI/Stoch/ADX exhaustion veto.";
-  if(!evaluation.direction){
-    return "[JARVIS STATE] "+pair+" — FAST bias (1D EMA5/13): "+fastText+"; MACRO bias (1D EMA8/21): "+macroText+". ENTRY_1 is evaluated first using FAST bias, trendline proximity and Stoch extreme. If it does not trigger, ENTRY_2/ADD use MACRO bias and the same per-pair trendline state. "+fourHText+" 4H context."+tlText+" "+globalFilters+" Waiting for a valid phase-specific trigger.";
-  }
-  const dir=evaluation.direction;
-  const st=evaluation.trigger;
-  const q=c.map(x=>x.close);
-  const rawStoch=stochState(q);
-  const kNow=rawStoch.k,dNow=rawStoch.d;
+  const tlText=Number.isFinite(tlDistance)?" Trendline distance "+tlDistance.toFixed(2)+"%.":" Trendline distance unavailable.";
+  const filterText=" Global 4H EMA5/13 momentum is "+(momentum?"aligned":"blocked")+(exhaustion?"; exhaustion veto: "+exhaustion+".":"; exhaustion clear.");
+  if(!evaluation.direction)return "[JARVIS STATE] "+pair+" — DAILY BIAS (1D EMA5/13): "+dailyText+"."+filterText+tlText+" Waiting for the V28 trendline/Stoch trigger.";
+  const dir=evaluation.direction,st=evaluation.trigger,q=c.map(x=>x.close),rawStoch=stochState(q),kNow=rawStoch.k,dNow=rawStoch.d;
   let stochSummary="Stoch is waiting for confirmation.";
-  if(st.entry1) stochSummary="Stoch is at the FAST-direction extreme for ENTRY_1.";
-  else if(st.entry2) stochSummary="Stoch is turning in the MACRO direction for ENTRY_2.";
+  if(st.entry1)stochSummary="Stoch is at the daily-direction extreme for ENTRY_1.";
+  else if(st.entry2)stochSummary="Stoch is turning in the daily direction for ENTRY_2.";
   else if(dir==="LONG"&&kNow>dNow)stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
   else if(dir==="SHORT"&&kNow<dNow)stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
-  if(signal){
-    const phase=signal.type==="ENTRY_1"?"FAST daily EMA5/13":"MACRO daily EMA8/21";
-    return "[JARVIS STATE] "+pair+" — "+signal.type+" "+dir+" fired using "+phase+". "+globalFilters+tlText+" "+stochSummary+" TP "+signal.tp1.toFixed(2)+".";
-  }
-  return "[JARVIS STATE] "+pair+" — FAST bias "+fastText+"; MACRO bias "+macroText+". "+globalFilters+tlText+" Waiting for "+(dir==="LONG"?"a FAST Stoch extreme near the trendline, or a MACRO Stoch turn/breakout":"a FAST Stoch extreme near the trendline, or a MACRO Stoch turn/breakout")+".";
-
+  if(signal)return "[JARVIS STATE] "+pair+" — "+signal.type+" "+dir+" fired using the single daily EMA5/13 bias."+filterText+tlText+" "+stochSummary+" TP "+signal.tp1.toFixed(2)+".";
+  return "[JARVIS STATE] "+pair+" — DAILY BIAS (1D EMA5/13): "+dailyText+"."+filterText+tlText+" "+stochSummary+" Waiting for a V28 trendline/Stoch trigger.";
 }
