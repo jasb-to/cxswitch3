@@ -429,6 +429,47 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
 }
 
 // --- MAIN SIGNAL ---
+export function evaluateGates(
+ pair:string,candles4h:Candle[],currentPrice:number,entry1State?:any,entry2AlreadyFired=false,
+ activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]
+):any{
+ void entry1State;void entry2AlreadyFired;
+ const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),price=currentPrice??c.at(-1)?.close??0;
+ const daily=aggregateTo1D(c),trend=trend1D(daily),direction=trend.direction;
+ const closed=c.slice(0,-1),closes=closed.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(closed);
+ const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
+ const momentumAligned=direction==="LONG"?e5>e13:direction==="SHORT"?e5<e13:false;
+ const tl=direction?getTrendline(pair,c,direction):null,dist=tl&&tl.price>0?Math.abs(price-tl.price)/tl.price*100:Infinity;
+ const near=!!tl&&dist<1.2,extreme=direction==="LONG"?st.k<20:direction==="SHORT"?st.k>80:false;
+ const turning=direction==="LONG"?st.k>st.d:direction==="SHORT"?st.k<st.d:false;
+ const rsiExhausted=direction==="LONG"?rv>78:direction==="SHORT"?rv<22:false;
+ const stochVeto=direction==="LONG"?st.k>95:direction==="SHORT"?st.k<5:false;
+ const turningAgainst=direction==="LONG"?st.k<st.d:direction==="SHORT"?st.k>st.d:false;
+ const exhaustion= rsiExhausted?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":av>50&&turningAgainst?"ADX >50 with Stoch turning against":null;
+ const filtersPass=!!direction&&momentumAligned&&!exhaustion;
+ const activeMatch=!!direction&&activeSignals.some(x=>x.pair===pair&&x.direction===direction);
+ const entry1=!!direction&&near&&extreme&&filtersPass&&!activeMatch;
+ const entry2=!!direction&&near&&turning&&!extreme&&!exhaustion;
+ const last=closed.at(-1),prev=closed.at(-2);
+ const beyond=!!tl&&(direction==="LONG"?price>tl.price*1.008:price<tl.price*0.992);
+ const confirming=!!last&&!!prev&&(direction==="LONG"?last.close>last.open&&last.close>prev.close:last.close<last.open&&last.close<prev.close);
+ const volUp=!!last&&last.volume>avg(closed.slice(-10).map(x=>x.volume))*1.3;
+ const stochMomentum=direction==="LONG"?st.k>st.d:direction==="SHORT"?st.k<st.d:false;
+ const addReady=!!activeMatch&&beyond&&confirming&&filtersPass&&(volUp||stochMomentum||av>20);
+ const signalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=addReady?"ADD":entry2?"ENTRY_2":entry1?"ENTRY_1":null;
+ const missing:string[]=[];
+ if(!direction)missing.push("daily_ema_8_21_direction_unavailable");
+ if(direction&&!tl)missing.push("trendline_unavailable");
+ if(direction&&tl&&!near&&!beyond)missing.push("price_too_far_from_trendline");
+ if(direction&&!momentumAligned)missing.push("4h_ema5_13_momentum_misaligned");
+ if(exhaustion)missing.push("exhaustion_veto: "+exhaustion);
+ if(!signalType)missing.push("V28 Stoch RSI / trendline trigger not met");
+ const dailyDirection=direction==="LONG"?"LONG":direction==="SHORT"?"SHORT":null;
+ const regime=computeRegime(c);
+ const alignment={daily:dailyDirection,dailyE8:trend.dailyE8??0,dailyE21:trend.dailyE21??0,fourHE5:e5,fourHE13:e13,fourH:e5>e13?"LONG":e5<e13?"SHORT":null,regime:regime.state,sizeMultiplier:regime.sizeMultiplier};
+ return{direction,zone:null,trendlineSlope:tl?.slope??0,trendline:tl?{price:tl.price,distancePct:dist,r2:tl.r2,reason:"V28 trendline"}:null,alignment,trigger:{entry1,entry2,signalType,entry1Reason:entry1?"V28 Stoch extreme + EMA5/13 momentum":missing.join("; "),entry2Reason:entry2?"V28 Stoch turn near trendline":"not_ready",entry1SizeMultiplier:1,entry1CrossAgeInCandles:null,entry1Case:entry1?"fresh":null},exhaustion,stopCalc:null,missing:[...new Set(missing)],allPassed:!!signalType&&filtersPass&&!!tl&&(signalType==="ADD"||near),dailyTransition:false,breakoutRecord:undefined};
+}
+
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,entry1State?:any,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]):SignalResult{
  void candles1h;void candles15m;void lastBreakout;void entry1State;void entry2AlreadyFired;
  const debug:string[]=[],c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),now=nowOverride??Date.now();
