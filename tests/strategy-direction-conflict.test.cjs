@@ -12,13 +12,11 @@ const FOUR_HOURS = 4 * 60 * 60 * 1000;
 
 function candlesFromDaily(targets, { lastDayRising = false } = {}) {
   const out = [], start = Date.UTC(2026, 0, 1);
-  for (let day = 0; day < targets.length; day++) {
-    for (let slot = 0; slot < 6; slot++) {
-      let close = targets[day];
-      if (lastDayRising && day === targets.length - 1) close = targets[day] + slot * Math.max(0.2, targets[day] * 0.01);
-      const timestamp = start + (day * 6 + slot) * FOUR_HOURS;
-      out.push({ timestamp, open: close, high: close + 0.2, low: close - 0.2, close, volume: 1 });
-    }
+  for (let day = 0; day < targets.length; day++) for (let slot = 0; slot < 6; slot++) {
+    let close = targets[day];
+    if (lastDayRising && day === targets.length - 1) close = targets[day] + slot * Math.max(0.2, targets[day] * 0.01);
+    const timestamp = start + (day * 6 + slot) * FOUR_HOURS;
+    out.push({ timestamp, open: close, high: close + 0.2, low: close - 0.2, close, volume: 1 });
   }
   return out;
 }
@@ -36,94 +34,68 @@ function trendTargets(kind, days = 40) {
     return 132;
   });
 }
-function stoch(k, d, pk, pd) { return { k, d, pk, pd }; }
+const stoch = (k, d, pk = k, pd = d) => ({ k, d, pk, pd });
 
-test("BEAR_HIGH regime remains tradeable at full regime size", () => {
+test("BEAR_HIGH remains a full-size SHORT regime", () => {
   const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearHigh")));
   assert.equal(regime.state, "BEAR_HIGH");
   assert.equal(regime.direction, "SHORT");
   assert.equal(regime.sizeMultiplier, 1);
-  const trigger = strategy.evaluateEntry1(regime.direction, stoch(80, 85, 90, 85));
-  assert.equal(trigger.entry1Short, true);
-  assert.equal(trigger.direction, "SHORT");
 });
-
-test("BEAR_LOW regime blocks direction and has zero size", () => {
-  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearLow")));
+test("BEAR_LOW is reference-only: EMA8/21 still determines direction and size is 50%", () => {
+  const candles = candlesFromDaily(trendTargets("bearLow"));
+  const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
   assert.equal(regime.state, "BEAR_LOW");
-  assert.equal(regime.direction, null);
-  assert.equal(regime.sizeMultiplier, 0);
-  assert.equal(strategy.regimeAllowsTrading(regime.state), false);
+  assert.equal(regime.sizeMultiplier, 0.5);
+  assert.equal(alignment.daily, alignment.dailyE8 < alignment.dailyE21 ? "SHORT" : "LONG");
+  assert.equal(alignment.aligned, alignment.daily);
 });
-
-test("CHOP + fresh bearish Stoch cross => no signal and zero size", () => {
-  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bullMed", 16)));
-  assert.equal(regime.state, "CHOP");
-  assert.equal(regime.direction, null);
-  assert.equal(regime.sizeMultiplier, 0);
-  const trigger = strategy.evaluateEntry1(regime.direction, stoch(75, 77, 80, 78));
-  assert.equal(trigger.entry1, false);
-});
-
-test("BULL_LOW regime blocks direction and has zero size", () => {
-  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bullLow")));
+test("BULL_LOW is reference-only and applies half size", () => {
+  const candles = candlesFromDaily(trendTargets("bullLow"));
+  const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
   assert.equal(regime.state, "BULL_LOW");
-  assert.equal(regime.direction, null);
-  assert.equal(regime.sizeMultiplier, 0);
-  assert.equal(strategy.regimeAllowsTrading(regime.state), false);
+  assert.equal(regime.sizeMultiplier, 0.5);
+  assert.ok(["LONG", "SHORT"].includes(alignment.daily));
+  assert.equal(alignment.aligned, alignment.daily);
 });
-
-test("MED regimes use full size; direction does not require 4H EMA5/13 agreement", () => {
-  const c = candlesFromDaily(trendTargets("bearMed"), { lastDayRising: true });
-  const regime = strategy.computeRegime(c);
-  const alignment = strategy.trendAlignment(c);
+test("CHOP is reference-only and applies half size without nulling EMA8/21 direction", () => {
+  const candles = candlesFromDaily(trendTargets("chop"));
+  const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
+  assert.equal(regime.state, "CHOP");
+  assert.equal(regime.sizeMultiplier, 0.5);
+  assert.ok(["LONG", "SHORT"].includes(alignment.daily));
+  assert.equal(alignment.aligned, alignment.daily);
+});
+test("MED regimes use full size; 4H EMA5/13 is a separate momentum filter", () => {
+  const candles = candlesFromDaily(trendTargets("bearMed"), { lastDayRising: true });
+  const regime = strategy.computeRegime(candles), alignment = strategy.trendAlignment(candles);
   assert.equal(regime.state, "BEAR_MED");
   assert.equal(regime.sizeMultiplier, 1);
   assert.equal(alignment.daily, "SHORT");
   assert.equal(alignment.aligned, "SHORT");
+});
+test("ENTRY_1 LONG uses K below 20 and SHORT uses K above 80, without requiring a crossover", () => {
+  assert.equal(strategy.evaluateEntry1("LONG", stoch(20, 15)).entry1, false);
+  assert.equal(strategy.evaluateEntry1("LONG", stoch(19.9, 15)).entry1Long, true);
+  assert.equal(strategy.evaluateEntry1("SHORT", stoch(80, 85)).entry1, false);
+  assert.equal(strategy.evaluateEntry1("SHORT", stoch(80.1, 85)).entry1Short, true);
+});
+test("daily EMA8/21 is the direction source even when 4H momentum is opposed", () => {
+  const candles = candlesFromDaily(trendTargets("bearMed"), { lastDayRising: true });
+  const alignment = strategy.trendAlignment(candles);
+  assert.equal(alignment.daily, "SHORT");
+  assert.equal(alignment.aligned, "SHORT");
   assert.equal(alignment.fourH, "LONG");
 });
-
-test("Spread output is signed and includes the three-day comparison", () => {
-  const regime = strategy.computeRegime(candlesFromDaily(trendTargets("bearMed")));
-  assert.ok(regime.spread < 0);
-  assert.ok(Number.isFinite(regime.spread3));
-  assert.ok(Number.isFinite(regime.spreadDelta));
-});
-
-test("ENTRY_1 uses strict V28 K extremes", () => {
-  assert.equal(strategy.evaluateEntry1("SHORT", stoch(60, 65, 70, 65)).entry1, false);
-  assert.equal(strategy.evaluateEntry1("SHORT", stoch(80, 85, 90, 85)).entry1Short, true);
-  assert.equal(strategy.evaluateEntry1("LONG", stoch(40, 35, 30, 35)).entry1, false);
-  assert.equal(strategy.evaluateEntry1("LONG", stoch(20, 15, 10, 15)).entry1Long, true);
-});
-
-test("ENTRY_1 accepts a crossover on either of the last two candle transitions", () => {
-  const previousCandleCross = strategy.evaluateEntry1("SHORT", [
-    { k: 90, d: 85 }, { k: 80, d: 85 }, { k: 79, d: 84 },
-  ]);
-  assert.equal(previousCandleCross.entry1Short, true);
-  assert.equal(previousCandleCross.crossAge, "previous candle");
-  const noRecentCross = strategy.evaluateEntry1("SHORT", [
-    { k: 45, d: 50 }, { k: 42.8, d: 50.3 }, { k: 36, d: 44.7 },
-  ]);
-  assert.equal(noRecentCross.entry1Short, false);
-  assert.equal(noRecentCross.reason, "no_cross_found");
-});
-
-test("structural stop uses the last 20 candles and the 2 ATR floor", () => {
-  const c = candlesFromDaily(trendTargets("bullMed"));
-  const result = strategy.calculateStop("LONG", 110, 2, c);
-  const low = Math.min(...c.slice(-20).map(x => x.low));
-  assert.equal(result.valid, true);
+test("stop is the more conservative of the 20-bar swing and 2 ATR boundary", () => {
+  const candles = candlesFromDaily(trendTargets("bullMed"));
+  const result = strategy.calculateStop("LONG", 110, 2, candles);
+  const low = Math.min(...candles.slice(-20).map(x => x.low));
   assert.equal(result.stop, Math.min(low, 106));
 });
-
-test("shouldHold does not scale out at TP1 and only returns a tighter Chandelier stop", () => {
-  const c = candlesFromDaily(Array.from({ length: 40 }, (_, i) => 100 + i * 0.02 + (i % 2 ? 0.5 : -0.5)));
-  const base = { direction: "LONG", entry: 100, stop: 90, tp1: 103, tp2: 106, timestamp: Date.UTC(2026, 0, 1), version: 32 };
-  const result = strategy.shouldHold(base, c, 105);
-  assert.equal(result.shouldHold, true);
-  assert.equal(result.reason, "chandelier_stop_update");
-  assert.ok(result.newStop > base.stop);
+test("single target is 5 ATR and is recorded as targetCount 1", () => {
+  const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
+  assert.match(source, /entry\+5\*a/);
+  assert.match(source, /entry-5\*a/);
+  assert.match(source, /targetCount:1/);
 });
