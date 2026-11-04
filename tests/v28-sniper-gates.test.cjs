@@ -19,16 +19,17 @@ test("V28 trendline uses stateful seven-day cache and 1.2% proximity without V32
   assert.doesNotMatch(strategy, /r2<0\.60|r2_below_0\.60/);
 });
 
-test("ENTRY_1 requires Stoch RSI extreme and 4H EMA 5/13 momentum", () => {
+test("ENTRY_1 uses daily EMA5/13 direction plus V28 trendline proximity and Stoch extreme only", () => {
+  assert.ok(strategy.includes("function trend1DEntry1"));
   assert.ok(strategy.includes('st.k<20:st.k>80'));
-  assert.ok(strategy.includes('e5>e13:e5<e13'));
-  assert.ok(strategy.includes('if(near&&extreme&&momentum&&exhaustionClear)raw="ENTRY_1"'));
-  assert.doesNotMatch(strategy, /EMA8\/21 momentum gate/);
+  assert.ok(strategy.includes('if(entry1Near&&entry1Extreme&&entry1Trend.direction)raw="ENTRY_1"'));
+  assert.ok(strategy.includes("const entry1=!!entry1Trend.direction&&entry1Near&&entry1Extreme&&!entry1ActiveMatch"));
+  assert.doesNotMatch(strategy, /if\(entry1Near&&entry1Extreme&&[^\n]*momentum|if\(entry1Near&&entry1Extreme&&[^\n]*exhaustionClear/);
 });
 
 test("momentum exhaustion filter uses RSI 78/22, Stoch 95/5 and ADX above 50 turning against", () => {
-  assert.ok(strategy.includes('rv>78:rv<22'));
-  assert.ok(strategy.includes('st.k>95:st.k<5'));
+  assert.ok(strategy.includes('rv>78:trend.direction==="SHORT"?rv<22:false'));
+  assert.ok(strategy.includes('st.k>95:trend.direction==="SHORT"?st.k<5:false'));
   assert.ok(strategy.includes('av>50&&against'));
 });
 
