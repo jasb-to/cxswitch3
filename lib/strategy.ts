@@ -474,7 +474,7 @@ export function evaluateGates(
  const filters=(dir:Direction|null)=>evaluateDirectionalFilters(dir,e5,e13,rv,st.k,st.d,av);
  const fastFilters=filters(fast.direction),fastTl=fast.direction?getTrendline(pair,c,fast.direction):null;
  const fastDist=fastTl&&fastTl.price>0?Math.abs(price-fastTl.price)/fastTl.price*100:Infinity;
- const fastNear=!!fastTl&&fastDist<1.2,fastExtreme=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
+ const fastNear=!!fastTl&&fastDist<1.2;
  const fastActive=!!fast.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===fast.direction);
  const entry1=entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive);
  // ENTRY_1 gets first evaluation. If it does not fire, the single pair trendline state
@@ -486,8 +486,6 @@ export function evaluateGates(
    macroTl=getTrendline(pair,c,macro.direction);
    macroDist=macroTl&&macroTl.price>0?Math.abs(price-macroTl.price)/macroTl.price*100:Infinity;
    macroNear=!!macroTl&&macroDist<1.2;
-   const extreme=macro.direction==="LONG"?st.k<20:st.k>80;
-   turning=macro.direction==="LONG"?st.k>st.d:st.k<st.d;
    macroActive=activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
    entry2=entry2TriggerPass(macro.direction,macroNear,st.k,st.d,macroFilters.pass,macroActive);
    beyond=!!macroTl&&(macro.direction==="LONG"?price>macroTl.price*1.008:price<macroTl.price*0.992);
@@ -541,7 +539,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
    const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null;
    const macroDistance=macroTl?Math.abs(price-macroTl.price)/macroTl.price*100:Infinity,macroNear=!!macroTl&&macroDistance<1.2;
    const macroFilters=filters(macro.direction),macroActive=!!macro.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
-   const macroExtreme=macro.direction==="LONG"?st.k<20:st.k>80,turning=macro.direction==="LONG"?st.k>st.d:st.k<st.d;
    const last=c.at(-1)!,prev=c.at(-2)!,beyond=!!macroTl&&(macro.direction==="LONG"?price>macroTl.price*1.008:price<macroTl.price*0.992);
    const confirming=!!macro.direction&&(macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:last.close<last.open&&last.close<prev.close);
    const volUp=last.volume>avg(c.slice(-10).map(x=>x.volume))*1.3,stochMomentum=macro.direction==="LONG"?st.k>st.d:st.k<st.d;
