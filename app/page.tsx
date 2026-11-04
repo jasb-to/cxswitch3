@@ -84,7 +84,7 @@ export default function Dashboard(){
     const strategyDirection=String(m?.entry1Direction??m?.entry1Decision??status).toUpperCase();
     const staleNote=status.toLowerCase().includes("cross_too_old")?(strategyDirection.includes("SHORT")&&typeof closedK==="number"&&closedK>75?" (K too high for entry)":strategyDirection.includes("LONG")&&typeof closedK==="number"&&closedK<25?" (K too low for entry)":""):"";
     const stochTone=stochState==="BULLISH CROSS"?"text-green-300":stochState==="BEARISH CROSS"?"text-red-300":"text-white/45";
-    const trendlineNote=m?.trendlinePrice!=null&&m?.distToTrendline!=null?` · TL ${m.distToTrendline.toFixed(1)}%`:"";
+    const trendlineNote=typeof m?.trendlinePrice==="number"&&m.trendlinePrice!==0&&m?.distToTrendline!=null?` · TL ${m.distToTrendline.toFixed(1)}%`:"";
     const verdict=j?.verdict??a?.jarvisVerdict??"GOOD";
     const verdictTone=verdict==="GOOD"?"text-green-300 border-green-500/25 bg-green-500/10":verdict==="VETO"?"text-red-300 border-red-500/25 bg-red-500/10":"text-yellow-300 border-yellow-500/25 bg-yellow-500/10";
     const isDetails=!!showDetails[pair];
@@ -115,7 +115,7 @@ export default function Dashboard(){
         <div>4H 5/13 · {m?.fourH513?.label??"—"} · 4H DIRECTION · {m?.fourHDirection??"—"} · 1D DIRECTION · {m?.dailyDirection??"—"}</div>
         <div>STRUCTURE · {m?.structureShift?.reason??"—"}</div>
         <div>STRATEGY STATUS · {status}</div>
-        <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {m?.distToTrendline!=null?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
+        <div>TRENDLINE · {typeof m?.trendlinePrice==="number"&&m.trendlinePrice!==0?money(m.trendlinePrice):"N/A"} · DISTANCE · {typeof m?.trendlinePrice==="number"&&m.trendlinePrice!==0&&m?.distToTrendline!=null?`${m.distToTrendline.toFixed(2)}%`:"N/A"}</div>
       </div>}
     </article>})}</div></section>
 
