@@ -32,11 +32,11 @@ test("SHORT hard stop exits immediately", () => {
 });
 test("LONG single target hit exits", () => {
   const c = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 100 + i * 0.1));
-  assert.equal(strategy.shouldHold(signal("LONG", { tp1: 105 }), c, 105).reason, "tp_hit");
+  assert.equal(strategy.shouldHold(signal("LONG", { tp1: 101.5, tp2: 101.5 }), c, 101.5).reason, "tp_hit");
 });
 test("SHORT single target hit exits", () => {
   const c = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 100 - i * 0.1));
-  assert.equal(strategy.shouldHold(signal("SHORT", { tp1: 95 }), c, 95).reason, "tp_hit");
+  assert.equal(strategy.shouldHold(signal("SHORT", { tp1: 98.5, tp2: 98.5 }), c, 98.5).reason, "tp_hit");
 });
 test("Chandelier trailing stop logic is absent", () => {
   const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
