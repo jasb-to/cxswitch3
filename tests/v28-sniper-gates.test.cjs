@@ -15,12 +15,15 @@ test("V28 macro daily direction remains EMA 8/21 and fast direction is EMA 5/13"
   assert.ok(strategy.includes("fastDailyDirection,macroDailyDirection"));
 });
 
-test("V28 trendline uses one shared pair key with seven-day state and 1.2% proximity", () => {
+test("V28 FAST and MACRO trendlines use independent keys with seven-day state and 1.2% proximity", () => {
   assert.ok(strategy.includes("const maxAge = 7 * 24 * 60 * 60 * 1000"));
   assert.ok(strategy.includes("if (deviation < 0.02)"));
   assert.ok(strategy.includes("r2: 0.85"));
-  assert.ok(strategy.includes("fast.direction?getTrendline(pair,c,fast.direction):null"));
-  assert.ok(strategy.includes("getTrendline(pair,c,macro.direction)"));
+  assert.ok(strategy.includes('fast.direction?getTrendline(pair+":FAST",c,fast.direction):null'));
+  assert.ok(strategy.includes('getTrendline(pair+":MACRO",c,macro.direction)'));
+  assert.ok(strategy.includes('getTrendline(pair+":FAST",c,fastTrend.direction)'));
+  assert.ok(strategy.includes('getTrendline(pair+":MACRO",c,t.direction)'));
+  assert.ok(strategy.includes("fastTrendlinePrice,fastTrendlineDistance,macroTrendlinePrice,macroTrendlineDistance"));
   assert.doesNotMatch(strategy, /pair\s*\+\s*["']:\s*ENTRY_1/);
   assert.ok(strategy.includes("fastDist<1.2"));
   assert.ok(strategy.includes("macroDistance<1.2"));
@@ -42,10 +45,12 @@ test("ENTRY_2 and ADD use MACRO EMA8/21 and both require the same global directi
   assert.ok(strategy.includes("ENTRY_2/ADD exhaustion veto"));
 });
 
-test("ENTRY_1 is evaluated before MACRO and trendline state is overwritten under one pair key", () => {
-  assert.ok(strategy.indexOf("if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive))") < strategy.indexOf("const macroTl=macro.direction?getTrendline(pair,c,macro.direction):null"));
-  assert.ok(strategy.includes("One shared KV key per pair"));
+test("ENTRY_1 is evaluated before MACRO while each trendline retains its own key", () => {
+  assert.ok(strategy.indexOf("if(entry1TriggerPass(fast.direction,fastNear,st.k,fastFilters.pass,fastActive))") < strategy.indexOf('const macroTl=macro.direction?getTrendline(pair+":MACRO",c,macro.direction):null'));
+  assert.ok(strategy.includes("FAST and MACRO use independent persistent trendline state keys"));
   assert.ok(strategy.includes("trendlineDistancePct"));
+  assert.ok(strategy.includes("getTrendlineStateSnapshot"));
+  assert.ok(strategy.includes("for (const [pair, data] of trendlineStore.entries())"));
 });
 
 test("V28 stop/target arithmetic is preserved and TP2 mirrors the single TP1 target", () => {
