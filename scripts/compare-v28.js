@@ -392,6 +392,93 @@ function runMatchedEntries(label,entryStrategy,exitStrategy,exitLabel,useV28Targ
   }
   return trades.sort((a,b)=>a.exitTime-b.exitTime||a.entryTime-b.entryTime);
 }
+function runMatchedFromEntries(label,baseEntries,exitStrategy,exitLabel,useV28Target,market,startTs,endTs) {
+  const trades=[];
+  const entriesBySymbol=new Map(SYMBOLS.map(s=>[s,[]]));
+  for(const base of baseEntries) {
+    if(!base._signal)throw new Error("Base V28 trade missing original signal payload");
+    entriesBySymbol.get(base.pair).push({timestamp:base.entryTime,signal:{...base._signal}});
+  }
+  for(const symbol of SYMBOLS) {
+    const rows=market[symbol].four;
+    const entries=(entriesBySymbol.get(symbol)||[]).sort((a,b)=>a.timestamp-b.timestamp);
+    let entryIndex=0,openTrades=[];
+    for(let i=100;i<rows.length;i++) {
+      const bar=rows[i];
+      if(bar.timestamp>=endTs)break;
+      replayNow=bar.timestamp;
+      const history=rows.slice(0,i+1);
+      if(bar.timestamp<startTs)continue;
+      const survivors=[];
+      for(const open of openTrades) {
+        const stopHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
+        if(stopHit) {
+          closeTrade(open,open.stop,bar.timestamp,open.stopType==="initial"?"initial_stop":open.stopType+"_stop_hit");
+          trades.push(open);continue;
+        }
+        if(open.target!==null) {
+          const targetHit=open.direction==="LONG"?bar.high>=open.target:bar.low<=open.target;
+          if(targetHit){closeTrade(open,open.target,bar.timestamp,"5ATR_target");trades.push(open);continue;}
+        } else if(exitLabel==="CURRENT_V38") {
+          const tp1Hit=open.direction==="LONG"?bar.high>=open.tp1:bar.low<=open.tp1;
+          const tp2Hit=open.direction==="LONG"?bar.high>=open.tp2:bar.low<=open.tp2;
+          if(tp1Hit&&!open.tp1Done) {
+            addPartial(open,open.tp1,bar.timestamp,0.5,"tp1_scale_out");
+            open._signal.tp1HitAt=bar.timestamp;
+            open.stop=open.entry;open._signal.stop=open.entry;open.stopType="break_even";
+          }
+          if(open.tp1Done) {
+            const beHit=open.direction==="LONG"?bar.low<=open.stop:bar.high>=open.stop;
+            if(beHit){closeTrade(open,open.stop,bar.timestamp,"break_even_after_tp1");trades.push(open);continue;}
+          }
+          if(tp2Hit){closeTrade(open,open.tp2,bar.timestamp,"tp2_target");trades.push(open);continue;}
+        }
+        const hold=exitStrategy.shouldHold(open._signal,history,bar.close,bar.timestamp);
+        const v28SignalExpiry=(exitLabel==="V28"||exitLabel==="V28_CHANDELIER_ONLY")&&hold&&["missed_entry","expired_ttl"].includes(hold.reason);
+        if(hold&&hold.scaleOut&&!open.tp1Done) {
+          const level=Number(hold.scaleOut.level)||open.tp1;
+          addPartial(open,level,bar.timestamp,Number(hold.scaleOut.size)||0.5,"tp1_scale_out");
+          open._signal.tp1HitAt=bar.timestamp;
+        }
+        if(hold&&hold.newStop!==undefined&&Number.isFinite(hold.newStop)) {
+          open.stop=hold.newStop;open._signal.stop=hold.newStop;
+          open.stopType=Math.abs(open.stop-open.entry)<1e-10?"break_even":"chandelier";
+        }
+        if(hold&&hold.shouldHold===false&&!v28SignalExpiry) {
+          closeTrade(open,bar.close,bar.timestamp,hold.reason||"strategy_exit");
+          trades.push(open);continue;
+        }
+        if(exitLabel==="V28_CHANDELIER_ONLY"&&history.length>=5) {
+          const av=atr14(history),last5=history.slice(-5);
+          const trail=open.direction==="LONG"
+            ? Math.min(...last5.map(x=>x.low))-.5*av
+            : Math.max(...last5.map(x=>x.high))+.5*av;
+          const profitPct=open.direction==="LONG"?(bar.close-open.entry)/open.entry:(open.entry-bar.close)/open.entry;
+          const improves=open.direction==="LONG"?trail>open.stop:trail<open.stop;
+          if(profitPct>=.03) {
+            if((open.direction==="LONG"&&bar.close<=trail)||(open.direction==="SHORT"&&bar.close>=trail)) {
+              closeTrade(open,bar.close,bar.timestamp,"chandelier_trailing_stop");
+              trades.push(open);continue;
+            }
+            if(improves){open.stop=trail;open._signal.stop=trail;open.stopType="chandelier";}
+          }
+        }
+        survivors.push(open);
+      }
+      openTrades=survivors;
+      // Inject the exact native-V28 entry events after managing prior candles.
+      while(entryIndex<entries.length&&entries[entryIndex].timestamp===bar.timestamp) {
+        const e=entries[entryIndex++];
+        const trade=makeTrade(symbol,e.signal,bar.timestamp,label,exitLabel,useV28Target);
+        if(trade)openTrades.push(trade);
+      }
+    }
+    const last=rows.filter(x=>x.timestamp<endTs).at(-1);
+    if(last)for(const open of openTrades){closeTrade(open,last.close,last.timestamp,"end_of_test");trades.push(open);}
+    if(entryIndex!==entries.length)throw new Error(label+" did not replay all baseline entries for "+symbol+": "+entryIndex+"/"+entries.length);
+  }
+  return trades.sort((a,b)=>a.exitTime-b.exitTime||a.entryTime-b.entryTime);
+}
 function stripInternal(trades) { return trades.map(({_signal,...t})=>t); }
 function writeCsv(file,trades) {
   const fields=["strategy","pair","direction","signalType","entryTime","entry","initialStop","stop","stopType","target","tp1","tp2","tp1Exit","tp1PnlUsd","exitTime","exit","exitReason","pnlPct","r","pnlUsd"];
@@ -407,9 +494,7 @@ async function main() {
   console.log("V28 source: "+V28_SHA+" | current source: "+CURRENT_SHA);
   const sources=await Promise.all([fetchSource(V28_SHA,"lib/strategy.ts"),fetchSource(CURRENT_SHA,"lib/strategy.ts"),fetchSource(CURRENT_SHA,"lib/ema-diagnostic.ts")]);
   const emaDiagnostic=compileModule(sources[2],"production-ema-diagnostic");
-  const v28Native=loadStrategy(sources[0],"June V28 native"),v28Matched=loadStrategy(sources[0],"June V28 matched exits");
-  const v28Chandelier=loadStrategy(sources[0],"June V28 plus Chandelier matched exits");
-  const v28Production=loadStrategy(sources[0],"June V28 entries plus production exits");
+  const v28Native=loadStrategy(sources[0],"June V28 native");
   const currentDeps={"./ema-diagnostic":emaDiagnostic};
   const currentNative=loadStrategy(sources[1],"Production V38 native",currentDeps),currentMatched=loadStrategy(sources[1],"Production V38 matched exits",currentDeps);
   const versionA=v28Native.CURRENT_SIGNAL_VERSION,versionB=currentNative.CURRENT_SIGNAL_VERSION;
@@ -425,15 +510,15 @@ async function main() {
   }
   const tradesA=runVariant("V28_NATIVE",v28Native,v28Native,"V28",true,market,startTs,endTs);
   const tradesB=runVariant("PRODUCTION_V38",currentNative,currentNative,"CURRENT_V38",false,market,startTs,endTs);
-  const tradesC=runMatchedEntries("V28_ENTRIES_V28_EXITS",v28Matched,v28Matched,"V28",true,market,startTs,endTs);
-  const tradesD=runMatchedEntries("V28_ENTRIES_V28_PLUS_CHANDELIER",v28Chandelier,v28Chandelier,"V28_CHANDELIER_ONLY",true,market,startTs,endTs);
-  const tradesE=runMatchedEntries("V28_ENTRIES_PRODUCTION_V38_EXITS",v28Production,currentMatched,"CURRENT_V38",false,market,startTs,endTs);
+  const tradesC=runMatchedFromEntries("V28_ENTRIES_V28_EXITS",tradesA,v28Native,"V28",true,market,startTs,endTs);
+  const tradesD=runMatchedFromEntries("V28_ENTRIES_V28_PLUS_CHANDELIER",tradesA,v28Native,"V28_CHANDELIER_ONLY",true,market,startTs,endTs);
+  const tradesE=runMatchedFromEntries("V28_ENTRIES_PRODUCTION_V38_EXITS",tradesA,currentMatched,"CURRENT_V38",false,market,startTs,endTs);
   const entryKey=t=>t.pair+"|"+t.entryTime+"|"+t.direction+"|"+t.signalType;
-  const baseKeys=tradesC.map(entryKey).sort();
-  for(const [name,rows] of [["V28+Chandelier",tradesD],["Production V38 exits",tradesE]]) {
-    if(JSON.stringify(rows.map(entryKey).sort())!==JSON.stringify(baseKeys))throw new Error("Matched-entry integrity failed: "+name+" did not receive the exact V28 entry set");
+  const baseKeys=tradesA.map(entryKey).sort();
+  for(const [name,rows] of [["Matched V28 exits",tradesC],["V28+Chandelier",tradesD],["Production V38 exits",tradesE]]) {
+    if(JSON.stringify(rows.map(entryKey).sort())!==JSON.stringify(baseKeys))throw new Error("Matched-entry integrity failed: "+name+" did not replay the exact "+baseKeys.length+" native V28 entries");
   }
-  console.log("Matched-entry integrity verified: "+baseKeys.length+" identical entry events across all three exit variants.");
+  console.log("Matched-entry integrity verified: "+baseKeys.length+" exact native V28 trades replayed in all three exit variants.");
   const a=summarize(tradesA),b=summarize(tradesB),c=summarize(tradesC),d=summarize(tradesD),e=summarize(tradesE);
   renderFullTable(a,b);
   renderExitTable(c,d,e);
