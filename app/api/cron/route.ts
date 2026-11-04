@@ -1,11 +1,11 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount, loadHysteresisFromKV, saveHysteresisToKV, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { loadHysteresisFromKV, saveHysteresisToKV, loadTrendlinesFromKV, saveTrendlinesToKV, getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, updateActiveSignalStop, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getExitAlertCooldowns, setExitAlertCooldowns, updateHistoryMilestonesBatch, getCardResets, claimTelegramAlert, releaseTelegramAlert, claimCronLock, releaseCronLock, updateActiveSignalStop, getLastBreakout, setLastBreakout, clearLastBreakout } from "@/lib/state";
 import { sendAlert, sendManagementAlert } from "@/lib/telegram";
 import { narratePairState, runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
