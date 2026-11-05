@@ -2,7 +2,7 @@
 // ============================================================
 // Architecture: stateful trendline, hysteresis bands, TV-exact StochRSI
 // EXIT: Stoch extreme opposite (matches chart)
-// ALERTS: ENTRY_1 and ADD only (ENTRY_2 is internal, no alert)
+// ALERTS: ENTRY_1, ENTRY_2 and ADD
 
 import { getHysteresisState, setHysteresisState, getTrendlineState, setTrendlineState } from "./state";
 
@@ -544,7 +544,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const finalHardCap=signalDirection==="LONG"?st.k>95:st.k<5;
  if(finalHardCap){debug.push("[WAIT] Stoch hard exhaustion cap for "+signalDirection);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const signalTl=trendline;
- if(!signalTl)return{debug:["[SIGNAL BLOCKED] shared 4H trendline unavailable"]}; if(!signalTl)return{debug:["[SIGNAL BLOCKED] trendline unavailable"]};
+ if(!signalTl)return{debug:["[SIGNAL BLOCKED] shared 4H trendline unavailable"]};
  const avalue=atr(bars,14),recent=bars.slice(-20);
  if(!Number.isFinite(avalue)||avalue<=0)return{debug:["[SIGNAL BLOCKED] invalid ATR"]};
  const low=Math.min(...recent.map(x=>x.low)),high=Math.max(...recent.map(x=>x.high));let stop:number,target:number;
