@@ -498,15 +498,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const confirming=macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:macro.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false;
  const volUp=last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3;
  const ema8_4h=ema(closes,8),ema21_4h=ema(closes,21);
- const emaAligned=macro.direction==="LONG"?close>(ema8_4h.at(-1)??0)&&close>(ema21_4h.at(-1)??0):macro.direction==="SHORT"?close<(ema8_4h.at(-1)??0)&&close<(ema21_4h.at(-1)??0):false;
+ const emaAligned=macro.direction==="LONG"?price>(ema8_4h.at(-1)??0)&&price>(ema21_4h.at(-1)??0):macro.direction==="SHORT"?price<(ema8_4h.at(-1)??0)&&price<(ema21_4h.at(-1)??0):false;
  const stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false,adxStrong=av>20;
  const e5_4h=ema(closes,5).at(-1)??0,e13_4h=ema(closes,13).at(-1)??0;
  const fourHDirection=e5_4h>e13_4h?"LONG":e5_4h<e13_4h?"SHORT":null;
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
- let signalDirection:Direction|null=null;
- if(entry1Eligible){rawType="ENTRY_1";signalDirection=fast.direction;}
- else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro){rawType="ENTRY_2";signalDirection=macro.direction;}
- else if(macro.direction&&macroTl&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";signalDirection=macro.direction;}
+ let rawDirection:Direction|null=null;
+ if(entry1Eligible){rawType="ENTRY_1";rawDirection=fast.direction;}
+ else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro){rawType="ENTRY_2";rawDirection=macro.direction;}
+ else if(macro.direction&&macroTl&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
  const blockers:string[]=[];
  if(!fastTl)blockers.push("ENTRY_1 trendline unavailable");else if(!nearFast)blockers.push("ENTRY_1 outside 1.2% proximity");
  if(!stochExtremeFast)blockers.push("ENTRY_1 Stoch RSI not at extreme");
@@ -514,7 +514,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const entry1HardCap=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const macroHardCap=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
  debug.push("[DIAGNOSTIC] "+JSON.stringify({dailyDirection:macro.direction,entry1Direction:fast.direction,latest4hPrice:close,trendlineAvailable:!!fastTl,trendlinePrice:fastTl?Number(fastTl.price.toFixed(8)):null,trendlineR2:fastTl?.r2??null,trendlineDistancePct:Number.isFinite(fastDist)?Number((Math.abs(fastDist)*100).toFixed(4)):null,nearTrendline:nearFast,stochK:st.k,stochD:st.d,stochExtreme:stochExtremeFast,hardStochCap:entry1HardCap||macroHardCap,fourHDirection,momentumAligned:signalDirection?fourHDirection===signalDirection:null,exhaustion:entry1HardCap||macroHardCap?"Stoch hard cap":null,entry1Eligible,rawType,blockers}));
- if(rawType)debug.push("[TRIGGER] "+rawType+" "+signalDirection);
+ if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
  const hyst=getHysteresis(pair,now);
  let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
  if(hyst.lastSignalType==="ADD")finalType="ADD";
