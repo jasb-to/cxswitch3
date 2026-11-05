@@ -51,7 +51,7 @@ test("Original V28 raw trigger ordering and thresholds are shared by both evalua
     assert.ok(body.includes("price<(ema21_4h.at(-1)??0)"));
     assert.ok(body.includes("let rawType:"));
     assert.ok(body.includes("if(filtersPass)"));
-  assert.ok(body.includes("const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1)"));
+  assert.ok(body.includes("closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1)"));
   assert.ok(body.includes("getTrendline(pair,closed4h,dailyTrend.direction)"));
   assert.ok(body.includes("hasEntry1&&!hasEntry2&&hasSameDirectionPosition"));
   assert.ok(body.includes("hasEntry1&&hasEntry2&&hasSameDirectionPosition"));
@@ -123,7 +123,7 @@ test("Dashboard and Jarvis expose one daily bias, trendline distance and global 
 
 test("All V28 4H indicators and confirmation use closed candles only", () => {
   const generate = strategy.slice(strategy.indexOf("export function generateSignal"), strategy.indexOf("// --- MARKET SNAPSHOT ---"));
-  assert.ok(generate.includes("const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1)"));
+  assert.ok(generate.includes("closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1)"));
   for (const expression of ["stochRsi(closes4h)", "rsi(closes4h)", "adx(closed4h)", "getTrendline(pair,closed4h,dailyTrend.direction)", "atr(closed4h,14)", "recent=closed4h.slice(-20)"]) assert.ok(generate.includes(expression), expression);
   assert.ok(strategy.includes("stochRsi(closed.map(x=>x.close))"));
 });
