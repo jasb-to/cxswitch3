@@ -14,6 +14,9 @@ test("regime sizing is 50% for LOW/CHOP and 100% for HIGH/MED", () => {
   assert.ok(strategy.includes('"CHOP"'));
 });
 
-test("V28 does not apply a separate leverage/risk-percentage entry veto", () => {
-  assert.doesNotMatch(strategy, /calculateRiskSizeMultiplier|MAX_LEVERAGE|liquidationBufferPct/);
+test("Regime size multiplier remains separate from the 15x protective-stop clamp", () => {
+  assert.ok(strategy.includes('strength==="LOW"||state==="CHOP"?0.5:1'));
+  assert.ok(strategy.includes("const MAX_LEVERAGE = 15"));
+  assert.ok(strategy.includes("liquidationPrice"));
+  assert.doesNotMatch(strategy, /calculateRiskSizeMultiplier/);
 });

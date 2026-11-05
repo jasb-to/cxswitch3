@@ -47,8 +47,8 @@ test("dashboard still distinguishes completed alert states", () => {
 });
 
 
-test("ENTRY_2 is persisted internally without Telegram dispatch",()=>{assert.ok(cron.includes('reason=entry2_internal'));assert.ok(cron.includes('newSignals.push(signal)'));assert.ok(cron.includes('await appendSignalHistory(signal)'));});
+test("ENTRY_2 uses the normal Telegram dispatch, history and active-state pipeline",()=>{assert.ok(!cron.includes('reason=entry2_internal'));assert.ok(cron.includes('signalType:signal.type'));assert.ok(cron.includes('newSignals.push(signal)'));assert.ok(cron.includes('await appendSignalHistory(signal)'));});
 
-test("ADD same-direction continuation bypasses active suppression and has four-hour hysteresis",()=>{assert.ok(cron.includes('signal.type==="ADD"&&(!sameDirectionExisting||!entry1State||!entry2AlreadyFired||entry1State.direction!==signal.direction)'));assert.ok(cron.includes('reason=add_hysteresis_4h'));});
+test("ADD requires an active same-direction position and retains the four-hour alert cooldown",()=>{const strategy=fs.readFileSync("lib/strategy.ts","utf8");assert.ok(strategy.includes('activeMatch=!!macro.direction&&_activeSignals.some'));assert.ok(strategy.includes('else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro)'));assert.ok(cron.includes('reason=add_hysteresis_4h'));});
 
 test("hard stop dispatches Telegram EXIT",()=>{assert.ok(cron.includes('kind:"STOP_HIT",price'));});

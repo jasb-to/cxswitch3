@@ -24,7 +24,7 @@ test("Daily macro direction is EMA 8/21; fast EMA 5/13 is a separate ENTRY_1 tra
 
 test("ENTRY_1 uses only fast daily direction, 1.2% trendline proximity and Stoch extreme plus hard cap", () => {
   const generate = body("generateSignal");
-  assert.match(generate, /entry1Eligible=!!fastTl&&nearFast&&stochExtremeFast&&!hardCapFast/);
+  assert.match(generate, /entry1Eligible=!!fast\.direction&&nearTrendline&&stochExtremeFast&&!hardCapFast/);
   assert.doesNotMatch(generate, /r2\s*>=\s*0\.60/);
   assert.match(generate, /const stochExtremeFast=fast\.direction==="LONG"\?st\.k<20:fast\.direction==="SHORT"\?st\.k>80:false/);
   assert.match(generate, /hardCapFast=fast\.direction==="LONG"\?st\.k>95:fast\.direction==="SHORT"\?st\.k<5:false/);
@@ -101,12 +101,12 @@ test("V28 stop/target arithmetic and persisted hysteresis remain intact", () => 
   assert.match(strategy, /HYSTERESIS_BAND = 0\.005/);
 });
 
-test("Trendline state is isolated between FAST and MACRO tracks", () => {
-  assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT", track: "FAST" \| "MACRO"\)/);
-  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{track\}:\$\{direction\}`/);
-  assert.match(strategy, /getTrendline\(pair,bars,fast\.direction,"FAST"\)/);
-  assert.match(strategy, /getTrendline\(pair,bars,macro\.direction,"MACRO"\)/);
-  assert.match(strategy, /getTrendline\(pair,bars,direction,"MACRO"\)/);
+test("All entry stages use one shared 4H trendline oriented by daily macro EMA 8/21", () => {
+  assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT"\)/);
+  assert.match(strategy, /const stateKey = pair/);
+  assert.match(strategy, /const trendline=macro\.direction\?getTrendline\(pair,bars,macro\.direction\):null/);
+  assert.match(body("generateSignal"), /const signalTl=trendline/);
+  assert.doesNotMatch(strategy, /track: "FAST" \| "MACRO"|\$\{pair\}:\$\{track\}:\$\{direction\}/);
 });
 
 test("Misaligned 4H momentum tightens profitable trades and exits unprofitable trades", () => {
@@ -117,28 +117,32 @@ test("Misaligned 4H momentum tightens profitable trades and exits unprofitable t
   assert.match(hold, /shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE"/);
 });
 
-test("Hysteresis only suppresses duplicate ENTRY_1 on the same 4H candle within 0.5%", () => {
+test("V28 staged hysteresis preserves ENTRY_1 → ENTRY_2 → ADD, 0.5% band and timed locks", () => {
   const generate = body("generateSignal");
-  assert.match(strategy, /lastEntry1CandleTimestamp/);
-  assert.match(strategy, /lastEntry1Price/);
-  assert.match(generate, /finalType==="ENTRY_1"&&hyst\.lastEntry1CandleTimestamp===candleTimestamp/);
-  assert.match(generate, /move<=HYSTERESIS_BAND/);
-  assert.match(generate, /setHysteresis\(pair,price,candleTimestamp\)/);
-  assert.doesNotMatch(strategy, /lastSignalType|lockUntil/);
-  assert.doesNotMatch(generate, /Hysteresis lock/);
+  assert.match(strategy, /lastSignalType: "ENTRY_1" \| "ENTRY_2" \| "ADD" \| null/);
+  assert.match(strategy, /lastSignalPrice: number/);
+  assert.match(strategy, /lockUntil: number/);
+  assert.match(strategy, /const HYSTERESIS_BAND = 0\.005/);
+  assert.match(strategy, /type === "ADD" \? 4 \* 60 \* 60 \* 1000 : 24 \* 60 \* 60 \* 1000/);
+  assert.match(generate, /hyst\.lastSignalType==="ENTRY_2"/);
+  assert.match(generate, /hyst\.lastSignalType==="ENTRY_1"/);
+  assert.match(generate, /rawType==="ADD"\?"ADD":"ENTRY_2"/);
+  assert.match(generate, /rawType==="ADD"\?"ADD":rawType==="ENTRY_2"\?"ENTRY_2":"ENTRY_1"/);
+  assert.match(generate, /finalType=rawType/);
+  assert.match(generate, /move<HYSTERESIS_BAND/);
+  assert.match(generate, /if\(finalType!==hyst\.lastSignalType\)setHysteresis\(pair,finalType,price,now\)/);
+  assert.match(generate, /if\(hyst\.lastSignalType==="ADD"&&!activeMatch\)/);
 });
 
-test("ENTRY_1 and ENTRY_2 are independent fresh-position entries; ADD alone requires an active match", () => {
+test("ENTRY_1 and ENTRY_2 can each start a lifecycle; ENTRY_2 uses macro direction without an ENTRY_1 prerequisite", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /entry1Ready&&!entry1ActiveMatch/);
-  assert.match(evaluate, /stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch/);
-  assert.match(evaluate, /else if\(macroActiveMatch&&macro\.direction/);
-  assert.match(generate, /entry1Eligible&&!entry1ActiveMatch/);
-  assert.match(generate, /stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch/);
-  assert.match(generate, /else if\(macroActiveMatch&&macro\.direction/);
-  assert.match(evaluate, /else if\(macroActiveMatch&&macro\.direction&&macroTl&&beyond&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro\)/);
-  assert.match(generate, /else if\(macroActiveMatch&&macro\.direction&&macroTl&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro\)/);
-  assert.doesNotMatch(generate, /entry1ActiveMatch\s*\|\|\s*macroActiveMatch/);
-  assert.doesNotMatch(generate, /if\([^)]*(?:hasEntry1|hasEntry2|entry1AlreadyFired|entry2AlreadyFired)/);
+  assert.match(evaluate, /entry1Ready&&!activePairPosition\)\{rawType="ENTRY_1";direction=fast\.direction/);
+  assert.match(evaluate, /else if\(entry2Ready&&\(!activePairPosition\|\|entry2Continuation\)\)\{rawType="ENTRY_2";direction=macro\.direction/);
+  assert.match(generate, /entry1Eligible&&!activePairPosition\)\{rawType="ENTRY_1";rawDirection=fast\.direction/);
+  assert.match(generate, /else if\(entry2Eligible&&\(!activePairPosition\|\|entry2Continuation\)\)\{rawType="ENTRY_2";rawDirection=macro\.direction/);
+  assert.match(generate, /entry2Eligible=!!macro\.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro/);
+  assert.match(generate, /else finalType=rawType/);
+  assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
+  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro)"));
 });
