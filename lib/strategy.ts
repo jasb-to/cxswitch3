@@ -458,7 +458,7 @@ export function evaluateGates(
  const last=closed4h.at(-1),prev=closed4h.at(-2);
  const beyondTrendline=dailyTrend.direction==="LONG"?price>tlPrice*1.008:dailyTrend.direction==="SHORT"?price<tlPrice*0.992:false;
  const confirming=!!last&&!!prev&&(dailyTrend.direction==="LONG"?last.close>last.open&&last.close>prev.close:dailyTrend.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false);
- const volUp=!!last&&last.volume>avg(closed.slice(-10).map(x=>x.volume))*1.3;
+ const volUp=!!last&&last.volume>avg(closed4h.slice(-10).map(x=>x.volume))*1.3;
  const ema8_4h=ema(closes4h,8),ema21_4h=ema(closes4h,21);
  const emaAligned=dailyTrend.direction==="LONG"?price>(ema8_4h.at(-1)??0)&&price>(ema21_4h.at(-1)??0):dailyTrend.direction==="SHORT"?price<(ema8_4h.at(-1)??0)&&price<(ema21_4h.at(-1)??0):false;
  const stochMomentum=dailyTrend.direction==="LONG"?st.k>st.d:dailyTrend.direction==="SHORT"?st.k<st.d:false;
