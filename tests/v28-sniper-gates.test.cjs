@@ -19,21 +19,21 @@ test("V28 uses one shared trendline KV key: pair", () => {
   assert.ok(strategy.includes("const maxAge = 7 * 24 * 60 * 60 * 1000"));
   assert.ok(strategy.includes("if (deviation < 0.02)"));
   assert.ok(strategy.includes("r2: 0.85"));
-  assert.match(strategy, /getTrendline\(pair,c,dailyTrend\.direction\)/);
-  assert.equal((strategy.match(/getTrendline\(pair,c,dailyTrend\.direction\)/g) ?? []).length, 2);
+  assert.match(strategy, /getTrendline\\(pair,closed4h,dailyTrend\\.direction\\)/);
+  assert.equal((strategy.match(/getTrendline\\(pair,closed4h,dailyTrend\\.direction\\)/g) ?? []).length, 2);
 });
 
 test("ENTRY_1 is blocked when 4H momentum is misaligned", () => {
   const filter = /const filtersPass=!!dailyTrend\.direction&&momentumAligned&&!exhaustion;/;
   assert.equal((strategy.match(new RegExp(filter.source, "g")) ?? []).length, 2);
-  assert.match(strategy, /if\(filtersPass\)\{\s*if\(nearTrendline&&stochExtreme\)rawType="ENTRY_1";/);
+  assert.match(strategy, /if\(filtersPass\)\{\s*if\(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme\)rawType="ENTRY_1";/);
   assert.match(strategy, /const momentumAligned=dailyTrend\.direction==="LONG"\?e5_4h>e13_4h:dailyTrend\.direction==="SHORT"\?e5_4h<e13_4h:false;/);
 });
 
 test("ENTRY_1 is blocked when any exhaustion veto is present", () => {
   assert.match(strategy, /const exhaustion=rsiExhausted\?"4H RSI exhaustion":stochVeto\?"4H Stoch extreme veto":adxExhausted\?"ADX >50 with Stoch turning against":null;/);
   assert.match(strategy, /const filtersPass=!!dailyTrend\.direction&&momentumAligned&&!exhaustion;/);
-  assert.match(strategy, /if\(filtersPass\)\{\s*if\(nearTrendline&&stochExtreme\)rawType="ENTRY_1";/);
+  assert.match(strategy, /if\(filtersPass\)\{\s*if\(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme\)rawType="ENTRY_1";/);
 });
 
 test("Original V28 raw trigger ordering and thresholds are shared by both evaluators", () => {
@@ -51,6 +51,10 @@ test("Original V28 raw trigger ordering and thresholds are shared by both evalua
     assert.ok(body.includes("price<(ema21_4h.at(-1)??0)"));
     assert.ok(body.includes("let rawType:"));
     assert.ok(body.includes("if(filtersPass)"));
+  assert.ok(body.includes("const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1)"));
+  assert.ok(body.includes("getTrendline(pair,closed4h,dailyTrend.direction)"));
+  assert.ok(body.includes("hasEntry1&&!hasEntry2&&hasSameDirectionPosition"));
+  assert.ok(body.includes("hasEntry1&&hasEntry2&&hasSameDirectionPosition"));
   }
 });
 
@@ -113,4 +117,28 @@ test("Dashboard and Jarvis expose one daily bias, trendline distance and global 
   assert.ok(jarvis.includes("DAILY BIAS (1D EMA5/13)"));
   assert.ok(jarvis.includes("momentumAligned"));
   assert.ok(jarvis.includes("exhaustion veto"));
+});
+
+
+test("All V28 4H indicators and confirmation use closed candles only", () => {
+  const generate = strategy.slice(strategy.indexOf("export function generateSignal"), strategy.indexOf("// --- MARKET SNAPSHOT ---"));
+  assert.ok(generate.includes("const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1)"));
+  for (const expression of ["stochRsi(closes4h)", "rsi(closes4h)", "adx(closed4h)", "getTrendline(pair,closed4h,dailyTrend.direction)", "atr(closed4h,14)", "recent=closed4h.slice(-20)"]) assert.ok(generate.includes(expression), expression);
+  assert.ok(strategy.includes("stochRsi(closed.map(x=>x.close))"));
+});
+
+test("ENTRY_2 is silent and Telegram only permits ENTRY_1 and ADD", () => {
+  const entry2 = cron.slice(cron.indexOf('if(signal.type==="ENTRY_2")'), cron.indexOf('if(PAUSED_ALERT_PAIRS.has(pair))'));
+  assert.ok(entry2.includes("reason=entry2_internal"));
+  assert.ok(entry2.includes("appendSignalHistory(signal)"));
+  assert.ok(!entry2.includes("sendAlert("));
+  assert.match(telegram, /type!=="ENTRY_1"&&type!=="ADD"/);
+  assert.ok(cron.includes("entry1_entry2_lifecycle_incomplete"));
+});
+
+test("Daily EMA8 and EMA21 diagnostics are populated from completed daily candles", () => {
+  assert.ok(strategy.includes("dailyE8:d8"));
+  assert.ok(strategy.includes("dailyE21:d21"));
+  assert.ok(strategy.includes("ema8_1d:d8"));
+  assert.ok(strategy.includes("ema21_1d:d21"));
 });
