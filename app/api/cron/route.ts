@@ -94,7 +94,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     const price=Number(market?.currentPrice??market?.price);
     if(!candles.length||!Number.isFinite(price)||price<=0)continue;
     const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
-     alert.shouldHold=hold.shouldHold;alert.fourHDirection=hold.fourHDirection;alert.momentumAligned=hold.momentumAligned;alert.managementState=hold.managementState;alert.managementRecommendation=hold.recommendation;alert.momentumProfit=hold.profitable;
+     const livePnlPct=alert.entry>0?((price-Number(alert.entry))/Number(alert.entry)*100)*(alert.direction==="LONG"?1:-1):null;alert.currentPrice=price;if(livePnlPct!==null)alert.unrealizedPnlPct=livePnlPct;alert.shouldHold=hold.shouldHold;alert.fourHDirection=hold.fourHDirection;alert.momentumAligned=hold.momentumAligned;alert.managementState=hold.managementState;alert.managementRecommendation=hold.recommendation;alert.momentumProfit=hold.profitable??(livePnlPct!==null?livePnlPct>0:null);
     if(hold.newStop&&Number.isFinite(hold.newStop)){
       const currentStop=Number(alert.stop)||0;
       const tightens=alert.direction==="LONG"?hold.newStop>currentStop:currentStop===0||hold.newStop<currentStop;
