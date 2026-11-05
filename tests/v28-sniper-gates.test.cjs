@@ -144,5 +144,5 @@ test("ENTRY_1 and ENTRY_2 can each start a lifecycle; ENTRY_2 uses macro directi
   assert.match(generate, /entry2Eligible=!!macro\.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro/);
   assert.match(generate, /else finalType=rawType/);
   assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
-  assert.match(generate, /else if\(activeMatch&&macro\.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro\)/);
+  assert.match(generate, /else if\\(activeMatch&&macro\\.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&\\(volUp\\|\\|stochMomentum\\|\\|adxStrong\\)&&!hardCapMacro\\)/);
 });
