@@ -21,7 +21,7 @@ export interface Signal {
  signalClass:"TREND"|"REVERSAL"; sizeMultiplier:0.5|1;
  entry:number; stop:number; tp1:number; tp2:number; rr:number;
  adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number;
- reason:string; timestamp:number; version:number; context?:any;
+ reason:string; timestamp:number; version:number; context?:{momentumAligned?:boolean|null;fourHDirection?:Direction|null;[key:string]:any};
 }
 
 export interface Entry1State { pair:string; direction:"LONG"|"SHORT"; entry:number; timestamp:number; context?:any; }
@@ -568,23 +568,28 @@ export function isSignalStillValid(signal:Signal,p:number,now:number=Date.now())
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now?:number){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue}const v=isSignalStillValid(s,p,now);if(v.valid)active.push(s);else exited.push({signal:s,reason:v.reason});}return{active,exited};}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if(v.reason==="sl_hit")return"SL_HIT";if(v.reason==="tp_hit")return"TP_HIT";return"ACTIVE";}
-export interface HoldResult{shouldHold:boolean;reason:string;managementState:"STAY"|"EXIT";recommendation:"STAY IN TRADE"|"EXIT TRADE";newStop?:number}
+export interface HoldResult{shouldHold:boolean;reason:string;managementState:"STAY"|"EXIT";recommendation:"STAY IN TRADE"|"EXIT TRADE";newStop?:number;fourHDirection:Direction|null;momentumAligned:boolean|null;profitable:boolean|null}
 export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number):HoldResult{
- void lastExitAlertAt;
- const bars=[...c];
- if(bars.length<22)return{shouldHold:true,reason:"insufficient_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE"};
- const v=isSignalStillValid(s,p,now);if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE"};
- const dailyTrend=trend1D(aggregateTo1D(bars)),dailyReversed=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG");
- const profitable=s.direction==="LONG"?p>s.entry:p<s.entry;
- if(dailyReversed&&!profitable)return{shouldHold:false,reason:"daily_ema8_21_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE"};
- const closes=bars.map(x=>x.close),e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
- const fourHDirection=e5>e13?"LONG":e5<e13?"SHORT":null,momentumAligned=fourHDirection===s.direction;
- const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k<20:st.k>80;
- if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
- if(!momentumAligned){
-  if(profitable)return{shouldHold:true,reason:"4h_ema5_13_misaligned_daily_ema8_21_still_valid_tighten_stop_to_entry",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry};
-  return{shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
- }
- return{shouldHold:true,reason:"4h_momentum_and_daily_macro_valid",managementState:"STAY",recommendation:"STAY IN TRADE"};
+  void lastExitAlertAt;
+  const bars=[...c];
+  const fallbackDirection=s.context?.fourHDirection??null;
+  const fallbackAligned=typeof s.context?.momentumAligned==="boolean"?s.context.momentumAligned:null;
+  if(bars.length<22)return{shouldHold:true,reason:"insufficient_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE",fourHDirection:fallbackDirection,momentumAligned:fallbackAligned,profitable:null};
+  const closes=bars.map(x=>x.close),e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
+  const fourHDirection:Direction|null=e5>e13?"LONG":e5<e13?"SHORT":null;
+  const momentumAligned=fourHDirection===null?null:fourHDirection===s.direction;
+  const profitable=s.direction==="LONG"?p>s.entry:p<s.entry;
+  const state={fourHDirection,momentumAligned,profitable};
+  const v=isSignalStillValid(s,p,now);
+  if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+  const dailyTrend=trend1D(aggregateTo1D(bars)),dailyReversed=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG");
+  if(dailyReversed&&!profitable)return{shouldHold:false,reason:"daily_ema8_21_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+  const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k<20:st.k>80;
+  if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+  if(momentumAligned===false){
+    if(profitable)return{shouldHold:true,reason:"4h_ema5_13_misaligned_daily_ema8_21_still_valid_tighten_stop_to_entry",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,...state};
+    return{shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+  }
+  return{shouldHold:true,reason:"4h_momentum_and_daily_macro_valid",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
 }
 
