@@ -465,7 +465,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,direction:Direction|null=null;
  if(entry1Ready&&!entry1ActiveMatch){rawType="ENTRY_1";direction=fast.direction;}
  else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch){rawType="ENTRY_2";direction=macro.direction;}
- else if(macroActiveMatch&&macro.direction&&macroTl&&beyond&&confirming&&emaAligned&&momentumAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
+ else if(macroActiveMatch&&macro.direction&&macroTl&&beyond&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
  const hardCap=rawType==="ENTRY_1"?hardCapFast:hardCapMacro;
  const regime=computeRegime(bars),missing:string[]=[];
  if(!macro.direction)missing.push("daily EMA8/21 unavailable for ENTRY_2/ADD");
@@ -511,7 +511,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let rawDirection:Direction|null=null;
  if(entry1Eligible&&!entry1ActiveMatch){rawType="ENTRY_1";rawDirection=fast.direction;}
  else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch){rawType="ENTRY_2";rawDirection=macro.direction;}
- else if(macroActiveMatch&&macro.direction&&macroTl&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
+ else if(macroActiveMatch&&macro.direction&&macroTl&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
  const blockers:string[]=[];
  if(!fastTl)blockers.push("ENTRY_1 trendline unavailable");else if(!nearFast)blockers.push("ENTRY_1 outside 1.2% proximity");
  if(!stochExtremeFast)blockers.push("ENTRY_1 Stoch RSI not at extreme");
