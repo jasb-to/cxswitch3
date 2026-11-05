@@ -145,3 +145,16 @@ test("Daily EMA8 and EMA21 diagnostics are populated from completed daily candle
   assert.ok(strategy.includes("ema8_1d:d8"));
   assert.ok(strategy.includes("ema21_1d:d21"));
 });
+
+test("V28 cron diagnostics expose every ENTRY_1 gate without changing trigger thresholds", () => {
+  assert.ok(strategy.includes('debug.push("[DIAGNOSTIC] "+JSON.stringify({direction:dailyTrend.direction'));
+  for (const field of ["trendlineAvailable", "trendlineDistancePct", "nearTrendline", "stochK", "stochD", "stochExtreme", "momentumAligned", "alignedDirection", "exhaustion", "entry1Eligible", "blockers"]) {
+    assert.ok(strategy.includes(field), "missing diagnostic field: " + field);
+  }
+  assert.ok(strategy.includes("alignedDirection:momentumAligned?direction:null"));
+  assert.ok(cron.includes("[V28 DIAGNOSTICS]"));
+  assert.ok(cron.includes('startsWith("[GLOBAL FILTER VETO]")'));
+  assert.ok(strategy.includes("Math.abs(dist)<0.012"));
+  assert.ok(strategy.includes("st.k<20"));
+  assert.ok(strategy.includes("st.k>80"));
+});
