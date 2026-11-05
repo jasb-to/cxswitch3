@@ -136,11 +136,11 @@ test("V28 staged hysteresis preserves ENTRY_1 → ENTRY_2 → ADD, 0.5% band and
 test("ENTRY_1 and ENTRY_2 can each start a lifecycle; ENTRY_2 uses macro direction without an ENTRY_1 prerequisite", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /entry1Ready\)\{rawType="ENTRY_1";direction=fast\.direction/);
-  assert.match(evaluate, /else if\(entry2Ready\)\{rawType="ENTRY_2";direction=macro\.direction/);
-  assert.match(generate, /entry1Eligible\)\{rawType="ENTRY_1";rawDirection=fast\.direction/);
-  assert.match(generate, /else if\(entry2Eligible\)\{rawType="ENTRY_2";rawDirection=macro\.direction/);
-  assert.match(generate, /entry2Eligible=!!macro\.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro/);
+  assert.match(evaluate, /entry1Ready&&!activePairPosition\)\{rawType="ENTRY_1";direction=fast\.direction/);
+  assert.match(evaluate, /else if\(entry2Ready&&\(!activePairPosition\|\|entry2Continuation\)\)\{rawType="ENTRY_2";direction=macro\.direction/);
+  assert.match(generate, /entry1Eligible&&!activePairPosition\)\{rawType="ENTRY_1";rawDirection=fast\.direction/);
+  assert.match(generate, /else if\(entry2Eligible&&\(!activePairPosition\|\|entry2Continuation\)\)\{rawType="ENTRY_2";rawDirection=macro\.direction/);
+  assert.match(generate, /entry2Eligible=!!macro\\.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro/);
   assert.match(generate, /else finalType=rawType/);
   assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
   assert.match(generate, /else if\(activeMatch&&macro\.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro\)/);
