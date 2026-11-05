@@ -28,7 +28,7 @@ const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=10
 // Pivots use the same confirmed two-candle swing shape as the strategy; Fib
 // retracements use the high/low of the last 50 closed 4H candles.
 function marketStructureLog(pair:string,candles:any[],price:number):string {
-  const c=candles.slice(0,-1).filter(x=>Number.isFinite(x.high)&&Number.isFinite(x.low));
+  const c=candles.filter(x=>Number.isFinite(x.high)&&Number.isFinite(x.low));
   if(c.length<10||!Number.isFinite(price)||price<=0)return `[STRUCTURE] ${pair} | insufficient 4H candles`;
   const swings:{price:number;index:number;kind:"H"|"L"}[]=[];
   for(let i=2;i<c.length-2;i++){
@@ -94,6 +94,11 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     const price=Number(market?.currentPrice??market?.price);
     if(!candles.length||!Number.isFinite(price)||price<=0)continue;
     const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
+    if(hold.newStop&&Number.isFinite(hold.newStop)){
+      const currentStop=Number(alert.stop)||0;
+      const tightens=alert.direction==="LONG"?hold.newStop>currentStop:currentStop===0||hold.newStop<currentStop;
+      if(tightens){alert.stop=hold.newStop;console.log(`[MANAGEMENT] ${alert.pair} ${alert.direction} — 4H EMA5/13 momentum weakened; stop tightened to entry ${hold.newStop}`);alerts.push({pair:alert.pair,direction:alert.direction,status:"stop_tightened",stop:hold.newStop,reason:hold.reason});}
+    }
     if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)&&cooldownsAvailable){
       persistExitCooldown(alert.pair,hold.reason,cooldowns);
       cooldownsChanged=true;
@@ -232,10 +237,10 @@ export async function GET(request:Request){
     getCandles(krakenPairFormat(pair+"/USD"),240),
     getCandles(krakenPairFormat(pair+"/USD"),15)
   ]);stateCandles4h=c4||[];stateCandles15m=c15||[];
-  const closed4h=(c4||[]).slice(0,-1),closed4hCloses=closed4h.map((c:any)=>Number(c.close));
+  const strategyCandles4h=c4||[],strategy4hCloses=strategyCandles4h.map((c:any)=>Number(c.close));
   const iso=(value:any)=>Number.isFinite(Number(value))?new Date(Number(value)).toISOString():"none";
-  const stochPoints=getStochHistoryPointCount(closed4hCloses);
-  console.log(`[CANDLE HEALTH] pair=${pair} 1h=${(c1||[]).length} 4h=${(c4||[]).length} 4hClosedForStrategy=${closed4h.length} 4hStochPoints=${stochPoints} 15m=${(c15||[]).length} oldest4h=${iso(c4?.[0]?.timestamp)} latestReturned4h=${iso(c4?.at(-1)?.timestamp)} latestUsedClosed4h=${iso(closed4h.at(-1)?.timestamp)}${closed4h.length<33||stochPoints<2?" WARNING=insufficient_stoch_history":""}`);
+  const stochPoints=getStochHistoryPointCount(strategy4hCloses);
+  console.log(`[CANDLE HEALTH] pair=${pair} 1h=${(c1||[]).length} 4h=${(c4||[]).length} 4hUsedForStrategy=${strategyCandles4h.length} 4hStochPoints=${stochPoints} 15m=${(c15||[]).length} oldest4h=${iso(c4?.[0]?.timestamp)} latestReturned4h=${iso(c4?.at(-1)?.timestamp)} latestUsed4h=${iso(strategyCandles4h.at(-1)?.timestamp)}${strategyCandles4h.length<33||stochPoints<2?" WARNING=insufficient_stoch_history":""}`);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});return;}
   const ema513=get4HEmaDiagnostic(c4);
 
@@ -245,9 +250,7 @@ export async function GET(request:Request){
   const historyForEntry=historyAtStart;
   // A prior ENTRY_1 is lifecycle context only while this pair still has an active position.
   // This prevents a closed trade's stale history row from permanently blocking a fresh ENTRY_1.
-  const entry1State=existing?historyForEntry.filter((h:any)=>h.pair===pair&&h.direction===existing.direction&&h.type==="ENTRY_1"&&h.status==="ACTIVE").sort((a:any,b:any)=>b.timestamp-a.timestamp)[0]:undefined;
-  const entry2AlreadyFired=!!entry1State&&historyForEntry.some((h:any)=>h.pair===pair&&h.direction===entry1State.direction&&h.type==="ENTRY_2"&&h.timestamp>entry1State.timestamp);
-  const result=generateSignal(pair,c1,c4,c15,price,undefined,undefined,entry1State,entry2AlreadyFired,active.map((x:any)=>({pair:x.pair,direction:x.direction})));
+  const result=generateSignal(pair,c1,c4,c15,price);
   const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.currentPrice=price;snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
   // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
@@ -255,7 +258,7 @@ export async function GET(request:Request){
   const canonicalDailyDirection=String(snapshot.dailyDirection||"NEUTRAL");
   // Keep dashboard and Jarvis daily bias identical to the canonical regime calculated by strategy.ts.  snapshot.dailyDirection=canonicalDailyDirection;
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
-  snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"?"LONG":canonicalDailyDirection==="BEAR"?"SHORT":"NEUTRAL"};
+  snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"||canonicalDailyDirection==="LONG"?"LONG":canonicalDailyDirection==="BEAR"||canonicalDailyDirection==="SHORT"?"SHORT":"NEUTRAL"};
   const dbg=result.debug||[];
   const activeSuppression=dbg.find((x:string)=>x.startsWith("[SUPPRESSED]")&&x.includes("active_position_exists"));
   if(activeSuppression)console.log(`[PAIR] ${pair} ${activeSuppression}`);
@@ -263,7 +266,7 @@ export async function GET(request:Request){
   if(regimeDebug)console.log(`[PAIR] ${pair} — ${regimeDebug}`);
   const triggerDebug=dbg.find(x=>x.startsWith("[TRIGGER]"));
   const diagnosticDebug=dbg.find(x=>x.startsWith("[DIAGNOSTIC]"));
-  if(diagnosticDebug)console.log(diagnosticDebug);
+  if(diagnosticDebug)console.log(`[V28 DIAGNOSTICS] ${pair} ${diagnosticDebug.replace(/^\[DIAGNOSTIC\]\s*/, "")}`);
   if(triggerDebug)console.log(`[PAIR] ${pair} — ${triggerDebug}`);
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
   if(gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
@@ -278,7 +281,7 @@ export async function GET(request:Request){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      // Daily EMA5/13 sets direction; 4H EMA5/13 confirms momentum.
+      // Daily EMA8/21 is the macro direction; 4H EMA5/13 is trade-management context.
       const conflict=snapshot.regime==="CHOP"||!dailySide;
       let waitReason=snapshot.regime==="CHOP"?"regime CHOP":conflict?"daily regime unavailable":"setup incomplete";
       if(!conflict&&gateDebug){
@@ -297,10 +300,6 @@ export async function GET(request:Request){
    const entry2Continuation=sameDirectionExisting&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2";
    if(existing&&existing.direction!==signal.direction){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=opposite_direction_position_exists`);return;}
    if(existing&&signal.type!=="ADD"&&!entry2Continuation&&signal.type!=="ENTRY_2"){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=active_position_exists`);return;}
-   if(signal.type==="ADD"&&(!sameDirectionExisting||!entry1State||!entry2AlreadyFired||entry1State.direction!==signal.direction)){
-     console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=entry1_entry2_lifecycle_incomplete`);
-     return;
-   }
    if(signal.type==="ADD"&&historyAtStart.some((h:any)=>h.pair===pair&&h.direction===signal.direction&&h.type==="ADD"&&Date.now()-Number(h.timestamp)<4*60*60*1000)){console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=add_hysteresis_4h`);return;}
    const history=historyAtStart;
    if(signal.type==="ENTRY_2"){
