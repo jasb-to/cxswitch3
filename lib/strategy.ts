@@ -45,7 +45,7 @@ export interface ComputedRegime {
   strength:RegimeStrength|"NEUTRAL";
 }
 export function computeRegime(c:Candle[]):ComputedRegime {
-  const closed4h=[...c].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1);
+  const closed4h=[...c].sort((a,b)=>a.timestamp-b.timestamp);
   const d=daily(closed4h),closes=d.map(x=>x.close);
   const neutral:ComputedRegime={state:"CHOP",direction:null,sizeMultiplier:0,price:closes.at(-1)??0,e21:0,e5:0,e13:0,spread:0,spread3:0,spreadDelta:0,strength:"NEUTRAL"};
   if(closes.length<22)return neutral;
@@ -302,7 +302,8 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
   
-  const existing = trendlineStore.get(pair);
+  const stateKey = `${pair}:${direction}`;
+  const existing = trendlineStore.get(stateKey);
   const maxAge = 7 * 24 * 60 * 60 * 1000;
   
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < maxAge) {
@@ -331,7 +332,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const ssResidual = recentPivots.reduce((s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2), 0);
   const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
   
-  trendlineStore.set(pair, {
+  trendlineStore.set(stateKey, {
     slope,
     intercept,
     pivots: recentPivots,
@@ -346,21 +347,32 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 }
 
 // --- 1D TREND ---
+// Daily EMA8/21 is the macro direction for ENTRY_2 and ADD.
 function trend1D(candles1d: Candle[]): { direction: Direction | null; strength: string } {
   const len = candles1d.length;
   if (len < 25) return { direction: null, strength: "WEAK" };
-
   const closes = candles1d.map(c => c.close);
-  const ema5 = ema(closes, 5);
-  const ema13 = ema(closes, 13);
-
-  const direction: Direction = ema5[ema5.length - 1] > ema13[ema13.length - 1] ? "LONG" : "SHORT";
-
+  const e8 = ema(closes, 8), e21 = ema(closes, 21);
+  const direction: Direction = e8.at(-1)! > e21.at(-1)! ? "LONG" : "SHORT";
   const highs = candles1d.slice(-20).map(c => c.high);
   const lows = candles1d.slice(-20).map(c => c.low);
-  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
-  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
+  const hh = highs.at(-1)! > Math.max(...highs.slice(0, -1));
+  const ll = lows.at(-1)! < Math.min(...lows.slice(0, -1));
+  const strength = (direction === "LONG" && hh) || (direction === "SHORT" && ll) ? "STRONG" : "MEDIUM";
+  return { direction, strength };
+}
 
+// ENTRY_1 alone uses the faster daily EMA5/13 direction.
+function trend1DEarly(candles1d: Candle[]): { direction: Direction | null; strength: string } {
+  const len = candles1d.length;
+  if (len < 25) return { direction: null, strength: "WEAK" };
+  const closes = candles1d.map(c => c.close);
+  const e5 = ema(closes, 5), e13 = ema(closes, 13);
+  const direction: Direction = e5.at(-1)! > e13.at(-1)! ? "LONG" : "SHORT";
+  const highs = candles1d.slice(-20).map(c => c.high);
+  const lows = candles1d.slice(-20).map(c => c.low);
+  const hh = highs.at(-1)! > Math.max(...highs.slice(0, -1));
+  const ll = lows.at(-1)! < Math.min(...lows.slice(0, -1));
   const strength = (direction === "LONG" && hh) || (direction === "SHORT" && ll) ? "STRONG" : "MEDIUM";
   return { direction, strength };
 }
