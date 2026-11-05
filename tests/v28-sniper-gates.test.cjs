@@ -44,11 +44,11 @@ test("Original V28 raw trigger ordering and thresholds are shared by both evalua
     assert.ok(body.includes("Math.abs(dist)<0.012"));
     assert.ok(body.includes("st.k<20"));
     assert.ok(body.includes("st.k>80"));
-    assert.ok(body.includes("price>tlPrice*1.008"));
-    assert.ok(body.includes("price<tlPrice*0.992"));
+    assert.ok(body.includes("closedPrice>tlPrice*1.008"));
+    assert.ok(body.includes("closedPrice<tlPrice*0.992"));
     assert.ok(body.includes("last.volume>avg("));
-    assert.ok(body.includes("price>(ema8_4h.at(-1)??0)"));
-    assert.ok(body.includes("price<(ema21_4h.at(-1)??0)"));
+    assert.ok(body.includes("closedPrice>(ema8_4h.at(-1)??0)"));
+    assert.ok(body.includes("closedPrice<(ema21_4h.at(-1)??0)"));
     assert.ok(body.includes("let rawType:"));
     assert.ok(body.includes("if(filtersPass)"));
   assert.ok(body.includes("closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1)"));
