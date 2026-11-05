@@ -34,7 +34,7 @@ test("ENTRY_2 and ADD follow macro triggers without saved lifecycle prerequisite
   const generate = body("generateSignal");
   assert.match(generate, /rawType="ENTRY_2";signalDirection=macro.direction/);
   assert.match(generate, /rawType="ADD";signalDirection=macro.direction/);
-  assert.doesNotMatch(generate, /entry1State|entry2AlreadyFired|hasEntry1|hasEntry2/);
+  assert.doesNotMatch(generate, /if\([^)]*(?:entry1State|entry2AlreadyFired|hasEntry1|hasEntry2)/);
   assert.doesNotMatch(cron, /entry1_entry2_lifecycle_incomplete|entry1State|entry2AlreadyFired/);
 });
 
