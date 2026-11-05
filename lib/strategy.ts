@@ -488,6 +488,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const nearMacro=!!macroTl&&Math.abs(macroDist)<0.012,nearFast=!!fastTl&&Math.abs(fastDist)<0.012;
  const stochExtremeFast=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
  const stochTurningMacro=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
+ const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
  const hardCapFast=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const hardCapMacro=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
  const entry1Eligible=!!fastTl&&fastTl.r2>=0.60&&nearFast&&stochExtremeFast&&!hardCapFast;
@@ -503,7 +504,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
  let signalDirection:Direction|null=null;
  if(entry1Eligible){rawType="ENTRY_1";signalDirection=fast.direction;}
- else if(macro.direction&&macroTl&&macroTl.r2>=0.60&&nearMacro&&stochTurningMacro&&!hardCapMacro){rawType="ENTRY_2";signalDirection=macro.direction;}
+ else if(macro.direction&&macroTl&&macroTl.r2>=0.60&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro){rawType="ENTRY_2";signalDirection=macro.direction;}
  else if(macro.direction&&macroTl&&macroTl.r2>=0.60&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";signalDirection=macro.direction;}
  const blockers:string[]=[];
  if(!fastTl)blockers.push("ENTRY_1 trendline unavailable");else if(fastTl.r2<0.60)blockers.push("ENTRY_1 trendline R² below 0.60");else if(!nearFast)blockers.push("ENTRY_1 outside 1.2% proximity");
@@ -512,15 +513,20 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const entry1HardCap=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const macroHardCap=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
  debug.push("[DIAGNOSTIC] "+JSON.stringify({dailyDirection:macro.direction,entry1Direction:fast.direction,latest4hPrice:close,trendlineAvailable:!!fastTl,trendlinePrice:fastTl?Number(fastTl.price.toFixed(8)):null,trendlineR2:fastTl?.r2??null,trendlineDistancePct:Number.isFinite(fastDist)?Number((Math.abs(fastDist)*100).toFixed(4)):null,nearTrendline:nearFast,stochK:st.k,stochD:st.d,stochExtreme:stochExtremeFast,hardStochCap:entry1HardCap||macroHardCap,fourHDirection,momentumAligned:signalDirection?fourHDirection===signalDirection:null,exhaustion:entry1HardCap||macroHardCap?"Stoch hard cap":null,entry1Eligible,rawType,blockers}));
- if(!rawType){debug.push("[WAIT] No V28 trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- debug.push("[TRIGGER] "+rawType+" "+signalDirection);
+ if(rawType)debug.push("[TRIGGER] "+rawType+" "+signalDirection);
  const hyst=getHysteresis(pair,now);
- let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=rawType;
- if(hyst.lastSignalType&&hyst.lastSignalType===rawType&&hyst.lastSignalPrice>0){
+ let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
+ if(hyst.lastSignalType==="ADD")finalType="ADD";
+ else if(hyst.lastSignalType==="ENTRY_2")finalType=rawType==="ADD"?"ADD":"ENTRY_2";
+ else if(hyst.lastSignalType==="ENTRY_1")finalType=rawType==="ADD"?"ADD":rawType==="ENTRY_2"?"ENTRY_2":"ENTRY_1";
+ else finalType=rawType;
+ if(hyst.lastSignalType&&finalType===hyst.lastSignalType&&hyst.lastSignalPrice>0){
   const move=Math.abs(price-hyst.lastSignalPrice)/hyst.lastSignalPrice;
   if(move<HYSTERESIS_BAND){debug.push("[WAIT] Hysteresis lock "+finalType);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  }
- if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType!,price,now,signalDirection!);
+ if(!finalType){debug.push("[WAIT] No V28 trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
+ let signalDirection:Direction=finalType==="ENTRY_1"?fast.direction:(hyst.direction??macro.direction??fast.direction);
+ if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType,price,now,signalDirection);
  const signalTl=finalType==="ENTRY_1"?fastTl:macroTl;
  if(!signalTl)return{debug:["[SIGNAL BLOCKED] trendline unavailable"]};
  const avalue=atr(bars,14),recent=bars.slice(-20);
