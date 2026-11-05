@@ -263,7 +263,7 @@ export async function GET(request:Request){
   if(regimeDebug)console.log(`[PAIR] ${pair} — ${regimeDebug}`);
   const triggerDebug=dbg.find(x=>x.startsWith("[TRIGGER]"));
   const diagnosticDebug=dbg.find(x=>x.startsWith("[DIAGNOSTIC]"));
-  if(diagnosticDebug)console.log(diagnosticDebug);
+  if(diagnosticDebug)console.log(`[V28 DIAGNOSTICS] ${pair} ${diagnosticDebug.replace(/^\\[DIAGNOSTIC\\]\\s*/, "")}`);
   if(triggerDebug)console.log(`[PAIR] ${pair} — ${triggerDebug}`);
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
   if(gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
@@ -273,7 +273,7 @@ export async function GET(request:Request){
   const signal=result.signal;
   dispatchPairSignal=signal;
   if(signal){snapshot.strategyStatus=`FIRED — ${signal.type} ${signal.direction}`;console.log(`[SIGNAL DECISION] ${pair} status=fired type=${signal.type} direction=${signal.direction} id=${signal.id}`);}
-  else {const blocked=dbg.find((x:string)=>x.startsWith("[SIGNAL BLOCKED]"))||dbg.find((x:string)=>x.startsWith("[WAIT]"))||gateDebug;snapshot.strategyStatus=blocked?`WAIT — ${blocked.replace(/^\[[^\]]+\]\s*/, "")}`:"WAIT — no Signal object returned";console.log(`[SIGNAL DECISION] ${pair} status=not_fired reason=${snapshot.strategyStatus}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${snapshot.alignedDirection||"NONE"} status=suppressed reason=no_signal_object`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=no_signal_object`);}
+  else {const blocked=dbg.find((x:string)=>x.startsWith("[SIGNAL BLOCKED]"))||dbg.find((x:string)=>x.startsWith("[GLOBAL FILTER VETO]"))||dbg.find((x:string)=>x.startsWith("[WAIT]"))||gateDebug;snapshot.strategyStatus=blocked?`WAIT — ${blocked.replace(/^\[[^\]]+\]\s*/, "")}`:"WAIT — no Signal object returned";console.log(`[SIGNAL DECISION] ${pair} status=not_fired reason=${snapshot.strategyStatus}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${snapshot.alignedDirection||"NONE"} status=suppressed reason=no_signal_object`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=no_signal_object`);}
   if(!signal){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
