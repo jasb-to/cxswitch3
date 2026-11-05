@@ -131,6 +131,7 @@ test("V28 staged hysteresis preserves ENTRY_1 → ENTRY_2 → ADD, 0.5% band and
   assert.match(generate, /finalType=rawType/);
   assert.match(generate, /move<HYSTERESIS_BAND/);
   assert.match(generate, /if\(finalType!==hyst\.lastSignalType\)setHysteresis\(pair,finalType,price,now\)/);
+  assert.match(generate, /if\(hyst\.lastSignalType==="ADD"&&!activeMatch\)/);
 });
 
 test("ENTRY_1 and ENTRY_2 can each start a lifecycle; ENTRY_2 uses macro direction without an ENTRY_1 prerequisite", () => {
