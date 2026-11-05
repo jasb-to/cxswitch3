@@ -29,6 +29,7 @@ test("ENTRY_1 uses only fast daily direction, 1.2% trendline proximity and Stoch
   assert.match(generate, /const stochExtremeFast=fast\.direction==="LONG"\?st\.k<20:fast\.direction==="SHORT"\?st\.k>80:false/);
   assert.match(generate, /hardCapFast=fast\.direction==="LONG"\?st\.k>95:fast\.direction==="SHORT"\?st\.k<5:false/);
   assert.match(generate, /rawType="ENTRY_1";rawDirection=fast\.direction/);
+  assert.match(generate, /const finalHardCap=signalDirection==="LONG"\?st\.k>95:st\.k<5/);
 });
 
 test("ENTRY_2 and ADD follow macro triggers without saved lifecycle prerequisites", () => {
@@ -49,7 +50,7 @@ test("Only directional Stoch hard caps remain; RSI and ADX are not exhaustion ve
 test("Latest supplied 4H candle is included in strategy and cron processing", () => {
   assert.doesNotMatch(strategy, /slice\(0,\s*-1\)/);
   assert.doesNotMatch(cron, /slice\(0,\s*-1\)/);
-  assert.match(body("generateSignal"), /bars=\[\.\.\.candles4h\]\.sort/);
+  assert.match(body("generateSignal"), /bars=\[\.\.\.candles4h\]/);
   assert.match(cron, /generateSignal\(pair,c1,c4,c15,price\)/);
   assert.match(cron, /4hUsedForStrategy=/);
 });
@@ -62,6 +63,7 @@ test("4H EMA 5/13 momentum is recorded in signal context and used for trade mana
   assert.match(hold, /ema\(closes,13\)/);
   assert.match(hold, /4h_ema5_13_misaligned/);
   assert.match(hold, /newStop:s\.entry/);
+  assert.match(cron, /if\(hold\.newStop&&Number\.isFinite\(hold\.newStop\)\)/);
   assert.doesNotMatch(generate, /if\(!momentumAligned\)|if\(momentumAligned/);
 });
 
