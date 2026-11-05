@@ -135,6 +135,8 @@ test("ENTRY_2 is silent and Telegram only permits ENTRY_1 and ADD", () => {
   assert.ok(!entry2.includes("sendAlert("));
   assert.match(telegram, /type!=="ENTRY_1"&&type!=="ADD"/);
   assert.ok(cron.includes("entry1_entry2_lifecycle_incomplete"));
+  assert.ok(cron.includes("const entry1State=existing?historyForEntry.filter"));
+  assert.ok(cron.includes("prevents a closed trade's stale history row"));
 });
 
 test("Daily EMA8 and EMA21 diagnostics are populated from completed daily candles", () => {
