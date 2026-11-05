@@ -44,8 +44,8 @@ test("ADD alone requires an active same-direction position and the 4H breakout c
   const generate = body("generateSignal");
   assert.match(evaluate, /activeMatch=!!macro\.direction&&activeSignals\.some/);
   assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
-  assert.match(generate, /else if\\(activeMatch&&macro\\.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&\\(volUp\\|\\|stochMomentum\\|\\|adxStrong\\)&&!hardCapMacro\\)/);
-  assert.doesNotMatch(generate, /\(volUp\|\|stochMomentum\|\|adxStrong\)/);
+  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro)"));
+  assert.match(generate, /volUp\|\|stochMomentum\|\|adxStrong/);
 });
 
 test("No global RSI or ADX exhaustion veto is applied to the entry stages", () => {
