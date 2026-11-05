@@ -34,8 +34,8 @@ test("ENTRY_1 uses only fast daily direction, 1.2% trendline proximity and Stoch
 
 test("ENTRY_2 and ADD follow macro triggers without saved lifecycle prerequisites", () => {
   const generate = body("generateSignal");
-  assert.match(generate, /rawType="ENTRY_2";signalDirection=macro.direction/);
-  assert.match(generate, /rawType="ADD";signalDirection=macro.direction/);
+  assert.match(generate, /rawType="ENTRY_2";rawDirection=macro.direction/);
+  assert.match(generate, /rawType="ADD";rawDirection=macro.direction/);
   assert.doesNotMatch(generate, /if\([^)]*(?:entry1State|entry2AlreadyFired|hasEntry1|hasEntry2)/);
   assert.doesNotMatch(cron, /entry1_entry2_lifecycle_incomplete|entry1State=|entry2AlreadyFired=/);
 });
@@ -99,4 +99,31 @@ test("V28 stop/target arithmetic and persisted hysteresis remain intact", () => 
   assert.match(generate, /price-5\*avalue/);
   assert.match(generate, /targetCount:1,targetAtrMultiple:5/);
   assert.match(strategy, /HYSTERESIS_BAND = 0\.005/);
+});
+
+test("Trendline state is isolated between FAST and MACRO tracks", () => {
+  assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT", track: "FAST" \| "MACRO"\)/);
+  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{track\}:\$\{direction\}`/);
+  assert.match(strategy, /getTrendline\(pair,bars,fast\.direction,"FAST"\)/);
+  assert.match(strategy, /getTrendline\(pair,bars,macro\.direction,"MACRO"\)/);
+  assert.match(strategy, /getTrendline\(pair,bars,direction,"MACRO"\)/);
+});
+
+test("Misaligned 4H momentum tightens profitable trades and exits unprofitable trades", () => {
+  const hold = body("shouldHold");
+  assert.match(hold, /if\(!momentumAligned\)/);
+  assert.match(hold, /if\(profitable\)return\{shouldHold:true,[^}]*newStop:s\.entry/);
+  assert.match(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
+  assert.match(hold, /shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE"/);
+});
+
+test("Hysteresis only suppresses duplicate ENTRY_1 on the same 4H candle within 0.5%", () => {
+  const generate = body("generateSignal");
+  assert.match(strategy, /lastEntry1CandleTimestamp/);
+  assert.match(strategy, /lastEntry1Price/);
+  assert.match(generate, /finalType==="ENTRY_1"&&hyst\.lastEntry1CandleTimestamp===candleTimestamp/);
+  assert.match(generate, /move<=HYSTERESIS_BAND/);
+  assert.match(generate, /setHysteresis\(pair,price,candleTimestamp\)/);
+  assert.doesNotMatch(strategy, /lastSignalType|lockUntil/);
+  assert.doesNotMatch(generate, /Hysteresis lock/);
 });
