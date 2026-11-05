@@ -48,8 +48,8 @@ test("Only directional Stoch hard caps remain; RSI and ADX are not exhaustion ve
 });
 
 test("Latest supplied 4H candle is included in strategy and cron processing", () => {
-  assert.doesNotMatch(strategy, /slice\(0,\s*-1\)/);
-  assert.doesNotMatch(cron, /slice\(0,\s*-1\)/);
+  assert.doesNotMatch(strategy, /closed4h|candles4h\.slice\(0,\s*-1\)/);
+  assert.doesNotMatch(cron, /closed4h|candles\.slice\(0,\s*-1\)/);
   assert.match(body("generateSignal"), /bars=\[\.\.\.candles4h\]/);
   assert.match(cron, /generateSignal\(pair,c1,c4,c15,price\)/);
   assert.match(cron, /4hUsedForStrategy=/);
