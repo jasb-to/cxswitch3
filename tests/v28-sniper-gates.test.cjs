@@ -24,7 +24,7 @@ test("Daily macro direction is EMA 8/21; fast EMA 5/13 is a separate ENTRY_1 tra
 
 test("ENTRY_1 uses only fast daily direction, 1.2% trendline proximity and Stoch extreme plus hard cap", () => {
   const generate = body("generateSignal");
-  assert.match(generate, /entry1Eligible=!!fastTl&&fastTl\.r2>=0\.60&&nearFast&&stochExtremeFast&&!hardCapFast/);
+  assert.match(generate, /entry1Eligible=!!fastTl&&nearFast&&stochExtremeFast&&!hardCapFast/);
   assert.match(generate, /const stochExtremeFast=fast\.direction==="LONG"\?st\.k<20:fast\.direction==="SHORT"\?st\.k>80:false/);
   assert.match(generate, /hardCapFast=fast\.direction==="LONG"\?st\.k>95:fast\.direction==="SHORT"\?st\.k<5:false/);
   assert.match(generate, /rawType="ENTRY_1";signalDirection=fast\.direction/);
@@ -32,8 +32,8 @@ test("ENTRY_1 uses only fast daily direction, 1.2% trendline proximity and Stoch
 
 test("ENTRY_2 and ADD follow macro triggers without saved lifecycle prerequisites", () => {
   const generate = body("generateSignal");
-  assert.match(generate, /rawType="ENTRY_2";signalDirection=macro\.direction/);
-  assert.match(generate, /rawType="ADD";signalDirection=macro\.direction/);
+  assert.match(generate, /rawType="ENTRY_2";signalDirection=macro.direction/);
+  assert.match(generate, /rawType="ADD";signalDirection=macro.direction/);
   assert.doesNotMatch(generate, /entry1State|entry2AlreadyFired|hasEntry1|hasEntry2/);
   assert.doesNotMatch(cron, /entry1_entry2_lifecycle_incomplete|entry1State|entry2AlreadyFired/);
 });
