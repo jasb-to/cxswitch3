@@ -94,6 +94,11 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     const price=Number(market?.currentPrice??market?.price);
     if(!candles.length||!Number.isFinite(price)||price<=0)continue;
     const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
+    if(hold.newStop&&Number.isFinite(hold.newStop)){
+      const currentStop=Number(alert.stop)||0;
+      const tightens=alert.direction==="LONG"?hold.newStop>currentStop:currentStop===0||hold.newStop<currentStop;
+      if(tightens){alert.stop=hold.newStop;console.log(`[MANAGEMENT] ${alert.pair} ${alert.direction} — 4H EMA5/13 momentum weakened; stop tightened to entry ${hold.newStop}`);alerts.push({pair:alert.pair,direction:alert.direction,status:"stop_tightened",stop:hold.newStop,reason:hold.reason});}
+    }
     if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)&&cooldownsAvailable){
       persistExitCooldown(alert.pair,hold.reason,cooldowns);
       cooldownsChanged=true;
