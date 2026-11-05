@@ -85,9 +85,8 @@ test("trend1D uses EMA5/13 for its only daily direction", () => {
   assert.ok(!trend.includes("ema(closes, 8)"));
   assert.ok(!trend.includes("ema(closes, 21)"));
 });
-test("both evaluateGates and generateSignal gate ENTRY_1 on momentum and exhaustion", () => {
-  const filter = "const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;";
-  assert.equal(source.split(filter).length - 1, 2);
-  assert.equal(source.split('if(filtersPass){').length - 1, 2);
-  assert.equal(source.split('if(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme)rawType="ENTRY_1";').length - 1, 2);
+test("ENTRY_1 is gated by trendline proximity and Stoch extreme, not global momentum", () => {
+  assert.match(source, /entry1Eligible=!!fastTl&&nearFast&&stochExtremeFast&&!hardCapFast/);
+  assert.match(source, /if\(entry1Eligible\)\{rawType="ENTRY_1";rawDirection=fast\.direction;\}/);
+  assert.doesNotMatch(source, /filtersPass=!!dailyTrend/);
 });
