@@ -25,9 +25,10 @@ test("Daily macro direction is EMA 8/21; fast EMA 5/13 is a separate ENTRY_1 tra
 test("ENTRY_1 uses only fast daily direction, 1.2% trendline proximity and Stoch extreme plus hard cap", () => {
   const generate = body("generateSignal");
   assert.match(generate, /entry1Eligible=!!fastTl&&nearFast&&stochExtremeFast&&!hardCapFast/);
+  assert.doesNotMatch(generate, /r2\s*>=\s*0\.60/);
   assert.match(generate, /const stochExtremeFast=fast\.direction==="LONG"\?st\.k<20:fast\.direction==="SHORT"\?st\.k>80:false/);
   assert.match(generate, /hardCapFast=fast\.direction==="LONG"\?st\.k>95:fast\.direction==="SHORT"\?st\.k<5:false/);
-  assert.match(generate, /rawType="ENTRY_1";signalDirection=fast\.direction/);
+  assert.match(generate, /rawType="ENTRY_1";rawDirection=fast\.direction/);
 });
 
 test("ENTRY_2 and ADD follow macro triggers without saved lifecycle prerequisites", () => {
@@ -35,7 +36,7 @@ test("ENTRY_2 and ADD follow macro triggers without saved lifecycle prerequisite
   assert.match(generate, /rawType="ENTRY_2";signalDirection=macro.direction/);
   assert.match(generate, /rawType="ADD";signalDirection=macro.direction/);
   assert.doesNotMatch(generate, /if\([^)]*(?:entry1State|entry2AlreadyFired|hasEntry1|hasEntry2)/);
-  assert.doesNotMatch(cron, /entry1_entry2_lifecycle_incomplete|entry1State|entry2AlreadyFired/);
+  assert.doesNotMatch(cron, /entry1_entry2_lifecycle_incomplete|entry1State=|entry2AlreadyFired=/);
 });
 
 test("Only directional Stoch hard caps remain; RSI and ADX are not exhaustion vetoes", () => {
@@ -75,6 +76,7 @@ test("Market snapshot exposes daily macro, ENTRY_1 fast direction and management
 
 test("Cron no longer emits a global filter veto or enforces the ENTRY_1 to ENTRY_2 to ADD chain", () => {
   assert.doesNotMatch(cron, /GLOBAL FILTER VETO/);
+  assert.match(cron, /stop tightened to entry/);
   assert.doesNotMatch(cron, /entry1_entry2_lifecycle_incomplete/);
 });
 
@@ -84,6 +86,7 @@ test("Dashboard presents macro and fast direction without a global red veto stat
   assert.match(dashboard, /4H EMA5\/13 MOMENTUM/);
   assert.match(dashboard, /HARD CAP/);
   assert.doesNotMatch(dashboard, /strategyBlocked|border-red-500\/35|VETOED/);
+  assert.match(dashboard, /MISALIGNED — MANAGE TRADE/);
 });
 
 test("V28 stop/target arithmetic and persisted hysteresis remain intact", () => {
