@@ -232,5 +232,5 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   else if(dir==="LONG"&&kNow>dNow)stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
   else if(dir==="SHORT"&&kNow<dNow)stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
   if(signal)return "[JARVIS STATE] "+pair+" — "+signal.type+" "+dir+" fired using the dual-track daily EMA8/21 macro and EMA5/13 ENTRY_1 bias."+filterText+tlText+" "+stochSummary+" TP "+signal.tp1.toFixed(2)+".";
-  return "[JARVIS STATE] "+pair+" — DAILY BIAS (1D EMA5/13): "+dailyText+"."+filterText+tlText+" "+stochSummary+" Waiting for a V28 trendline/Stoch trigger.";
+  return "[JARVIS STATE] "+pair+" — DAILY MACRO (1D EMA8/21): "+dailyText+"."+filterText+tlText+" "+stochSummary+" Waiting for a V28 trendline/Stoch trigger.";
 }
