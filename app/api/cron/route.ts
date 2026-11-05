@@ -72,7 +72,7 @@ function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean{
 function mergeNewSignalsIntoActive(current:any[],signals:Signal[]):any[]{
   const merged=current.map((trade:any)=>({...trade}));
   for(const signal of signals){
-    const trade:any={id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2??0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",sizeMultiplier:signal.sizeMultiplier,version:signal.version};
+    const trade:any={id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2??0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",sizeMultiplier:signal.sizeMultiplier,version:signal.version,context:signal.context};
     const index=merged.findIndex((item:any)=>item.pair===signal.pair&&item.direction===signal.direction);
     if(index>=0){const previous={...merged[index]};delete previous.context;merged[index]={...previous,...trade};}
     else merged.push(trade);
@@ -94,6 +94,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     const price=Number(market?.currentPrice??market?.price);
     if(!candles.length||!Number.isFinite(price)||price<=0)continue;
     const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
+     alert.shouldHold=hold.shouldHold;alert.fourHDirection=hold.fourHDirection;alert.momentumAligned=hold.momentumAligned;alert.managementState=hold.managementState;alert.managementRecommendation=hold.recommendation;alert.momentumProfit=hold.profitable;
     if(hold.newStop&&Number.isFinite(hold.newStop)){
       const currentStop=Number(alert.stop)||0;
       const tightens=alert.direction==="LONG"?hold.newStop>currentStop:currentStop===0||hold.newStop<currentStop;
