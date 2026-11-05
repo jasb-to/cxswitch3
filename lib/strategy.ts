@@ -452,22 +452,22 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const stochTurningMacro=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const hardCapFast=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const hardCapMacro=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
- const entry1Ready=!!fast.direction&&!!fastTl&&fastTl.r2>=0.60&&nearFast&&stochExtremeFast&&!hardCapFast;
+ const entry1Ready=!!fast.direction&&!!fastTl&&nearFast&&stochExtremeFast&&!hardCapFast;
  const last=bars.at(-1),prev=bars.at(-2);
- const beyond=macro.direction==="LONG"?!!macroTl&&close>macroTl.price*1.008:macro.direction==="SHORT"?!!macroTl&&close<macroTl.price*0.992:false;
+ const beyond=macro.direction==="LONG"?!!macroTl&&price>macroTl.price*1.008:macro.direction==="SHORT"?!!macroTl&&price<macroTl.price*0.992:false;
  const confirming=!!last&&!!prev&&(macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:macro.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false);
  const e8=ema(closes,8),e21=ema(closes,21);
  const emaAligned=macro.direction==="LONG"?close>(e8.at(-1)??0)&&close>(e21.at(-1)??0):macro.direction==="SHORT"?close<(e8.at(-1)??0)&&close<(e21.at(-1)??0):false;
  const volUp=!!last&&last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3,stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false,adxStrong=av>20;
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,direction:Direction|null=null;
  if(entry1Ready){rawType="ENTRY_1";direction=fast.direction;}
- else if(macro.direction&&macroTl&&macroTl.r2>=0.60&&nearMacro&&stochTurningMacro&&!hardCapMacro){rawType="ENTRY_2";direction=macro.direction;}
- else if(macro.direction&&macroTl&&macroTl.r2>=0.60&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
+ else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro){rawType="ENTRY_2";direction=macro.direction;}
+ else if(macro.direction&&macroTl&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
  const hardCap=rawType==="ENTRY_1"?hardCapFast:hardCapMacro;
  const regime=computeRegime(bars),missing:string[]=[];
  if(!macro.direction)missing.push("daily EMA8/21 unavailable for ENTRY_2/ADD");
  if(!fast.direction)missing.push("ENTRY_1 daily EMA5/13 unavailable");
- if(!fastTl||fastTl.r2<0.60)missing.push("ENTRY_1 trendline R² below 0.60");
+ if(!fastTl)missing.push("ENTRY_1 trendline unavailable");
  if(!nearFast)missing.push("ENTRY_1 outside 1.2% trendline proximity");
  if(!stochExtremeFast)missing.push("ENTRY_1 Stoch extreme not met");
  if(hardCap)missing.push("hard Stoch exhaustion cap");
@@ -484,16 +484,16 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const price=currentPrice??bars.at(-1)!.close,close=bars.at(-1)!.close,closes=bars.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(bars);
  const macroTl=macro.direction?getTrendline(pair,bars,macro.direction):null,fastTl=fast.direction?getTrendline(pair,bars,fast.direction):null;
  const macroTlPrice=macroTl?.price??0,fastTlPrice=fastTl?.price??0;
- const macroDist=macroTlPrice>0?(close-macroTlPrice)/macroTlPrice:Infinity,fastDist=fastTlPrice>0?(close-fastTlPrice)/fastTlPrice:Infinity;
+ const macroDist=macroTlPrice>0?(price-macroTlPrice)/macroTlPrice:Infinity,fastDist=fastTlPrice>0?(price-fastTlPrice)/fastTlPrice:Infinity;
  const nearMacro=!!macroTl&&Math.abs(macroDist)<0.012,nearFast=!!fastTl&&Math.abs(fastDist)<0.012;
  const stochExtremeFast=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
  const stochTurningMacro=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
  const hardCapFast=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const hardCapMacro=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
- const entry1Eligible=!!fastTl&&fastTl.r2>=0.60&&nearFast&&stochExtremeFast&&!hardCapFast;
+ const entry1Eligible=!!fastTl&&nearFast&&stochExtremeFast&&!hardCapFast;
  const last=bars.at(-1)!,prev=bars.at(-2)!;
- const beyondTrendline=macro.direction==="LONG"?!!macroTl&&close>macroTlPrice*1.008:macro.direction==="SHORT"?!!macroTl&&close<macroTlPrice*0.992:false;
+ const beyondTrendline=macro.direction==="LONG"?!!macroTl&&price>macroTlPrice*1.008:macro.direction==="SHORT"?!!macroTl&&price<macroTlPrice*0.992:false;
  const confirming=macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:macro.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false;
  const volUp=last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3;
  const ema8_4h=ema(closes,8),ema21_4h=ema(closes,21);
@@ -504,10 +504,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
  let signalDirection:Direction|null=null;
  if(entry1Eligible){rawType="ENTRY_1";signalDirection=fast.direction;}
- else if(macro.direction&&macroTl&&macroTl.r2>=0.60&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro){rawType="ENTRY_2";signalDirection=macro.direction;}
- else if(macro.direction&&macroTl&&macroTl.r2>=0.60&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";signalDirection=macro.direction;}
+ else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro){rawType="ENTRY_2";signalDirection=macro.direction;}
+ else if(macro.direction&&macroTl&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";signalDirection=macro.direction;}
  const blockers:string[]=[];
- if(!fastTl)blockers.push("ENTRY_1 trendline unavailable");else if(fastTl.r2<0.60)blockers.push("ENTRY_1 trendline R² below 0.60");else if(!nearFast)blockers.push("ENTRY_1 outside 1.2% proximity");
+ if(!fastTl)blockers.push("ENTRY_1 trendline unavailable");else if(!nearFast)blockers.push("ENTRY_1 outside 1.2% proximity");
  if(!stochExtremeFast)blockers.push("ENTRY_1 Stoch RSI not at extreme");
  if(hardCapFast)blockers.push("ENTRY_1 hard Stoch cap");
  const entry1HardCap=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
