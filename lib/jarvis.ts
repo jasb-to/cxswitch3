@@ -48,7 +48,7 @@ function directionFromDaily(value:any): "BULL" | "BEAR" | "NEUTRAL" {
 }
 
 function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
-  // 4H EMA5/13 is the mandatory global momentum gate for the single daily direction.
+  // 4H EMA5/13 is trade-management context; it never gates a V28 entry.
   const tacticalDirection=String(snapshot?.fourHTacticalDirection||"").toUpperCase();
   if(tacticalDirection==="BULL"||tacticalDirection==="LONG")return "BULL";
   if(tacticalDirection==="BEAR"||tacticalDirection==="SHORT")return "BEAR";
@@ -210,7 +210,6 @@ function dailyState(c:Candle[]){const m=new Map<string,Candle[]>();for(const x o
 function swingsState(c:Candle[],high:boolean){const o:{index:number;price:number}[]=[];for(let i=2;i<c.length-2;i++){const p=high?c[i].high:c[i].low;let ok=true;for(let j=1;j<=2;j++)if(high?(p<=c[i-j].high||p<=c[i+j].high):(p>=c[i-j].low||p>=c[i+j].low))ok=false;if(ok)o.push({index:i,price:p})}return o}
 function zoneState(c:Candle[],dir:"LONG"|"SHORT",p:number,a:number,e21:number){if(!a)return null;const z:{type:string;price:number;distance:number}[]=[];const sw=swingsState(c,dir==="SHORT"),n=sw.length;if(n>=2){const pts=sw.slice(-5),sx=pts.reduce((s,x)=>s+x.index,0),sy=pts.reduce((s,x)=>s+x.price,0),sxy=pts.reduce((s,x)=>s+x.index*x.price,0),sx2=pts.reduce((s,x)=>s+x.index*x.index,0),den=pts.length*sx2-sx*sx;if(den){const slope=(pts.length*sxy-sx*sy)/pts.length,intercept=(sy-slope*sx)/pts.length,lp=slope*(c.length-1)+intercept;if((dir==="LONG"&&slope>0)||(dir==="SHORT"&&slope<0))z.push({type:"trendline",price:lp,distance:Math.abs(p-lp)})}}z.push({type:"EMA21",price:e21,distance:Math.abs(p-e21)});const s=sw.at(-1);if(s)z.push({type:dir==="LONG"?"swing low":"swing high",price:s.price,distance:Math.abs(p-s.price)});z.sort((x,y)=>x.distance-y.distance);return z[0]??null}
 function stochState(a:number[]){const rs:number[]=[];if(a.length<=14)return{k:50,d:50,pk:50,pd:50};let g=0,l=0;for(let i=1;i<=14;i++){const x=a[i]-a[i-1];if(x>=0)g+=x;else l-=x}let ag=g/14,al=l/14;rs.push(al===0?100:100-100/(1+ag/al));for(let i=15;i<a.length;i++){const x=a[i]-a[i-1];ag=(ag*13+Math.max(x,0))/14;al=(al*13+Math.max(-x,0))/14;rs.push(al===0?100:100-100/(1+ag/al))}const raw:number[]=[];for(let i=13;i<rs.length;i++){const w=rs.slice(i-13,i+1),lo=Math.min(...w),hi=Math.max(...w);raw.push(hi===lo?50:(rs[i]-lo)/(hi-lo)*100)}const k:number[]=[],d:number[]=[];for(let i=2;i<raw.length;i++)k.push(raw.slice(i-2,i+1).reduce((x,y)=>x+y,0)/3);for(let i=2;i<k.length;i++)d.push(k.slice(i-2,i+1).reduce((x,y)=>x+y,0)/3);return{k:k.at(-1)??50,d:d.at(-1)??50,pk:k.at(-2)??50,pd:d.at(-2)??50}}
-function exhaustionState(dir:"LONG"|"SHORT",k:number,rsi:number,p:number,e21:number){if(dir==="LONG"&&k>=95)return"K "+roundState(k)+" > 95";if(dir==="SHORT"&&k<=5)return"K "+roundState(k)+" < 5";if(dir==="LONG"&&rsi>=78)return"RSI "+roundState(rsi)+" > 78";if(dir==="SHORT"&&rsi<=22)return"RSI "+roundState(rsi)+" < 22";if(dir==="LONG"&&p>e21*1.03)return"price >3% above EMA21";if(dir==="SHORT"&&p<e21*.97)return"price >3% below EMA21";return null}
 
 export function narratePairState(pair:string,market:any,candles4h:Candle[],signal:Signal|undefined,candles15m:Candle[]=[]):string{
   void candles15m;
@@ -224,14 +223,14 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const exhaustion=market?.exhaustion??evaluation.exhaustion;
   const tlDistance=Number(market?.trendlineDistancePct??market?.distToTrendline);
   const tlText=Number.isFinite(tlDistance)?" Trendline distance "+tlDistance.toFixed(2)+"%.":" Trendline distance unavailable.";
-  const filterText=" Global 4H EMA5/13 momentum is "+(momentum?"aligned":"blocked")+(exhaustion?"; exhaustion veto: "+exhaustion+".":"; exhaustion clear.");
-  if(!evaluation.direction)return "[JARVIS STATE] "+pair+" — DAILY BIAS (1D EMA5/13): "+dailyText+"."+filterText+tlText+" Waiting for the V28 trendline/Stoch trigger.";
+  const filterText=" 4H EMA5/13 momentum is "+(momentum?"aligned":"misaligned")+" (trade-management context only)."+(exhaustion?" Stoch hard cap: "+exhaustion+".":"");
+  if(!evaluation.direction)return "[JARVIS STATE] "+pair+" — DAILY MACRO (1D EMA8/21): "+dailyText+"."+filterText+tlText+" Waiting for the V28 trendline/Stoch trigger.";
   const dir=evaluation.direction,st=evaluation.trigger,q=c.map(x=>x.close),rawStoch=stochState(q),kNow=rawStoch.k,dNow=rawStoch.d;
   let stochSummary="Stoch is waiting for confirmation.";
   if(st.entry1)stochSummary="Stoch is at the daily-direction extreme for ENTRY_1.";
   else if(st.entry2)stochSummary="Stoch is turning in the daily direction for ENTRY_2.";
   else if(dir==="LONG"&&kNow>dNow)stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
   else if(dir==="SHORT"&&kNow<dNow)stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
-  if(signal)return "[JARVIS STATE] "+pair+" — "+signal.type+" "+dir+" fired using the single daily EMA5/13 bias."+filterText+tlText+" "+stochSummary+" TP "+signal.tp1.toFixed(2)+".";
+  if(signal)return "[JARVIS STATE] "+pair+" — "+signal.type+" "+dir+" fired using the dual-track daily EMA8/21 macro and EMA5/13 ENTRY_1 bias."+filterText+tlText+" "+stochSummary+" TP "+signal.tp1.toFixed(2)+".";
   return "[JARVIS STATE] "+pair+" — DAILY BIAS (1D EMA5/13): "+dailyText+"."+filterText+tlText+" "+stochSummary+" Waiting for a V28 trendline/Stoch trigger.";
 }
