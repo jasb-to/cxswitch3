@@ -19,8 +19,8 @@ test("V28 uses one shared trendline KV key: pair", () => {
   assert.ok(strategy.includes("const maxAge = 7 * 24 * 60 * 60 * 1000"));
   assert.ok(strategy.includes("if (deviation < 0.02)"));
   assert.ok(strategy.includes("r2: 0.85"));
-  assert.match(strategy, /getTrendline\\(pair,closed4h,dailyTrend\\.direction\\)/);
-  assert.equal((strategy.match(/getTrendline\\(pair,closed4h,dailyTrend\\.direction\\)/g) ?? []).length, 2);
+  assert.match(strategy, /getTrendline\(pair,closed4h,dailyTrend\.direction\)/);
+  assert.equal((strategy.match(/getTrendline\(pair,closed4h,dailyTrend\.direction\)/g) ?? []).length, 2);
 });
 
 test("ENTRY_1 is blocked when 4H momentum is misaligned", () => {
