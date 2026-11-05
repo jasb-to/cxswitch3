@@ -250,7 +250,7 @@ export async function GET(request:Request){
   const historyForEntry=historyAtStart;
   // A prior ENTRY_1 is lifecycle context only while this pair still has an active position.
   // This prevents a closed trade's stale history row from permanently blocking a fresh ENTRY_1.
-  const result=generateSignal(pair,c1,c4,c15,price);
+  const result=generateSignal(pair,c1,c4,c15,price,undefined,undefined,undefined,false,active);
   const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.currentPrice=price;snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
   // Preserve the strategy's canonical 4H EMA(8/21) values; do not overwrite them with
   // non-existent legacy snapshot keys before deriving the coarse 4H direction.
@@ -265,8 +265,8 @@ export async function GET(request:Request){
   const regimeDebug=dbg.find(x=>x.startsWith("[REGIME]"));
   if(regimeDebug)console.log(`[PAIR] ${pair} — ${regimeDebug}`);
   const triggerDebug=dbg.find(x=>x.startsWith("[TRIGGER]"));
-  const diagnosticDebug=dbg.find(x=>x.startsWith("[DIAGNOSTIC]"));
-  if(diagnosticDebug)console.log(`[V28 DIAGNOSTICS] ${pair} ${diagnosticDebug.replace(/^\[DIAGNOSTIC\]\s*/, "")}`);
+  const v28Debug=dbg.find(x=>x.startsWith("[V28]"));
+  if(v28Debug)console.log(v28Debug);
   if(triggerDebug)console.log(`[PAIR] ${pair} — ${triggerDebug}`);
   const gateDebug=dbg.find(x=>x.startsWith("[GATES]"));
   if(gateDebug)console.log(`[GATES] ${pair} — ${gateDebug.slice(8)}`);
