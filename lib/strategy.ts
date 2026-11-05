@@ -477,7 +477,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,direction:Direction|null=null;
  if(entry1Ready&&!activePairPosition){rawType="ENTRY_1";direction=fast.direction;}
  else if(entry2Ready&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";direction=macro.direction;}
- else if(activeMatch&&macro.direction&&trendline&&beyond&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
+ else if(activeMatch&&macro.direction&&trendline&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
  const hardCap=rawType==="ENTRY_1"?hardCapFast:hardCapMacro,regime=computeRegime(bars),missing:string[]=[];
  if(!macro.direction)missing.push("daily EMA8/21 unavailable for shared 4H trendline");
  if(!trendline)missing.push("shared 4H trendline unavailable");
@@ -531,7 +531,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let rawDirection:Direction|null=null;
  if(entry1Eligible&&!activePairPosition){rawType="ENTRY_1";rawDirection=fast.direction;}
  else if(entry2Eligible&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";rawDirection=macro.direction;}
- else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
+ else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
  debug.push(`[V28] ${pair} | Daily=${macro.direction} Fast=${fast.direction} | Shared 4H TL=${trendlinePrice.toFixed(2)} Dist=${(trendlineDist*100).toFixed(2)}% | Stoch=${st.k} | Type=${rawType}`);
  if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
  let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
