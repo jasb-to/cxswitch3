@@ -460,11 +460,12 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const fourHDirection=e5>e13?"LONG":e5<e13?"SHORT":null;
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
  const volUp=!!last&&last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3,stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false,adxStrong=av>20;
- const hasActivePosition=activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
+ const entry1ActiveMatch=!!fast.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===fast.direction);
+ const macroActiveMatch=!!macro.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,direction:Direction|null=null;
- if(entry1Ready){rawType="ENTRY_1";direction=fast.direction;}
- else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro){rawType="ENTRY_2";direction=macro.direction;}
- else if(hasActivePosition&&macro.direction&&macroTl&&beyond&&confirming&&emaAligned&&momentumAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
+ if(entry1Ready&&!entry1ActiveMatch){rawType="ENTRY_1";direction=fast.direction;}
+ else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch){rawType="ENTRY_2";direction=macro.direction;}
+ else if(macroActiveMatch&&macro.direction&&macroTl&&beyond&&confirming&&emaAligned&&momentumAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
  const hardCap=rawType==="ENTRY_1"?hardCapFast:hardCapMacro;
  const regime=computeRegime(bars),missing:string[]=[];
  if(!macro.direction)missing.push("daily EMA8/21 unavailable for ENTRY_2/ADD");
@@ -504,12 +505,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const e5_4h=ema(closes,5).at(-1)??0,e13_4h=ema(closes,13).at(-1)??0;
  const fourHDirection=e5_4h>e13_4h?"LONG":e5_4h<e13_4h?"SHORT":null;
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
- const hasActivePosition=_activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
+ const entry1ActiveMatch=!!fast.direction&&_activeSignals.some(x=>x.pair===pair&&x.direction===fast.direction);
+ const macroActiveMatch=!!macro.direction&&_activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
  let rawDirection:Direction|null=null;
- if(entry1Eligible){rawType="ENTRY_1";rawDirection=fast.direction;}
- else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro){rawType="ENTRY_2";rawDirection=macro.direction;}
- else if(hasActivePosition&&macro.direction&&macroTl&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
+ if(entry1Eligible&&!entry1ActiveMatch){rawType="ENTRY_1";rawDirection=fast.direction;}
+ else if(macro.direction&&macroTl&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch){rawType="ENTRY_2";rawDirection=macro.direction;}
+ else if(macroActiveMatch&&macro.direction&&macroTl&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
  const blockers:string[]=[];
  if(!fastTl)blockers.push("ENTRY_1 trendline unavailable");else if(!nearFast)blockers.push("ENTRY_1 outside 1.2% proximity");
  if(!stochExtremeFast)blockers.push("ENTRY_1 Stoch RSI not at extreme");
