@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const strategy = fs.readFileSync("lib/strategy.ts", "utf8");
 
 test("V28 ENTRY_1/ENTRY_2 stop uses the wider 20-bar swing or 2 ATR", () => {
-  assert.ok(strategy.includes("recent=closed4h.slice(-20)"));
+  assert.ok(strategy.includes("recent=bars.slice(-20)"));
   assert.ok(strategy.includes("Math.min(low,price-2*avalue)"));
   assert.ok(strategy.includes("Math.max(high,price+2*avalue)"));
 });
