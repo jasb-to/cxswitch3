@@ -525,7 +525,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   if(move<HYSTERESIS_BAND){debug.push("[WAIT] Hysteresis lock "+finalType);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  }
  if(!finalType){debug.push("[WAIT] No V28 trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- let signalDirection:Direction=finalType==="ENTRY_1"?fast.direction:(hyst.direction??macro.direction??fast.direction);
+ let signalDirection:Direction|null=finalType==="ENTRY_1"?(fast.direction??hyst.direction??macro.direction):(hyst.direction??macro.direction??fast.direction);
+ if(!signalDirection){debug.push("[WAIT] No directional EMA bias available");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType,price,now,signalDirection);
  const signalTl=finalType==="ENTRY_1"?fastTl:macroTl;
  if(!signalTl)return{debug:["[SIGNAL BLOCKED] trendline unavailable"]};
