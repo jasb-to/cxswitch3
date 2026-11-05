@@ -56,6 +56,7 @@ test("Original V28 raw trigger ordering and thresholds are shared by both evalua
   assert.ok(body.includes("hasEntry1&&!hasEntry2&&hasSameDirectionPosition"));
   assert.ok(body.includes("hasEntry1&&hasEntry2&&hasSameDirectionPosition"));
   }
+  assert.ok(strategy.includes("recent=closed4h.slice(-20)"));
 });
 
 test("V28 stop/target arithmetic is preserved and TP2 mirrors the single TP1 target", () => {
