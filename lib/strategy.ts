@@ -293,7 +293,7 @@ function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: nu
 }
 
 // --- STATEFUL TRENDLINE ---
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
+function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", track: "FAST" | "MACRO"): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
   
@@ -303,7 +303,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
   
-  const stateKey = `${pair}:${direction}`;
+  const stateKey = `${pair}:${track}:${direction}`;
   const existing = trendlineStore.get(stateKey);
   const maxAge = 7 * 24 * 60 * 60 * 1000;
   
@@ -401,10 +401,8 @@ function atr(candles: Candle[], period: number = 14): number {
 
 // --- HYSTERESIS STATE ---
 interface HysteresisState {
-  lastSignalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
-  lastSignalPrice: number;
-  lockUntil: number;
-  direction?: "LONG" | "SHORT";
+  lastEntry1CandleTimestamp: number;
+  lastEntry1Price: number;
 }
 
 const hysteresisStore: Map<string, HysteresisState> = new Map();
@@ -429,16 +427,12 @@ export async function saveHysteresisToKV(): Promise<void> {
 
 const HYSTERESIS_BAND = 0.005; // 0.5%
 
-function getHysteresis(pair: string, now: number): HysteresisState {
-  const state = hysteresisStore.get(pair);
-  if (!state) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
-  if (now > state.lockUntil) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
-  return state;
+function getHysteresis(pair: string): HysteresisState {
+  return hysteresisStore.get(pair) ?? { lastEntry1CandleTimestamp: 0, lastEntry1Price: 0 };
 }
 
-function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price: number, now: number, direction?: "LONG" | "SHORT"): void {
-  const lockDuration = type === "ADD" ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-  hysteresisStore.set(pair, { lastSignalType: type, lastSignalPrice: price, lockUntil: now + lockDuration, direction });
+function setHysteresis(pair: string, price: number, candleTimestamp: number): void {
+  hysteresisStore.set(pair, { lastEntry1CandleTimestamp: candleTimestamp, lastEntry1Price: price });
 }
 
 // --- MAIN SIGNAL ---
@@ -446,7 +440,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const bars=[...candles4h],price=currentPrice??bars.at(-1)?.close??0;
  const dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles);
  const closes=bars.map(x=>x.close),st=stochRsi(closes),av=adx(bars);
- const macroTl=macro.direction?getTrendline(pair,bars,macro.direction):null,fastTl=fast.direction?getTrendline(pair,bars,fast.direction):null,close=bars.at(-1)?.close??price;
+ const macroTl=macro.direction?getTrendline(pair,bars,macro.direction,"MACRO"):null,fastTl=fast.direction?getTrendline(pair,bars,fast.direction,"FAST"):null,close=bars.at(-1)?.close??price;
  const macroDist=macroTl&&macroTl.price>0?(price-macroTl.price)/macroTl.price:Infinity,fastDist=fastTl&&fastTl.price>0?(price-fastTl.price)/fastTl.price:Infinity;
  const nearMacro=!!macroTl&&Math.abs(macroDist)<0.012,nearFast=!!fastTl&&Math.abs(fastDist)<0.012;
  const stochExtremeFast=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
@@ -484,7 +478,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles),regime=computeRegime(bars);
  debug.push("[DAILY] EMA8/21="+(macro.direction??"NONE")+" | ENTRY_1 EMA5/13="+(fast.direction??"NONE")+" | size="+Math.round(regime.sizeMultiplier*100)+"%");
  const price=currentPrice??bars.at(-1)!.close,close=bars.at(-1)!.close,closes=bars.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(bars);
- const macroTl=macro.direction?getTrendline(pair,bars,macro.direction):null,fastTl=fast.direction?getTrendline(pair,bars,fast.direction):null;
+ const macroTl=macro.direction?getTrendline(pair,bars,macro.direction,"MACRO"):null,fastTl=fast.direction?getTrendline(pair,bars,fast.direction,"FAST"):null;
  const macroTlPrice=macroTl?.price??0,fastTlPrice=fastTl?.price??0;
  const macroDist=macroTlPrice>0?(price-macroTlPrice)/macroTlPrice:Infinity,fastDist=fastTlPrice>0?(price-fastTlPrice)/fastTlPrice:Infinity;
  const nearMacro=!!macroTl&&Math.abs(macroDist)<0.012,nearFast=!!fastTl&&Math.abs(fastDist)<0.012;
@@ -516,22 +510,18 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const macroHardCap=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
  debug.push("[DIAGNOSTIC] "+JSON.stringify({dailyDirection:macro.direction,entry1Direction:fast.direction,latest4hPrice:close,trendlineAvailable:!!fastTl,trendlinePrice:fastTl?Number(fastTl.price.toFixed(8)):null,trendlineR2:fastTl?.r2??null,trendlineDistancePct:Number.isFinite(fastDist)?Number((Math.abs(fastDist)*100).toFixed(4)):null,nearTrendline:nearFast,stochK:st.k,stochD:st.d,stochExtreme:stochExtremeFast,hardStochCap:entry1HardCap||macroHardCap,fourHDirection,momentumAligned:rawDirection?fourHDirection===rawDirection:null,exhaustion:entry1HardCap||macroHardCap?"Stoch hard cap":null,entry1Eligible,rawType,blockers}));
  if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
- const hyst=getHysteresis(pair,now);
- let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
- if(hyst.lastSignalType==="ADD")finalType="ADD";
- else if(hyst.lastSignalType==="ENTRY_2")finalType=rawType==="ADD"?"ADD":"ENTRY_2";
- else if(hyst.lastSignalType==="ENTRY_1")finalType=rawType==="ADD"?"ADD":rawType==="ENTRY_2"?"ENTRY_2":"ENTRY_1";
- else finalType=rawType;
- if(hyst.lastSignalType&&finalType===hyst.lastSignalType&&hyst.lastSignalPrice>0){
-  const move=Math.abs(price-hyst.lastSignalPrice)/hyst.lastSignalPrice;
-  if(move<HYSTERESIS_BAND){debug.push("[WAIT] Hysteresis lock "+finalType);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
+ const hyst=getHysteresis(pair),candleTimestamp=bars.at(-1)!.timestamp;
+ const finalType=rawType;
+ if(finalType==="ENTRY_1"&&hyst.lastEntry1CandleTimestamp===candleTimestamp&&hyst.lastEntry1Price>0){
+  const move=Math.abs(price-hyst.lastEntry1Price)/hyst.lastEntry1Price;
+  if(move<=HYSTERESIS_BAND){debug.push("[WAIT] Duplicate ENTRY_1 on same 4H candle within 0.5%");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  }
  if(!finalType){debug.push("[WAIT] No V28 trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- let signalDirection:Direction|null=finalType==="ENTRY_1"?(hyst.direction??fast.direction??macro.direction):(hyst.direction??macro.direction??fast.direction);
+ const signalDirection:Direction|null=finalType==="ENTRY_1"?fast.direction:macro.direction;
  if(!signalDirection){debug.push("[WAIT] No directional EMA bias available");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const finalHardCap=signalDirection==="LONG"?st.k>95:st.k<5;
  if(finalHardCap){debug.push("[WAIT] Stoch hard exhaustion cap for "+signalDirection);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType,price,now,signalDirection);
+ if(finalType==="ENTRY_1")setHysteresis(pair,price,candleTimestamp);
  const signalTl=finalType==="ENTRY_1"?fastTl:macroTl;
  if(!signalTl)return{debug:["[SIGNAL BLOCKED] trendline unavailable"]};
  const avalue=atr(bars,14),recent=bars.slice(-20);
@@ -558,7 +548,7 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
  const direction=macro.direction??null,entry1Direction=fast.direction??null,fourHDirection=e5>e13?"LONG":e5<e13?"SHORT":null;
  const momentumAligned=direction?fourHDirection===direction:null,rv=rsi(q),av=adx(bars);
  const hardCap=direction==="LONG"?st.k>95:direction==="SHORT"?st.k<5:false;
- const tl=direction?getTrendline(pair,bars,direction):null,price=bars.at(-1)?.close??0,trendlineDistancePct=tl&&tl.price>0?Math.abs(price-tl.price)/tl.price*100:null;
+ const tl=direction?getTrendline(pair,bars,direction,"MACRO"):null,price=bars.at(-1)?.close??0,trendlineDistancePct=tl&&tl.price>0?Math.abs(price-tl.price)/tl.price*100:null;
  return{pair,price,timestamp:Date.now(),trend:reg.state,regime:reg.state,dailyDirection:direction,entry1Direction,alignedDirection:direction,dailyStrength:macro.strength,dailyClose:dq.at(-1)??0,dailyE5:d5,dailyE8:d8,dailyE13:d13,dailyE21:d21,ema5_1d:d5,ema8_1d:d8,ema13_1d:d13,ema21_1d:d21,ema5_4h:e5,ema13_4h:e13,ema8_4h:e8,ema21_4h:e21,fourHTacticalDirection:fourHDirection??"NEUTRAL",fourHDirection:fourHDirection??"NEUTRAL",trendlineDistancePct,stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK1d:st1.k,stochD1d:st1.d,adx:av,rsi:rv,trendlinePrice:tl?.price??0,distToTrendline:trendlineDistancePct,sizeMultiplier:reg.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,strategyStatus:"V28 — DAILY EMA8/21 "+(direction??"UNAVAILABLE")+" | ENTRY_1 EMA5/13 "+(entry1Direction??"UNAVAILABLE")};
 }
 
@@ -591,7 +581,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
  if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
  if(!momentumAligned){
   if(profitable)return{shouldHold:true,reason:"4h_ema5_13_misaligned_daily_ema8_21_still_valid_tighten_stop_to_entry",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry};
-  return{shouldHold:true,reason:"4h_ema5_13_misaligned_but_daily_ema8_21_still_valid_monitor",managementState:"STAY",recommendation:"STAY IN TRADE"};
+  return{shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
  }
  return{shouldHold:true,reason:"4h_momentum_and_daily_macro_valid",managementState:"STAY",recommendation:"STAY IN TRADE"};
 }
