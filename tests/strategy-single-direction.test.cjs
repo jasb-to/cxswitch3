@@ -56,7 +56,7 @@ test("BULL_LOW is a half-size regime", () => {
   assert.equal(regime.sizeMultiplier, 0.5);
 });
 test("CHOP is a half-size regime without erasing the daily EMA5/13 trend", () => {
-  const chopTargets = [...Array.from({ length: 36 }, (_, i) => 100 + i * (50 / 35)), 145, 140, 135, 135];
+  const chopTargets = [...Array.from({ length: 36 }, (_, i) => 100 + i * (50 / 35)), 145, 140, 135, 138];
   const candles = candlesFromDaily(chopTargets);
   const regime = strategy.computeRegime(candles);
   const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
