@@ -513,7 +513,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  if(hardCapFast)blockers.push("ENTRY_1 hard Stoch cap");
  const entry1HardCap=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const macroHardCap=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
- debug.push("[DIAGNOSTIC] "+JSON.stringify({dailyDirection:macro.direction,entry1Direction:fast.direction,latest4hPrice:close,trendlineAvailable:!!fastTl,trendlinePrice:fastTl?Number(fastTl.price.toFixed(8)):null,trendlineR2:fastTl?.r2??null,trendlineDistancePct:Number.isFinite(fastDist)?Number((Math.abs(fastDist)*100).toFixed(4)):null,nearTrendline:nearFast,stochK:st.k,stochD:st.d,stochExtreme:stochExtremeFast,hardStochCap:entry1HardCap||macroHardCap,fourHDirection,momentumAligned:signalDirection?fourHDirection===signalDirection:null,exhaustion:entry1HardCap||macroHardCap?"Stoch hard cap":null,entry1Eligible,rawType,blockers}));
+ debug.push("[DIAGNOSTIC] "+JSON.stringify({dailyDirection:macro.direction,entry1Direction:fast.direction,latest4hPrice:close,trendlineAvailable:!!fastTl,trendlinePrice:fastTl?Number(fastTl.price.toFixed(8)):null,trendlineR2:fastTl?.r2??null,trendlineDistancePct:Number.isFinite(fastDist)?Number((Math.abs(fastDist)*100).toFixed(4)):null,nearTrendline:nearFast,stochK:st.k,stochD:st.d,stochExtreme:stochExtremeFast,hardStochCap:entry1HardCap||macroHardCap,fourHDirection,momentumAligned:rawDirection?fourHDirection===rawDirection:null,exhaustion:entry1HardCap||macroHardCap?"Stoch hard cap":null,entry1Eligible,rawType,blockers}));
  if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
  const hyst=getHysteresis(pair,now);
  let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
@@ -526,7 +526,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   if(move<HYSTERESIS_BAND){debug.push("[WAIT] Hysteresis lock "+finalType);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  }
  if(!finalType){debug.push("[WAIT] No V28 trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- let signalDirection:Direction|null=finalType==="ENTRY_1"?(fast.direction??hyst.direction??macro.direction):(hyst.direction??macro.direction??fast.direction);
+ let signalDirection:Direction|null=finalType==="ENTRY_1"?(hyst.direction??fast.direction??macro.direction):(hyst.direction??macro.direction??fast.direction);
  if(!signalDirection){debug.push("[WAIT] No directional EMA bias available");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType,price,now,signalDirection);
  const signalTl=finalType==="ENTRY_1"?fastTl:macroTl;
