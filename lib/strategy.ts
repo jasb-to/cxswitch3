@@ -447,10 +447,11 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles);
  const closes=bars.map(x=>x.close),st=stochRsi(closes),av=adx(bars);
  const macroTl=macro.direction?getTrendline(pair,bars,macro.direction):null,fastTl=fast.direction?getTrendline(pair,bars,fast.direction):null,close=bars.at(-1)?.close??price;
- const macroDist=macroTl&&macroTl.price>0?(close-macroTl.price)/macroTl.price:Infinity,fastDist=fastTl&&fastTl.price>0?(close-fastTl.price)/fastTl.price:Infinity;
+ const macroDist=macroTl&&macroTl.price>0?(price-macroTl.price)/macroTl.price:Infinity,fastDist=fastTl&&fastTl.price>0?(price-fastTl.price)/fastTl.price:Infinity;
  const nearMacro=!!macroTl&&Math.abs(macroDist)<0.012,nearFast=!!fastTl&&Math.abs(fastDist)<0.012;
  const stochExtremeFast=fast.direction==="LONG"?st.k<20:fast.direction==="SHORT"?st.k>80:false;
  const stochTurningMacro=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
+ const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
  const hardCapFast=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const hardCapMacro=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
  const entry1Ready=!!fast.direction&&!!fastTl&&nearFast&&stochExtremeFast&&!hardCapFast;
@@ -458,7 +459,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const beyond=macro.direction==="LONG"?!!macroTl&&price>macroTl.price*1.008:macro.direction==="SHORT"?!!macroTl&&price<macroTl.price*0.992:false;
  const confirming=!!last&&!!prev&&(macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:macro.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false);
  const e8=ema(closes,8),e21=ema(closes,21);
- const emaAligned=macro.direction==="LONG"?close>(e8.at(-1)??0)&&close>(e21.at(-1)??0):macro.direction==="SHORT"?close<(e8.at(-1)??0)&&close<(e21.at(-1)??0):false;
+ const emaAligned=macro.direction==="LONG"?price>(e8.at(-1)??0)&&price>(e21.at(-1)??0):macro.direction==="SHORT"?price<(e8.at(-1)??0)&&price<(e21.at(-1)??0):false;
  const volUp=!!last&&last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3,stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false,adxStrong=av>20;
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,direction:Direction|null=null;
  if(entry1Ready){rawType="ENTRY_1";direction=fast.direction;}
