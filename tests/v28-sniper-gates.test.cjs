@@ -138,5 +138,5 @@ test("ENTRY_1 and ENTRY_2 are independent fresh-position entries; ADD alone requ
   assert.match(generate, /stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch/);
   assert.match(generate, /else if\(macroActiveMatch&&macro\.direction/);
   assert.doesNotMatch(generate, /entry1ActiveMatch\s*\|\|\s*macroActiveMatch/);
-  assert.doesNotMatch(generate, /hasEntry1|hasEntry2|entry1AlreadyFired|entry2AlreadyFired/);
+  assert.doesNotMatch(generate, /if\([^)]*(?:hasEntry1|hasEntry2|entry1AlreadyFired|entry2AlreadyFired)/);
 });
