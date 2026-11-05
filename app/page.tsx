@@ -71,7 +71,7 @@ export default function Dashboard(){
  return <main className="min-h-screen bg-[#070707] text-white select-text" style={{WebkitUserSelect:"text",userSelect:"text",WebkitTouchCallout:"default"}}>
   <nav className="border-b border-white/[0.08]"><div className="mx-auto max-w-7xl px-5 py-4 flex items-center justify-between"><div className="flex items-center gap-3"><div className="h-9 w-9 rounded-lg bg-[#dc6b27] text-black flex items-center justify-center font-black">CX</div><div><div className="text-sm font-bold tracking-[0.18em]">CXSWITCH</div><div className="text-[9px] text-white/20 uppercase tracking-widest">directional trading console</div></div></div><div className="flex gap-2 text-[9px]"><Badge icon={<Radio size={11}/>} text="LIVE · 10s"/><Badge icon={<Clock3 size={11}/>} text={`CRON ${system?.lastCronRun?ago(system.lastCronRun):"—"}`}/></div></div></nav>
   <section className="mx-auto max-w-7xl px-5 py-6"><div className="flex justify-between items-end mb-4"><div><div className="text-[9px] uppercase tracking-[0.18em] text-white/25">Market board</div><h1 className="mt-1 text-lg font-semibold">directional strategy · current state</h1></div><div className="text-[9px] text-white/20">Updated {lastFetch?new Date(lastFetch).toLocaleTimeString():"—"}</div></div>
-   <div className="grid grid-cols-1 gap-2 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#070707] sm:grid-cols-2 md:grid-cols-4">{PAIRS.map(pair=>{const m=market[pair],a=active[pair]||latest[pair],j=jarvis?.pairs?.[pair],isActive=!!active[pair],p=prices[pair]??m?.price??a?.currentPrice??a?.entry??0,mg=a?.managementAdvice;const dailyDirection=m?.dailyDirection??undefined;const direction=dailyDirection==="SHORT"?"SHORT":dailyDirection==="LONG"?"LONG":"—";const pnlPct=a?((p-a.entry)/a.entry*100)*(a.direction==="LONG"?1:-1):null;const cardId=`card-${pair}`;
+   <div className="grid grid-cols-1 gap-2 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#070707] sm:grid-cols-2 md:grid-cols-4">{PAIRS.map(pair=>{const m=market[pair],a=active[pair]||latest[pair],j=jarvis?.pairs?.[pair],isActive=!!active[pair],p=prices[pair]??m?.price??a?.currentPrice??a?.entry??0;const dailyDirection=m?.dailyDirection??undefined;const direction=dailyDirection==="SHORT"?"SHORT":dailyDirection==="LONG"?"LONG":"—";const pnlPct=a?((p-a.entry)/a.entry*100)*(a.direction==="LONG"?1:-1):null;const cardId=`card-${pair}`;
     const regime=m?.regime??"—";
     const regimeTone=regime.startsWith("BULL")?"text-green-400":regime.startsWith("BEAR")?"text-red-400":"text-white/65";
     const status=String(m?.strategyStatus??"").trim()||"WAIT — no setup";
@@ -94,7 +94,6 @@ export default function Dashboard(){
     const strategyReady=m?.dailyDirection!=null;
     const cardBorder=strategyReady?"border-emerald-500/35":"border-amber-500/25";
     const alertSent=!!a;
-    const momentum=m?.momentumState;
     return <article key={pair} className={`bg-[#0b0b0b] rounded-xl border ${cardBorder} p-3 sm:p-3.5 min-w-0 flex flex-col gap-2 select-text`} style={{WebkitUserSelect:"text",userSelect:"text"}}>
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 min-w-0">
         <div className="flex items-center gap-2 min-w-0"><span className={`rounded px-2 py-1 text-[10px] font-black tracking-wide ${regimeTone}`}>{pair}/USD</span><span className="text-base sm:text-lg font-semibold tabular-nums whitespace-nowrap">{money(p)}</span></div>
@@ -107,7 +106,7 @@ export default function Dashboard(){
       <div className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 border-t border-white/[0.07] pt-2 text-[9px] leading-4"><span className="text-white/30 font-bold tracking-wide">JARVIS</span><span className={`rounded border px-2 py-1 text-[9px] font-black tracking-wider ${verdictTone}`}>{verdict}</span></div>
       {alertSent&&<div className="mt-1 rounded-md border border-white/[0.08] bg-white/[0.025] px-2 py-1.5">
         <div className={`text-[8px] font-black tracking-wide ${a.direction==="LONG"?"text-green-300":"text-red-300"}`}>{isActive?"ACTIVE TRADE":"ALERT SENT"} · {a.direction} {a.type} · ENTRY {money(a.entry)} · SL {money(a.stop)} · TP1 {money(a.tp1)} · TP2 {money(a.tp2??a.target)}</div>
-        <div className={`mt-1 inline-flex rounded px-2 py-1 text-[9px] font-black ${((a.shouldHold??(a.managementState==="STAY"))===true)?"text-green-300 bg-green-500/10":"text-red-300 bg-red-500/10"}`}>{(a.shouldHold??(a.managementState==="STAY"))===true?"🟢 HOLD":"🔴 EXIT"}</div>
+        {isActive&&<div className={`mt-1 inline-flex rounded px-2 py-1 text-[9px] font-black ${((a.shouldHold??(a.managementState==="STAY"))===true)?"text-green-300 bg-green-500/10":"text-red-300 bg-red-500/10"}`}>{(a.shouldHold??(a.managementState==="STAY"))===true?"🟢 HOLD":"🔴 EXIT"}</div>}
       </div>}
       <div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
         {isActive&&<div>POSITION SIZE · {Math.round((m?.sizeMultiplier??a?.sizeMultiplier??0)*100)}% size</div>}
