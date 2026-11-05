@@ -467,6 +467,16 @@ export function evaluateGates(
  const hasEntry1=!!entry1State&&entry1State.direction===dailyTrend.direction;
  const hasEntry2=hasEntry1&&entry2AlreadyFired;
  const hasSameDirectionPosition=activeSignals.some(x=>x.pair===pair&&x.direction===dailyTrend.direction);
+ const entry1Eligible=filtersPass&&!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme;
+ const diagnosticBlockers:string[]=[];
+ if(!momentumAligned)diagnosticBlockers.push("4H EMA5/13 momentum misaligned");
+ if(exhaustion)diagnosticBlockers.push("Global exhaustion veto: "+exhaustion);
+ if(!tl)diagnosticBlockers.push("trendline unavailable");
+ else if(!nearTrendline)diagnosticBlockers.push("outside 1.2% trendline proximity");
+ if(!stochExtreme)diagnosticBlockers.push("Stoch RSI not at ENTRY_1 extreme");
+ if(hasSameDirectionPosition)diagnosticBlockers.push("same-direction active position exists");
+ if(hasEntry1)diagnosticBlockers.push("ENTRY_1 lifecycle already exists");
+ debug.push("[DIAGNOSTIC] "+JSON.stringify({direction:dailyTrend.direction,closedPrice,trendlineAvailable:!!tl,trendlinePrice:tl?Number(tl.price.toFixed(8)):null,trendlineDistancePct:Number.isFinite(dist)?Number((Math.abs(dist)*100).toFixed(4)):null,nearTrendline,stochK:st.k,stochD:st.d,stochExtreme,momentumAligned,alignedDirection:momentumAligned?dailyTrend.direction:null,exhaustion,filtersPass,entry1Eligible,hasEntry1,hasSameDirectionPosition,rawType,blockers:diagnosticBlockers}));
  if(filtersPass){
   if(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme)rawType="ENTRY_1";
   else if(hasEntry1&&!hasEntry2&&hasSameDirectionPosition&&nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";
@@ -569,7 +579,7 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
  const exhaustion=rsiExhausted?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":adxExhausted?"ADX >50 with Stoch turning against":null;
  const storedTrendline=trendlineStore.get(pair),tl=storedTrendline?{price:storedTrendline.slope*(closed4h.length-1)+storedTrendline.intercept,r2:0.85,age:Date.now()-storedTrendline.lastUpdated}:null,price=closed4h.at(-1)?.close??0;
  const trendlineDistancePct=tl&&tl.price>0?Math.abs(price-tl.price)/tl.price*100:null;
- return{pair,price,timestamp:Date.now(),trend:reg.state,regime:reg.state,dailyDirection:direction,dailyStrength:t.strength,dailyClose:dq.at(-1)??0,dailyE5:d5,dailyE8:d8,dailyE13:d13,dailyE21:d21,ema5_1d:d5,ema8_1d:d8,ema13_1d:d13,ema21_1d:d21,ema5_4h:e5,ema13_4h:e13,ema8_4h:e8,ema21_4h:e21,fourHTacticalDirection:e5>e13?"BULL":e5<e13?"BEAR":"NEUTRAL",fourHDirection:e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL",trendlineDistancePct,stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK1d:st1.k,stochD1d:st1.d,adx:av,rsi:rv,trendlinePrice:tl?.price??0,distToTrendline:trendlineDistancePct,sizeMultiplier:reg.sizeMultiplier,momentumAligned,exhaustion,strategyStatus:"V28 — DAILY EMA5/13 "+(direction??"UNAVAILABLE")};
+ return{pair,price,timestamp:Date.now(),trend:reg.state,regime:reg.state,dailyDirection:direction,alignedDirection:momentumAligned?direction:null,dailyStrength:t.strength,dailyClose:dq.at(-1)??0,dailyE5:d5,dailyE8:d8,dailyE13:d13,dailyE21:d21,ema5_1d:d5,ema8_1d:d8,ema13_1d:d13,ema21_1d:d21,ema5_4h:e5,ema13_4h:e13,ema8_4h:e8,ema21_4h:e21,fourHTacticalDirection:e5>e13?"BULL":e5<e13?"BEAR":"NEUTRAL",fourHDirection:e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL",trendlineDistancePct,stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK1d:st1.k,stochD1d:st1.d,adx:av,rsi:rv,trendlinePrice:tl?.price??0,distToTrendline:trendlineDistancePct,sizeMultiplier:reg.sizeMultiplier,momentumAligned,exhaustion,strategyStatus:"V28 — DAILY EMA5/13 "+(direction??"UNAVAILABLE")};
 }
 
 // --- VALIDITY ---
