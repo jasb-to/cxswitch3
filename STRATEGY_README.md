@@ -37,9 +37,10 @@ The raw trigger priority is ENTRY_1, then ENTRY_2, then ADD.
 - Price breaks beyond the shared trendline by 0.8% in the daily macro direction.
 - The latest 4H candle confirms direction by candle colour and closing beyond the previous close.
 - Price is aligned with 4H EMA 8/21.
-- 4H EMA 5/13 momentum is aligned with the daily macro direction.
+- At least one additional confirmation is required: volume above 1.3× the 10-candle average, Stoch momentum in the macro direction, or ADX >20.
+- 4H EMA 5/13 momentum is recorded for trade management, not an ADD entry veto.
 - Directional Stoch exhaustion remains capped: LONG K >95 and SHORT K <5 block the signal.
-- Once the 4H break and confirmation conditions line up, ADD is eligible to alert. ADD is the final stage.
+- ADD is the final scale-in stage.
 
 ## Staged hysteresis
 
