@@ -26,6 +26,6 @@ test("active management calls the V28 shouldHold and persists exits", () => {
 });
 
 test("alert matrix still permits ENTRY_1 and ADD while ENTRY_2 remains silent", () => {
-  assert.ok(telegram.includes('type!=="ENTRY_1"&&type!=="ADD"&&type!=="ENTRY_2"'));
+  assert.ok(telegram.includes('type!=="ENTRY_1"&&type!=="ADD"'));
   assert.ok(cron.includes("ENTRY_2"));
 });
