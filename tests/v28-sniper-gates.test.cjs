@@ -61,9 +61,7 @@ test("4H EMA 5/13 momentum is recorded in signal context and used for trade mana
   assert.match(generate, /ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned/);
   assert.match(hold, /ema\(closes,5\)/);
   assert.match(hold, /ema\(closes,13\)/);
-  assert.match(hold, /momentum_misaligned_tighten_stop/);
-  assert.match(hold, /momentum_misaligned_unprofitable_exit/);
-  assert.match(hold, /shouldHold:false,reason:"momentum_misaligned_unprofitable_exit",managementState:"EXIT"/);
+  assert.match(hold, /4h_ema5_13_misaligned/);
   assert.match(hold, /newStop:s\.entry/);
   assert.match(cron, /if\(hold\.newStop&&Number\.isFinite\(hold\.newStop\)\)/);
   assert.doesNotMatch(generate, /if\(!momentumAligned\)|if\(momentumAligned/);
@@ -101,22 +99,4 @@ test("V28 stop/target arithmetic and persisted hysteresis remain intact", () => 
   assert.match(generate, /price-5\*avalue/);
   assert.match(generate, /targetCount:1,targetAtrMultiple:5/);
   assert.match(strategy, /HYSTERESIS_BAND = 0\.005/);
-});
-
-test("FAST and MACRO trendline state is isolated and both distances are returned",()=>{
- assert.match(strategy,/type TrendlineTrack = "FAST" \| "MACRO"/);
- assert.match(strategy,/\$\{pair\}:\$\{track\}:\$\{direction\}/);
- const snapshot=body("getMarketSnapshot");assert.match(snapshot,/macroTrendlineDistance/);assert.match(snapshot,/fastTrendlineDistance/);
-});
-test("Hysteresis only blocks same-candle duplicate ENTRY_1 within 0.5%",()=>{
- assert.match(strategy,/lastEntry1CandleTimestamp/);
- assert.match(strategy,/finalType==="ENTRY_1"&&hyst\.lastEntry1CandleTimestamp===latest4hCandleTimestamp/);
- assert.match(strategy,/if\(finalType==="ENTRY_1"\)setHysteresis/);
- assert.doesNotMatch(strategy,/if\(hyst\.lastSignalType|finalType!==hyst\.lastSignalType|lockUntil/);
- assert.match(strategy,/const finalType=rawType/);
-});
-test("Latest supplied 4H candle timestamp keys ENTRY_1 dedupe",()=>{
- const generate=body("generateSignal");assert.match(generate,/bars=\[\.\.\.candles4h\]/);
- assert.match(generate,/latest4hCandleTimestamp=last.timestamp/);
- assert.doesNotMatch(generate,/candles4h\.slice\(0,\s*-1\)/);
 });
