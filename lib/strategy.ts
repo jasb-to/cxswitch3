@@ -45,7 +45,8 @@ export interface ComputedRegime {
   strength:RegimeStrength|"NEUTRAL";
 }
 export function computeRegime(c:Candle[]):ComputedRegime {
-  const d=daily(c).slice(0,-1),closes=d.map(x=>x.close);
+  const closed4h=[...c].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1);
+  const d=daily(closed4h),closes=d.map(x=>x.close);
   const neutral:ComputedRegime={state:"CHOP",direction:null,sizeMultiplier:0,price:closes.at(-1)??0,e21:0,e5:0,e13:0,spread:0,spread3:0,spreadDelta:0,strength:"NEUTRAL"};
   if(closes.length<22)return neutral;
   const e5s=ema(closes,5),e13s=ema(closes,13),e21s=ema(closes,21);
@@ -435,10 +436,9 @@ export function evaluateGates(
  pair:string,candles4h:Candle[],currentPrice:number,entry1State?:any,entry2AlreadyFired=false,
  activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]
 ):any {
- void entry1State; void entry2AlreadyFired; void activeSignals;
  const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1);
  const price=currentPrice??closed4h.at(-1)?.close??0;
- const dailyCandles=aggregateTo1D(closed4h).slice(0,-1),dailyTrend=trend1D(dailyCandles);
+ const dailyCandles=aggregateTo1D(closed4h),dailyTrend=trend1D(dailyCandles);
  const closes4h=closed4h.map(x=>x.close);
  const st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(closed4h);
  const e5_4h=ema(closes4h,5).at(-1)??0,e13_4h=ema(closes4h,13).at(-1)??0;
@@ -472,7 +472,7 @@ export function evaluateGates(
   else if(hasEntry1&&!hasEntry2&&hasSameDirectionPosition&&nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";
   else if(hasEntry1&&hasEntry2&&hasSameDirectionPosition&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong))rawType="ADD";
  }
- const regime=computeRegime(closed4h);
+ const regime=computeRegime(candles4h);
  const missing:string[]=[];
  if(!dailyTrend.direction)missing.push("daily_ema_5_13_unavailable");
  if(!momentumAligned)missing.push("4H EMA5/13 momentum misaligned");
@@ -492,10 +492,10 @@ export function evaluateGates(
 }
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,entry1State?:any,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]):SignalResult{
- void candles1h;void candles15m;void lastBreakout;void entry1State;void entry2AlreadyFired;void activeSignals;
+ void candles1h;void candles15m;void lastBreakout;
  const debug:string[]=[],closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1),now=nowOverride??Date.now();
  if(closed4h.length<30){debug.push("[WAIT] Insufficient CLOSED 4H candle data");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- const dailyCandles=aggregateTo1D(closed4h).slice(0,-1),dailyTrend=trend1D(dailyCandles),regime=computeRegime(closed4h);
+ const dailyCandles=aggregateTo1D(closed4h),dailyTrend=trend1D(dailyCandles),regime=computeRegime(candles4h);
  debug.push("[DAILY] EMA5/13="+(dailyTrend.direction??"NONE")+" | size="+Math.round(regime.sizeMultiplier*100)+"%");
  if(!dailyTrend.direction){debug.push("[WAIT] Daily EMA5/13 direction unavailable");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const price=currentPrice??closed4h.at(-1)!.close,closes4h=closed4h.map(x=>x.close),st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(closed4h);
@@ -555,7 +555,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 // --- MARKET SNAPSHOT ---
 export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]):any{
  void candles1h;void candles15m;
- const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1),d=aggregateTo1D(closed4h),completedDaily=d.slice(0,-1),t=trend1D(completedDaily),reg=computeRegime(closed4h),q=closed4h.map(x=>x.close),dq=completedDaily.map(x=>x.close);
+ const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1),completedDaily=aggregateTo1D(closed4h),t=trend1D(completedDaily),reg=computeRegime(candles4h),q=closed4h.map(x=>x.close),dq=completedDaily.map(x=>x.close);
  const st=stochRsi(q),st1=stochRsi(dq);
  const e5=ema(q,5).at(-1)??0,e13=ema(q,13).at(-1)??0,e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;
  const d5=ema(dq,5).at(-1)??0,d8=ema(dq,8).at(-1)??0,d13=ema(dq,13).at(-1)??0,d21=ema(dq,21).at(-1)??0;
@@ -591,7 +591,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
  void lastExitAlertAt;const closed=[...c].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1);
  if(closed.length<22)return{shouldHold:true,reason:"insufficient_closed_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE"};
  const v=isSignalStillValid(s,p,now);if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE"};
- const dailyTrend=trend1D(aggregateTo1D(closed).slice(0,-1)),rev=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;
+ const dailyTrend=trend1D(aggregateTo1D(closed)),rev=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;
  if(rev&&!profit)return{shouldHold:false,reason:"daily_trend_reversal_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE"};
  const st=stochRsi(closed.map(x=>x.close)),opposite=s.direction==="LONG"?st.k<20:st.k>80;
  if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
