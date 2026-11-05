@@ -89,5 +89,5 @@ test("both evaluateGates and generateSignal gate ENTRY_1 on momentum and exhaust
   const filter = "const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;";
   assert.equal(source.split(filter).length - 1, 2);
   assert.equal(source.split('if(filtersPass){').length - 1, 2);
-  assert.equal(source.split('if(nearTrendline&&stochExtreme)rawType="ENTRY_1";').length - 1, 2);
+  assert.equal(source.split('if(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme)rawType="ENTRY_1";').length - 1, 2);
 });
