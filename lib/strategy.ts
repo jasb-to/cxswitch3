@@ -518,7 +518,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
  const activePairPosition=_activeSignals.some(x=>x.pair===pair);
  const activeMatch=!!macro.direction&&_activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
- const hyst=getHysteresis(pair,now);
+ let hyst=getHysteresis(pair,now);
+ if(hyst.lastSignalType==="ADD"&&!activeMatch){
+  hysteresisStore.delete(pair);
+  hyst={lastSignalType:null,lastSignalPrice:0,lockUntil:0};
+ }
  const entry2Continuation=activeMatch&&hyst.lastSignalType==="ENTRY_1";
  const volUp=last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3;
  const stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
