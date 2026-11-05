@@ -16,12 +16,16 @@ test("V28 ADD stop retains the trendline buffer and 1.5 ATR floor", () => {
   assert.ok(strategy.includes("price+1.5*avalue"));
 });
 
-test("V28 does not add a liquidation-buffer or leverage-based entry veto", () => {
-  assert.doesNotMatch(strategy, /liquidationBufferPct|MAX_LEVERAGE|calculateRiskSizeMultiplier/);
+test("Current V28 risk layer clamps stops to the configured 15x liquidation buffer", () => {
+  assert.match(strategy, /const MAX_LEVERAGE = 15/);
+  assert.match(strategy, /MAINTENANCE_MARGIN_RATE = 0\.01/);
+  assert.match(strategy, /liquidationPrice/);
+  assert.match(strategy, /after liquidation-buffer clamp/);
 });
 
-test("FAST and MACRO trendline state keys cannot overwrite each other", () => {
-  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{track\}:\$\{direction\}`/);
-  assert.match(strategy, /getTrendline\(pair,bars,fast\.direction,"FAST"\)/);
-  assert.match(strategy, /getTrendline\(pair,bars,macro\.direction,"MACRO"\)/);
+test("All stages use one shared pair-level 4H trendline oriented by daily macro direction", () => {
+  assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT"\)/);
+  assert.match(strategy, /const stateKey = pair/);
+  assert.match(strategy, /const trendline=macro\.direction\?getTrendline\(pair,bars,macro\.direction\):null/);
+  assert.doesNotMatch(strategy, /track: "FAST" \| "MACRO"|\$\{pair\}:\$\{track\}:\$\{direction\}/);
 });
