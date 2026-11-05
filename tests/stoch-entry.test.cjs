@@ -13,9 +13,9 @@ const { getStochHistoryPointCount, generateSignal } = require("../lib/strategy.t
 test("ENTRY_1, ENTRY_2 and ADD are all inside the global Momentum/Exhaustion gate", () => {
   assert.equal(strategySource.split("const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;").length - 1, 2);
   assert.equal(strategySource.split("if(filtersPass){").length - 1, 2);
-  assert.equal(strategySource.split('if(nearTrendline&&stochExtreme)rawType="ENTRY_1";').length - 1, 2);
-  assert.equal(strategySource.split('else if(nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";').length - 1, 2);
-  assert.equal(strategySource.split('else if(beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong))rawType="ADD";').length - 1, 2);
+  assert.equal(strategySource.split('if(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme)rawType="ENTRY_1";').length - 1, 2);
+  assert.equal(strategySource.split('else if(hasEntry1&&!hasEntry2&&hasSameDirectionPosition&&nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";').length - 1, 2);
+  assert.equal(strategySource.split('else if(hasEntry1&&hasEntry2&&hasSameDirectionPosition&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong))rawType="ADD";').length - 1, 2);
 });
 
 test("global Momentum uses 4H EMA5/13 aligned to the one daily direction", () => {
@@ -30,7 +30,7 @@ test("global Exhaustion retains RSI 78/22, Stoch 95/5 and ADX >50 turning-agains
 
 test("daily direction unavailable with no usable candle history", () => {
   const result = generateSignal("TEST", [], [], []);
-  assert.ok(result.debug.some(x => x.includes("Insufficient 4H candle data")));
+  assert.ok(result.debug.some(x => x.includes("Insufficient CLOSED 4H candle data")));
 });
 
 test("insufficient Stoch history is reported as zero usable smoothed points", () => {
