@@ -436,11 +436,11 @@ export function evaluateGates(
  activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]
 ):any {
  void entry1State; void entry2AlreadyFired; void activeSignals;
- const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp);
- const price=currentPrice??c.at(-1)?.close??0;
- const dailyCandles=aggregateTo1D(c),dailyTrend=trend1D(dailyCandles);
- const closed=c.slice(0,-1),closes4h=closed.map(x=>x.close);
- const st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(closed);
+ const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1);
+ const price=currentPrice??closed4h.at(-1)?.close??0;
+ const dailyCandles=aggregateTo1D(closed4h).slice(0,-1),dailyTrend=trend1D(dailyCandles);
+ const closes4h=closed4h.map(x=>x.close);
+ const st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(closed4h);
  const e5_4h=ema(closes4h,5).at(-1)??0,e13_4h=ema(closes4h,13).at(-1)??0;
  const momentumAligned=dailyTrend.direction==="LONG"?e5_4h>e13_4h:dailyTrend.direction==="SHORT"?e5_4h<e13_4h:false;
  const rsiExhausted=dailyTrend.direction==="LONG"?rv>78:dailyTrend.direction==="SHORT"?rv<22:false;
@@ -449,13 +449,13 @@ export function evaluateGates(
  const adxExhausted=av>50&&turningAgainst;
  const exhaustion=rsiExhausted?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":adxExhausted?"ADX >50 with Stoch turning against":null;
  const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;
- const tl=dailyTrend.direction?getTrendline(pair,c,dailyTrend.direction):null;
+ const tl=dailyTrend.direction?getTrendline(pair,closed4h,dailyTrend.direction):null;
  const tlPrice=tl?.price??0;
  const dist=tlPrice>0?(price-tlPrice)/tlPrice:Infinity;
  const nearTrendline=Math.abs(dist)<0.012;
  const stochExtreme=dailyTrend.direction==="LONG"?st.k<20:dailyTrend.direction==="SHORT"?st.k>80:false;
  const stochTurning=dailyTrend.direction==="LONG"?st.k>st.d:dailyTrend.direction==="SHORT"?st.k<st.d:false;
- const last=closed.at(-1),prev=closed.at(-2);
+ const last=closed4h.at(-1),prev=closed4h.at(-2);
  const beyondTrendline=dailyTrend.direction==="LONG"?price>tlPrice*1.008:dailyTrend.direction==="SHORT"?price<tlPrice*0.992:false;
  const confirming=!!last&&!!prev&&(dailyTrend.direction==="LONG"?last.close>last.open&&last.close>prev.close:dailyTrend.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false);
  const volUp=!!last&&last.volume>avg(closed.slice(-10).map(x=>x.volume))*1.3;
@@ -464,12 +464,15 @@ export function evaluateGates(
  const stochMomentum=dailyTrend.direction==="LONG"?st.k>st.d:dailyTrend.direction==="SHORT"?st.k<st.d:false;
  const adxStrong=av>20;
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
+ const hasEntry1=!!entry1State&&entry1State.direction===dailyTrend.direction;
+ const hasEntry2=hasEntry1&&entry2AlreadyFired;
+ const hasSameDirectionPosition=activeSignals.some(x=>x.pair===pair&&x.direction===dailyTrend.direction);
  if(filtersPass){
-  if(nearTrendline&&stochExtreme)rawType="ENTRY_1";
-  else if(nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";
-  else if(beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong))rawType="ADD";
+  if(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme)rawType="ENTRY_1";
+  else if(hasEntry1&&!hasEntry2&&hasSameDirectionPosition&&nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";
+  else if(hasEntry1&&hasEntry2&&hasSameDirectionPosition&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong))rawType="ADD";
  }
- const regime=computeRegime(c);
+ const regime=computeRegime(closed4h);
  const missing:string[]=[];
  if(!dailyTrend.direction)missing.push("daily_ema_5_13_unavailable");
  if(!momentumAligned)missing.push("4H EMA5/13 momentum misaligned");
@@ -490,12 +493,12 @@ export function evaluateGates(
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,entry1State?:any,entry2AlreadyFired=false,activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]):SignalResult{
  void candles1h;void candles15m;void lastBreakout;void entry1State;void entry2AlreadyFired;void activeSignals;
- const debug:string[]=[],c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),now=nowOverride??Date.now();
- if(c.length<30){debug.push("[WAIT] Insufficient 4H candle data");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- const dailyCandles=aggregateTo1D(c),dailyTrend=trend1D(dailyCandles),regime=computeRegime(c);
+ const debug:string[]=[],closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1),now=nowOverride??Date.now();
+ if(closed4h.length<30){debug.push("[WAIT] Insufficient CLOSED 4H candle data");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
+ const dailyCandles=aggregateTo1D(closed4h).slice(0,-1),dailyTrend=trend1D(dailyCandles),regime=computeRegime(closed4h);
  debug.push("[DAILY] EMA5/13="+(dailyTrend.direction??"NONE")+" | size="+Math.round(regime.sizeMultiplier*100)+"%");
  if(!dailyTrend.direction){debug.push("[WAIT] Daily EMA5/13 direction unavailable");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- const price=currentPrice??c.at(-1)!.close,closes4h=c.map(x=>x.close),st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(c);
+ const price=currentPrice??closed4h.at(-1)!.close,closes4h=closed4h.map(x=>x.close),st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(closed4h);
  const e5_4h=ema(closes4h,5).at(-1)??0,e13_4h=ema(closes4h,13).at(-1)??0;
  const momentumAligned=dailyTrend.direction==="LONG"?e5_4h>e13_4h:dailyTrend.direction==="SHORT"?e5_4h<e13_4h:false;
  const rsiExhausted=dailyTrend.direction==="LONG"?rv>78:dailyTrend.direction==="SHORT"?rv<22:false;
@@ -504,24 +507,27 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const adxExhausted=av>50&&turningAgainst;
  const exhaustion=rsiExhausted?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":adxExhausted?"ADX >50 with Stoch turning against":null;
  const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;
- const tl=getTrendline(pair,c,dailyTrend.direction),tlPrice=tl?.price??0;
+ const tl=getTrendline(pair,closed4h,dailyTrend.direction),tlPrice=tl?.price??0;
  const dist=tlPrice>0?(price-tlPrice)/tlPrice:Infinity;
  const nearTrendline=Math.abs(dist)<0.012;
  const stochExtreme=dailyTrend.direction==="LONG"?st.k<20:st.k>80;
  const stochTurning=dailyTrend.direction==="LONG"?st.k>st.d:st.k<st.d;
- const last=c.at(-1)!,prev=c.at(-2)!;
+ const last=closed4h.at(-1)!,prev=closed4h.at(-2)!;
  const beyondTrendline=dailyTrend.direction==="LONG"?price>tlPrice*1.008:price<tlPrice*0.992;
  const confirming=dailyTrend.direction==="LONG"?last.close>last.open&&last.close>prev.close:last.close<last.open&&last.close<prev.close;
- const volUp=last.volume>avg(c.slice(-10).map(x=>x.volume))*1.3;
+ const volUp=last.volume>avg(closed4h.slice(-10).map(x=>x.volume))*1.3;
  const ema8_4h=ema(closes4h,8),ema21_4h=ema(closes4h,21);
  const emaAligned=dailyTrend.direction==="LONG"?price>(ema8_4h.at(-1)??0)&&price>(ema21_4h.at(-1)??0):price<(ema8_4h.at(-1)??0)&&price<(ema21_4h.at(-1)??0);
  const stochMomentum=dailyTrend.direction==="LONG"?st.k>st.d:st.k<st.d;
  const adxStrong=av>20;
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
+ const hasEntry1=!!entry1State&&entry1State.direction===dailyTrend.direction;
+ const hasEntry2=hasEntry1&&entry2AlreadyFired;
+ const hasSameDirectionPosition=activeSignals.some(x=>x.pair===pair&&x.direction===dailyTrend.direction);
  if(filtersPass){
-  if(nearTrendline&&stochExtreme)rawType="ENTRY_1";
-  else if(nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";
-  else if(beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong))rawType="ADD";
+  if(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme)rawType="ENTRY_1";
+  else if(hasEntry1&&!hasEntry2&&hasSameDirectionPosition&&nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";
+  else if(hasEntry1&&hasEntry2&&hasSameDirectionPosition&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong))rawType="ADD";
  }
  if(!filtersPass)debug.push("[GLOBAL FILTER VETO] "+(!momentumAligned?"4H EMA5/13 momentum misaligned":exhaustion??"direction unavailable"));
  if(!tl)debug.push("[WAIT] Shared pair trendline unavailable");
@@ -532,7 +538,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  if(rawType!==hyst.lastSignalType)setHysteresis(pair,rawType,price,now);
  if(!tl)return{debug:["[SIGNAL BLOCKED] trendline unavailable"]};
  const signalTl=tl;
- const avalue=atr(c,14),recent=c.slice(-20);
+ const avalue=atr(closed4h,14),recent=closed4h.slice(-20);
  if(!Number.isFinite(avalue)||avalue<=0)return{debug:["[SIGNAL BLOCKED] invalid ATR"]};
  const low=Math.min(...recent.map(x=>x.low)),high=Math.max(...recent.map(x=>x.high));let stop:number,target:number;
  if(rawType==="ENTRY_1"||rawType==="ENTRY_2"){stop=dailyTrend.direction==="LONG"?Math.min(low,price-2*avalue):Math.max(high,price+2*avalue);target=dailyTrend.direction==="LONG"?price+5*avalue:price-5*avalue;}
@@ -549,21 +555,21 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 // --- MARKET SNAPSHOT ---
 export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]):any{
  void candles1h;void candles15m;
- const c=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),d=aggregateTo1D(c),t=trend1D(d),reg=computeRegime(c),closed=c.slice(0,-1),q=closed.map(x=>x.close),dq=d.slice(0,-1).map(x=>x.close);
- const st=stochRsi(q),st1=stochRsi(dq),dailyCloses=d.map(x=>x.close);
+ const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1),d=aggregateTo1D(closed4h),completedDaily=d.slice(0,-1),t=trend1D(completedDaily),reg=computeRegime(closed4h),q=closed4h.map(x=>x.close),dq=completedDaily.map(x=>x.close);
+ const st=stochRsi(q),st1=stochRsi(dq);
  const e5=ema(q,5).at(-1)??0,e13=ema(q,13).at(-1)??0,e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;
- const d5=ema(dailyCloses,5).at(-1)??0,d13=ema(dailyCloses,13).at(-1)??0;
+ const d5=ema(dq,5).at(-1)??0,d8=ema(dq,8).at(-1)??0,d13=ema(dq,13).at(-1)??0,d21=ema(dq,21).at(-1)??0;
  const direction=t.direction??null;
  const momentumAligned=direction==="LONG"?e5>e13:direction==="SHORT"?e5<e13:false;
- const rv=rsi(q),av=adx(closed);
+ const rv=rsi(q),av=adx(closed4h);
  const rsiExhausted=direction==="LONG"?rv>78:direction==="SHORT"?rv<22:false;
  const stochVeto=direction==="LONG"?st.k>95:direction==="SHORT"?st.k<5:false;
  const turningAgainst=direction==="LONG"?st.k<st.d:direction==="SHORT"?st.k>st.d:false;
  const adxExhausted=av>50&&turningAgainst;
  const exhaustion=rsiExhausted?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":adxExhausted?"ADX >50 with Stoch turning against":null;
- const storedTrendline=trendlineStore.get(pair),tl=storedTrendline?{price:storedTrendline.slope*(c.length-1)+storedTrendline.intercept,r2:0.85,age:Date.now()-storedTrendline.lastUpdated}:null,price=c.at(-1)?.close??0;
+ const storedTrendline=trendlineStore.get(pair),tl=storedTrendline?{price:storedTrendline.slope*(closed4h.length-1)+storedTrendline.intercept,r2:0.85,age:Date.now()-storedTrendline.lastUpdated}:null,price=closed4h.at(-1)?.close??0;
  const trendlineDistancePct=tl&&tl.price>0?Math.abs(price-tl.price)/tl.price*100:null;
- return{pair,price,timestamp:Date.now(),trend:reg.state,regime:reg.state,dailyDirection:direction,dailyStrength:t.strength,dailyClose:dq.at(-1)??0,dailyE5:d5,dailyE13:d13,ema5_1d:d5,ema13_1d:d13,ema5_4h:e5,ema13_4h:e13,ema8_4h:e8,ema21_4h:e21,fourHTacticalDirection:e5>e13?"BULL":e5<e13?"BEAR":"NEUTRAL",fourHDirection:e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL",trendlineDistancePct,stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK1d:st1.k,stochD1d:st1.d,adx:av,rsi:rv,trendlinePrice:tl?.price??0,distToTrendline:trendlineDistancePct,sizeMultiplier:reg.sizeMultiplier,momentumAligned,exhaustion,strategyStatus:"V28 — DAILY EMA5/13 "+(direction??"UNAVAILABLE")};
+ return{pair,price,timestamp:Date.now(),trend:reg.state,regime:reg.state,dailyDirection:direction,dailyStrength:t.strength,dailyClose:dq.at(-1)??0,dailyE5:d5,dailyE8:d8,dailyE13:d13,dailyE21:d21,ema5_1d:d5,ema8_1d:d8,ema13_1d:d13,ema21_1d:d21,ema5_4h:e5,ema13_4h:e13,ema8_4h:e8,ema21_4h:e21,fourHTacticalDirection:e5>e13?"BULL":e5<e13?"BEAR":"NEUTRAL",fourHDirection:e8>e21?"BULL":e8<e21?"BEAR":"NEUTRAL",trendlineDistancePct,stochK:st.k,stochD:st.d,stochK4h:st.k,stochD4h:st.d,stochK1d:st1.k,stochD1d:st1.d,adx:av,rsi:rv,trendlinePrice:tl?.price??0,distToTrendline:trendlineDistancePct,sizeMultiplier:reg.sizeMultiplier,momentumAligned,exhaustion,strategyStatus:"V28 — DAILY EMA5/13 "+(direction??"UNAVAILABLE")};
 }
 
 // --- VALIDITY ---
@@ -585,9 +591,9 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
  void lastExitAlertAt;const closed=[...c].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1);
  if(closed.length<22)return{shouldHold:true,reason:"insufficient_closed_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE"};
  const v=isSignalStillValid(s,p,now);if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE"};
- const dailyTrend=trend1D(aggregateTo1D(c)),rev=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;
+ const dailyTrend=trend1D(aggregateTo1D(closed).slice(0,-1)),rev=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG"),profit=s.direction==="LONG"?p>s.entry:p<s.entry;
  if(rev&&!profit)return{shouldHold:false,reason:"daily_trend_reversal_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE"};
- const st=stochRsi(c.map(x=>x.close)),opposite=s.direction==="LONG"?st.k<20:st.k>80;
+ const st=stochRsi(closed.map(x=>x.close)),opposite=s.direction==="LONG"?st.k<20:st.k>80;
  if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE"};
  return{shouldHold:true,reason:"thesis_intact",managementState:"STAY",recommendation:"STAY IN TRADE"};
 }
