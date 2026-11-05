@@ -28,7 +28,7 @@ const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=10
 // Pivots use the same confirmed two-candle swing shape as the strategy; Fib
 // retracements use the high/low of the last 50 closed 4H candles.
 function marketStructureLog(pair:string,candles:any[],price:number):string {
-  const c=candles.slice(0,-1).filter(x=>Number.isFinite(x.high)&&Number.isFinite(x.low));
+  const c=candles.filter(x=>Number.isFinite(x.high)&&Number.isFinite(x.low));
   if(c.length<10||!Number.isFinite(price)||price<=0)return `[STRUCTURE] ${pair} | insufficient 4H candles`;
   const swings:{price:number;index:number;kind:"H"|"L"}[]=[];
   for(let i=2;i<c.length-2;i++){
