@@ -44,7 +44,8 @@ The raw trigger priority is ENTRY_1, then ENTRY_2, then ADD.
 ## Staged hysteresis
 
 - Persisted state records the last stage, the last signal price and the stage-state expiry.
-- The normal progression is ENTRY_1 → ENTRY_2 → ADD.
+- Hysteresis is stage-aware and remembers the last emitted stage, but it does not require a saved prior stage before a valid signal can start a lifecycle.
+- ENTRY_1 can advance to ENTRY_2 and ENTRY_2 can advance to ADD when the next trigger independently qualifies.
 - ENTRY_2 can also start a lifecycle directly when there was no ENTRY_1.
 - The price hysteresis band is 0.5%. A repeated signal at the same stage is suppressed while price remains within that band; a transition to the next stage is not blocked by the previous stage's band.
 - ENTRY_1 and ENTRY_2 stage state lasts 24 hours; ADD stage state lasts 4 hours. These are stage-state lifetimes, not delays that force the next stage to wait 24 or 4 hours.
@@ -57,7 +58,7 @@ The raw trigger priority is ENTRY_1, then ENTRY_2, then ADD.
 - ADD retains the 0.5% trendline buffer and 1.5 ATR stop floor. The target respects swing levels and the minimum 1.5 R:R requirement.
 - A 15x liquidation-buffer clamp is applied to protective stops. R:R is recalculated after the clamp and the signal is rejected if it falls below 1.5.
 - The macro regime sizing multiplier is 0.5x in LOW/CHOP conditions and 1x otherwise. This multiplier is not the same thing as the user's manual ENTRY_1/ENTRY_2/ADD scale-in allocation.
-- There is no global RSI or ADX exhaustion veto. ADX remains diagnostic; it is not an ADD prerequisite. The directional Stoch hard cap remains.
+- There is no global RSI or ADX exhaustion veto. ADX >20 is one optional ADD confirmation, not a standalone veto. The directional Stoch hard cap remains.
 
 ## Trade management and alerts
 
