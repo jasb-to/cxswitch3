@@ -127,3 +127,16 @@ test("Hysteresis only suppresses duplicate ENTRY_1 on the same 4H candle within 
   assert.doesNotMatch(strategy, /lastSignalType|lockUntil/);
   assert.doesNotMatch(generate, /Hysteresis lock/);
 });
+
+test("ENTRY_1 and ENTRY_2 are independent fresh-position entries; ADD alone requires an active match", () => {
+  const evaluate = body("evaluateGates");
+  const generate = body("generateSignal");
+  assert.match(evaluate, /entry1Ready&&!entry1ActiveMatch/);
+  assert.match(evaluate, /stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch/);
+  assert.match(evaluate, /else if\(macroActiveMatch&&macro\.direction/);
+  assert.match(generate, /entry1Eligible&&!entry1ActiveMatch/);
+  assert.match(generate, /stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&!macroActiveMatch/);
+  assert.match(generate, /else if\(macroActiveMatch&&macro\.direction/);
+  assert.doesNotMatch(generate, /entry1ActiveMatch\s*\|\|\s*macroActiveMatch/);
+  assert.doesNotMatch(generate, /if\([^)]*(?:hasEntry1|hasEntry2|entry1AlreadyFired|entry2AlreadyFired)/);
+});
