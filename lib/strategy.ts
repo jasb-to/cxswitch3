@@ -45,7 +45,7 @@ export interface ComputedRegime {
   strength:RegimeStrength|"NEUTRAL";
 }
 export function computeRegime(c:Candle[]):ComputedRegime {
-  const bars=[...c].sort((a,b)=>a.timestamp-b.timestamp);
+  const bars=[...c];
   const d=daily(bars),closes=d.map(x=>x.close);
   const neutral:ComputedRegime={state:"CHOP",direction:null,sizeMultiplier:0,price:closes.at(-1)??0,e21:0,e8:0,e5:0,e13:0,spread:0,spread3:0,spreadDelta:0,strength:"NEUTRAL"};
   if(closes.length<22)return neutral;
@@ -443,7 +443,7 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
 
 // --- MAIN SIGNAL ---
 export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number):any {
- const bars=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),price=currentPrice??bars.at(-1)?.close??0;
+ const bars=[...candles4h],price=currentPrice??bars.at(-1)?.close??0;
  const dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles);
  const closes=bars.map(x=>x.close),st=stochRsi(closes),av=adx(bars);
  const macroTl=macro.direction?getTrendline(pair,bars,macro.direction):null,fastTl=fast.direction?getTrendline(pair,bars,fast.direction):null,close=bars.at(-1)?.close??price;
@@ -478,7 +478,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,_entry1State?:any,_entry2AlreadyFired=false,_activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]):SignalResult{
  void candles1h;void candles15m;void lastBreakout;void _entry1State;void _entry2AlreadyFired;void _activeSignals;
- const debug:string[]=[],bars=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),now=nowOverride??Date.now();
+ const debug:string[]=[],bars=[...candles4h],now=nowOverride??Date.now();
  if(bars.length<30){debug.push("[WAIT] Insufficient 4H candle data");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles),regime=computeRegime(bars);
  debug.push("[DAILY] EMA8/21="+(macro.direction??"NONE")+" | ENTRY_1 EMA5/13="+(fast.direction??"NONE")+" | size="+Math.round(regime.sizeMultiplier*100)+"%");
@@ -528,6 +528,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  if(!finalType){debug.push("[WAIT] No V28 trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  let signalDirection:Direction|null=finalType==="ENTRY_1"?(hyst.direction??fast.direction??macro.direction):(hyst.direction??macro.direction??fast.direction);
  if(!signalDirection){debug.push("[WAIT] No directional EMA bias available");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
+ const finalHardCap=signalDirection==="LONG"?st.k>95:st.k<5;
+ if(finalHardCap){debug.push("[WAIT] Stoch hard exhaustion cap for "+signalDirection);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType,price,now,signalDirection);
  const signalTl=finalType==="ENTRY_1"?fastTl:macroTl;
  if(!signalTl)return{debug:["[SIGNAL BLOCKED] trendline unavailable"]};
@@ -540,7 +542,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  if(!Number.isFinite(rr)||rr<MIN_RR)return{debug:["[SIGNAL BLOCKED] R:R "+rr.toFixed(2)+" < "+MIN_RR]};
  const momentumAligned=fourHDirection===signalDirection;
  const size=regime.sizeMultiplier===0.5?0.5:1;
- const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:signalDirection!,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(rr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:signalDirection+" "+finalType+" | "+(finalType==="ENTRY_1"?"Daily EMA5/13 early direction":"Daily EMA8/21 direction")+" + V28 trigger | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{targetCount:1,targetAtrMultiple:5,regime:regime.state,regimeSizeMultiplier:size,trendlinePrice:signalTl.price,trendlineR2:signalTl.r2,dailyDirection:macro.direction,entry1Direction:fast.direction,dailyE8_1d:ema(dailyCandles.map(x=>x.close),8).at(-1)??0,dailyE21_1d:ema(dailyCandles.map(x=>x.close),21).at(-1)??0,entry1E5_1d:ema(dailyCandles.map(x=>x.close),5).at(-1)??0,entry1E13_1d:ema(dailyCandles.map(x=>x.close),13).at(-1)??0,ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned,exhaustion:entry1HardCap||macroHardCap?"Stoch hard cap":null}};
+ const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:signalDirection!,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(rr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:signalDirection+" "+finalType+" | "+(finalType==="ENTRY_1"?"Daily EMA5/13 early direction":"Daily EMA8/21 direction")+" + V28 trigger | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{targetCount:1,targetAtrMultiple:5,regime:regime.state,regimeSizeMultiplier:size,trendlinePrice:signalTl.price,trendlineR2:signalTl.r2,dailyDirection:macro.direction,entry1Direction:fast.direction,dailyE8_1d:ema(dailyCandles.map(x=>x.close),8).at(-1)??0,dailyE21_1d:ema(dailyCandles.map(x=>x.close),21).at(-1)??0,entry1E5_1d:ema(dailyCandles.map(x=>x.close),5).at(-1)??0,entry1E13_1d:ema(dailyCandles.map(x=>x.close),13).at(-1)??0,ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned,exhaustion:finalHardCap?"Stoch hard cap":null}};
  debug.push("[STOP] "+signal.stop+" | V28 swing/ATR stop");debug.push("[TARGET] "+signal.tp1+" | V28 ATR/swing target; TP2 mirrors TP1");debug.push("[SIGNAL] "+signal.direction+" "+signal.type+" entry="+signal.entry+" SL="+signal.stop+" TP="+signal.tp1+" RR="+signal.rr);
  return{signal,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
 }
@@ -549,7 +551,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 // --- MARKET SNAPSHOT ---
 export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]):any{
  void candles1h;void candles15m;
- const bars=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp),dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles),reg=computeRegime(bars),q=bars.map(x=>x.close),dq=dailyCandles.map(x=>x.close);
+ const bars=[...candles4h],dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles),reg=computeRegime(bars),q=bars.map(x=>x.close),dq=dailyCandles.map(x=>x.close);
  const st=stochRsi(q),st1=stochRsi(dq),e5=ema(q,5).at(-1)??0,e13=ema(q,13).at(-1)??0,e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;
  const d5=ema(dq,5).at(-1)??0,d8=ema(dq,8).at(-1)??0,d13=ema(dq,13).at(-1)??0,d21=ema(dq,21).at(-1)??0;
  const direction=macro.direction??null,entry1Direction=fast.direction??null,fourHDirection=e5>e13?"LONG":e5<e13?"SHORT":null;
@@ -576,7 +578,7 @@ export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{c
 export interface HoldResult{shouldHold:boolean;reason:string;managementState:"STAY"|"EXIT";recommendation:"STAY IN TRADE"|"EXIT TRADE";newStop?:number}
 export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number):HoldResult{
  void lastExitAlertAt;
- const bars=[...c].sort((a,b)=>a.timestamp-b.timestamp);
+ const bars=[...c];
  if(bars.length<22)return{shouldHold:true,reason:"insufficient_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE"};
  const v=isSignalStillValid(s,p,now);if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE"};
  const dailyTrend=trend1D(aggregateTo1D(bars)),dailyReversed=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG");
