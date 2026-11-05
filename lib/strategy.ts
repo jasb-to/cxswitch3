@@ -437,7 +437,7 @@ export function evaluateGates(
  activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]
 ):any {
  const closed4h=[...candles4h].sort((a,b)=>a.timestamp-b.timestamp).slice(0,-1);
- const price=currentPrice??closed4h.at(-1)?.close??0;
+ const closedPrice=closed4h.at(-1)?.close??0,price=currentPrice??closedPrice;
  const dailyCandles=aggregateTo1D(closed4h),dailyTrend=trend1D(dailyCandles);
  const closes4h=closed4h.map(x=>x.close);
  const st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(closed4h);
@@ -451,7 +451,7 @@ export function evaluateGates(
  const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;
  const tl=dailyTrend.direction?getTrendline(pair,closed4h,dailyTrend.direction):null;
  const tlPrice=tl?.price??0;
- const dist=tlPrice>0?(price-tlPrice)/tlPrice:Infinity;
+ const dist=tlPrice>0?(closedPrice-tlPrice)/tlPrice:Infinity;
  const nearTrendline=Math.abs(dist)<0.012;
  const stochExtreme=dailyTrend.direction==="LONG"?st.k<20:dailyTrend.direction==="SHORT"?st.k>80:false;
  const stochTurning=dailyTrend.direction==="LONG"?st.k>st.d:dailyTrend.direction==="SHORT"?st.k<st.d:false;
@@ -498,7 +498,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const dailyCandles=aggregateTo1D(closed4h),dailyTrend=trend1D(dailyCandles),regime=computeRegime(candles4h);
  debug.push("[DAILY] EMA5/13="+(dailyTrend.direction??"NONE")+" | size="+Math.round(regime.sizeMultiplier*100)+"%");
  if(!dailyTrend.direction){debug.push("[WAIT] Daily EMA5/13 direction unavailable");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- const price=currentPrice??closed4h.at(-1)!.close,closes4h=closed4h.map(x=>x.close),st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(closed4h);
+ const closedPrice=closed4h.at(-1)!.close,price=currentPrice??closedPrice,closes4h=closed4h.map(x=>x.close),st=stochRsi(closes4h),rv=rsi(closes4h),av=adx(closed4h);
  const e5_4h=ema(closes4h,5).at(-1)??0,e13_4h=ema(closes4h,13).at(-1)??0;
  const momentumAligned=dailyTrend.direction==="LONG"?e5_4h>e13_4h:dailyTrend.direction==="SHORT"?e5_4h<e13_4h:false;
  const rsiExhausted=dailyTrend.direction==="LONG"?rv>78:dailyTrend.direction==="SHORT"?rv<22:false;
@@ -508,16 +508,16 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const exhaustion=rsiExhausted?"4H RSI exhaustion":stochVeto?"4H Stoch extreme veto":adxExhausted?"ADX >50 with Stoch turning against":null;
  const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;
  const tl=getTrendline(pair,closed4h,dailyTrend.direction),tlPrice=tl?.price??0;
- const dist=tlPrice>0?(price-tlPrice)/tlPrice:Infinity;
+ const dist=tlPrice>0?(closedPrice-tlPrice)/tlPrice:Infinity;
  const nearTrendline=Math.abs(dist)<0.012;
  const stochExtreme=dailyTrend.direction==="LONG"?st.k<20:st.k>80;
  const stochTurning=dailyTrend.direction==="LONG"?st.k>st.d:st.k<st.d;
  const last=closed4h.at(-1)!,prev=closed4h.at(-2)!;
- const beyondTrendline=dailyTrend.direction==="LONG"?price>tlPrice*1.008:price<tlPrice*0.992;
+ const beyondTrendline=dailyTrend.direction==="LONG"?closedPrice>tlPrice*1.008:closedPrice<tlPrice*0.992;
  const confirming=dailyTrend.direction==="LONG"?last.close>last.open&&last.close>prev.close:last.close<last.open&&last.close<prev.close;
  const volUp=last.volume>avg(closed4h.slice(-10).map(x=>x.volume))*1.3;
  const ema8_4h=ema(closes4h,8),ema21_4h=ema(closes4h,21);
- const emaAligned=dailyTrend.direction==="LONG"?price>(ema8_4h.at(-1)??0)&&price>(ema21_4h.at(-1)??0):price<(ema8_4h.at(-1)??0)&&price<(ema21_4h.at(-1)??0);
+ const emaAligned=dailyTrend.direction==="LONG"?closedPrice>(ema8_4h.at(-1)??0)&&closedPrice>(ema21_4h.at(-1)??0):closedPrice<(ema8_4h.at(-1)??0)&&closedPrice<(ema21_4h.at(-1)??0);
  const stochMomentum=dailyTrend.direction==="LONG"?st.k>st.d:st.k<st.d;
  const adxStrong=av>20;
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
