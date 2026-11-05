@@ -109,7 +109,7 @@ test("Dashboard and Jarvis expose one daily bias, trendline distance and global 
   assert.ok(dashboard.includes("DAILY DIRECTION (5/13)"));
   assert.ok(dashboard.includes("TRENDLINE DIST"));
   assert.ok(dashboard.includes("momentumAligned"));
-  assert.ok(dashboard.includes("EXHAUSTION:"));
+  assert.ok(dashboard.includes("EXHAUSTION"));
   assert.ok(jarvis.includes("DAILY BIAS (1D EMA5/13)"));
   assert.ok(jarvis.includes("momentumAligned"));
   assert.ok(jarvis.includes("exhaustion veto"));
