@@ -295,7 +295,10 @@ export async function GET(request:Request){
    const entry2Continuation=sameDirectionExisting&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2";
    if(existing&&existing.direction!==signal.direction){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=opposite_direction_position_exists`);return;}
    if(existing&&signal.type!=="ADD"&&!entry2Continuation&&signal.type!=="ENTRY_2"){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=active_position_exists`);return;}
-   if(signal.type==="ADD"&&!sameDirectionExisting){console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=active_position_exists`);return;}
+   if(signal.type==="ADD"&&(!sameDirectionExisting||!entry1State||!entry2AlreadyFired||entry1State.direction!==signal.direction)){
+     console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=entry1_entry2_lifecycle_incomplete`);
+     return;
+   }
    if(signal.type==="ADD"&&historyAtStart.some((h:any)=>h.pair===pair&&h.direction===signal.direction&&h.type==="ADD"&&Date.now()-Number(h.timestamp)<4*60*60*1000)){console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=add_hysteresis_4h`);return;}
    const history=historyAtStart;
    if(signal.type==="ENTRY_2"){
