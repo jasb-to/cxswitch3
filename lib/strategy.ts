@@ -405,11 +405,7 @@ interface HysteresisState {
   lastEntry1Price?: number;
   lastEntry1CandleTimestamp?: number;
   lastEntry1Direction?: "LONG" | "SHORT";
-  // Legacy KV fields are tolerated but ignored.
-  lastSignalType?: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
-  lastSignalPrice?: number;
-  lockUntil?: number;
-  direction?: "LONG" | "SHORT";
+  // Legacy KV objects may contain additional fields; they are intentionally ignored.
 }
 
 const hysteresisStore: Map<string, HysteresisState> = new Map();
