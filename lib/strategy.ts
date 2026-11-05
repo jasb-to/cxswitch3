@@ -592,5 +592,4 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
   }
   return{shouldHold:true,reason:"4h_momentum_and_daily_macro_valid",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
 }
-}
 
