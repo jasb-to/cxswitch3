@@ -467,13 +467,16 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
  const fourHDirection=e5>e13?"LONG":e5<e13?"SHORT":null;
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
+ const activePairPosition=activeSignals.some(x=>x.pair===pair);
  const activeMatch=!!macro.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
+ const priorStage=getHysteresis(pair,Date.now());
+ const entry2Continuation=activeMatch&&priorStage.lastSignalType==="ENTRY_1";
  const volUp=!!last&&last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3;
  const stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const adxStrong=av>20;
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,direction:Direction|null=null;
- if(entry1Ready){rawType="ENTRY_1";direction=fast.direction;}
- else if(entry2Ready){rawType="ENTRY_2";direction=macro.direction;}
+ if(entry1Ready&&!activePairPosition){rawType="ENTRY_1";direction=fast.direction;}
+ else if(entry2Ready&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";direction=macro.direction;}
  else if(activeMatch&&macro.direction&&trendline&&beyond&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
  const hardCap=rawType==="ENTRY_1"?hardCapFast:hardCapMacro,regime=computeRegime(bars),missing:string[]=[];
  if(!macro.direction)missing.push("daily EMA8/21 unavailable for shared 4H trendline");
@@ -513,18 +516,20 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const e5_4h=ema(closes,5).at(-1)??0,e13_4h=ema(closes,13).at(-1)??0;
  const fourHDirection=e5_4h>e13_4h?"LONG":e5_4h<e13_4h?"SHORT":null;
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
+ const activePairPosition=_activeSignals.some(x=>x.pair===pair);
  const activeMatch=!!macro.direction&&_activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
+ const hyst=getHysteresis(pair,now);
+ const entry2Continuation=activeMatch&&hyst.lastSignalType==="ENTRY_1";
  const volUp=last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3;
  const stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const adxStrong=av>20;
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
  let rawDirection:Direction|null=null;
- if(entry1Eligible){rawType="ENTRY_1";rawDirection=fast.direction;}
- else if(entry2Eligible){rawType="ENTRY_2";rawDirection=macro.direction;}
+ if(entry1Eligible&&!activePairPosition){rawType="ENTRY_1";rawDirection=fast.direction;}
+ else if(entry2Eligible&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";rawDirection=macro.direction;}
  else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
  debug.push(`[V28] ${pair} | Daily=${macro.direction} Fast=${fast.direction} | Shared 4H TL=${trendlinePrice.toFixed(2)} Dist=${(trendlineDist*100).toFixed(2)}% | Stoch=${st.k} | Type=${rawType}`);
  if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
- const hyst=getHysteresis(pair,now);
  let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
  if(hyst.lastSignalType==="ADD")finalType="ADD";
  else if(hyst.lastSignalType==="ENTRY_2")finalType=rawType==="ADD"?"ADD":"ENTRY_2";
