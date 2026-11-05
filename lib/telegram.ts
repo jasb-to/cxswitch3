@@ -18,7 +18,7 @@ export async function sendAlert(signal:any){
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
 
   const type=signal.signalType||signal.state;
-  if(type!=="ENTRY_1"&&type!=="ADD") throw new Error("Only ENTRY_1 and ADD alerts are permitted: "+String(type));
+  if(type!=="ENTRY_1"&&type!=="ENTRY_2"&&type!=="ADD") throw new Error("Only ENTRY_1, ENTRY_2 and ADD alerts are permitted: "+String(type));
 
   const emoji=signal.signalEmoji||"📊";
   const dir=signal.bias==="LONG"?"📈":"📉";

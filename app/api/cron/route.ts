@@ -303,15 +303,6 @@ export async function GET(request:Request){
    if(existing&&signal.type!=="ADD"&&!entry2Continuation&&signal.type!=="ENTRY_2"){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=active_position_exists`);return;}
    if(signal.type==="ADD"&&historyAtStart.some((h:any)=>h.pair===pair&&h.direction===signal.direction&&h.type==="ADD"&&Date.now()-Number(h.timestamp)<4*60*60*1000)){console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=add_hysteresis_4h`);return;}
    const history=historyAtStart;
-   if(signal.type==="ENTRY_2"){
-     console.log(`[ALERT DISPATCH] pair=${pair} type=ENTRY_2 status=suppressed reason=entry2_internal`);
-     newSignals.push(signal);stateSignal=signal;dispatchStage="signal_history_append";
-     await appendSignalHistory(signal);
-     console.log(`[STATE ADD] pair=${pair} type=ENTRY_2 status=history_appended id=${signal.id}`);
-     dispatchStage="active_state_add";stateAddAttempted=true;
-     console.log(`[STATE ADD] pair=${pair} type=ENTRY_2 status=queued_for_batch id=${signal.id}`);
-     dispatchStage="complete";return;
-   }
    if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=pair_paused`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=pair_paused`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
   if(sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=recent_signal_dedupe`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=recent_signal_dedupe`);return;}
   dispatchStage="cooldown_check";
