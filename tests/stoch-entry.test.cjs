@@ -9,28 +9,54 @@ require.extensions[".ts"] = (module, filename) => {
 };
 const strategySource = fs.readFileSync("lib/strategy.ts", "utf8");
 const { getStochHistoryPointCount, generateSignal } = require("../lib/strategy.ts");
+const body = (name) => {
+  const start = strategySource.indexOf("export function " + name);
+  const end = strategySource.indexOf("\nexport function ", start + 20);
+  return strategySource.slice(start, end > 0 ? end : strategySource.length);
+};
 
-test("ENTRY_1, ENTRY_2 and ADD are all inside the global Momentum/Exhaustion gate", () => {
-  assert.equal(strategySource.split("const filtersPass=!!dailyTrend.direction&&momentumAligned&&!exhaustion;").length - 1, 2);
-  assert.equal(strategySource.split("if(filtersPass){").length - 1, 2);
-  assert.equal(strategySource.split('if(!hasEntry1&&!hasSameDirectionPosition&&nearTrendline&&stochExtreme)rawType="ENTRY_1";').length - 1, 2);
-  assert.equal(strategySource.split('else if(hasEntry1&&!hasEntry2&&hasSameDirectionPosition&&nearTrendline&&stochTurning&&!stochExtreme)rawType="ENTRY_2";').length - 1, 2);
-  assert.equal(strategySource.split('else if(hasEntry1&&hasEntry2&&hasSameDirectionPosition&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong))rawType="ADD";').length - 1, 2);
+test("ENTRY_1, ENTRY_2 and ADD all reference one shared 4H trendline", () => {
+  const evaluate = body("evaluateGates");
+  const generate = body("generateSignal");
+  assert.match(evaluate, /getTrendline\(pair,bars,macro\.direction\)/);
+  assert.match(generate, /getTrendline\(pair,bars,macro\.direction\)/);
+  assert.match(generate, /const signalTl=trendline/);
+  assert.doesNotMatch(strategySource, /getTrendline\(pair,bars,fast\.direction/);
+  assert.doesNotMatch(strategySource, /track: "FAST" \| "MACRO"/);
 });
 
-test("global Momentum uses 4H EMA5/13 aligned to the one daily direction", () => {
-  assert.equal(strategySource.split('const momentumAligned=dailyTrend.direction==="LONG"?e5_4h>e13_4h:dailyTrend.direction==="SHORT"?e5_4h<e13_4h:false;').length - 1, 2);
+test("ENTRY_1 uses fast daily EMA5/13, shared-line proximity and Stoch extreme", () => {
+  const generate = body("generateSignal");
+  assert.match(generate, /entry1Eligible=!!fast\.direction&&nearTrendline&&stochExtremeFast&&!hardCapFast/);
+  assert.match(generate, /rawType="ENTRY_1";rawDirection=fast\.direction/);
 });
 
-test("global Exhaustion retains RSI 78/22, Stoch 95/5 and ADX >50 turning-against vetoes", () => {
-  assert.equal(strategySource.split('const rsiExhausted=dailyTrend.direction==="LONG"?rv>78:dailyTrend.direction==="SHORT"?rv<22:false;').length - 1, 2);
-  assert.equal(strategySource.split('const stochVeto=dailyTrend.direction==="LONG"?st.k>95:dailyTrend.direction==="SHORT"?st.k<5:false;').length - 1, 2);
-  assert.equal(strategySource.split("const adxExhausted=av>50&&turningAgainst;").length - 1, 3);
+test("ENTRY_2 uses macro EMA8/21, shared-line proximity and Stoch turn without requiring ENTRY_1", () => {
+  const generate = body("generateSignal");
+  assert.match(generate, /entry2Eligible=!!macro\.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro/);
+  assert.match(generate, /rawType="ENTRY_2";rawDirection=macro\.direction/);
+  assert.match(generate, /else finalType=rawType/);
+  assert.doesNotMatch(generate, /hasEntry1|entry1AlreadyFired|entry1State/);
 });
 
-test("daily direction unavailable with no usable candle history", () => {
+test("ADD alone requires an active same-direction position and the 4H breakout confirmations", () => {
+  const evaluate = body("evaluateGates");
+  const generate = body("generateSignal");
+  assert.match(evaluate, /activeMatch=!!macro\.direction&&activeSignals\.some/);
+  assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
+  assert.match(generate, /else if\(activeMatch&&macro\.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&momentumAligned&&!hardCapMacro\)/);
+  assert.doesNotMatch(generate, /\(volUp\|\|stochMomentum\|\|adxStrong\)/);
+});
+
+test("No global RSI or ADX exhaustion veto is applied to the entry stages", () => {
+  assert.doesNotMatch(strategySource, /rsiExhausted|adxExhausted|RSI exhaustion|ADX >50/);
+  assert.match(strategySource, /st\.k>95/);
+  assert.match(strategySource, /st\.k<5/);
+});
+
+test("insufficient 4H history is reported clearly", () => {
   const result = generateSignal("TEST", [], [], []);
-  assert.ok(result.debug.some(x => x.includes("Insufficient CLOSED 4H candle data")));
+  assert.ok(result.debug.some(x => x.includes("Insufficient 4H candle data")));
 });
 
 test("insufficient Stoch history is reported as zero usable smoothed points", () => {
