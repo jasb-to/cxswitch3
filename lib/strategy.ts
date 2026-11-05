@@ -41,19 +41,20 @@ export type RegimeStrength="HIGH"|"MED"|"LOW";
 export type RegimeState="BULL_HIGH"|"BULL_MED"|"BULL_LOW"|"CHOP"|"BEAR_LOW"|"BEAR_MED"|"BEAR_HIGH";
 export interface ComputedRegime {
   state:RegimeState; direction:Direction|null; sizeMultiplier:0|0.5|1;
-  price:number; e21:number; e5:number; e13:number; spread:number; spread3:number; spreadDelta:number;
+  price:number; e21:number; e8:number; e5:number; e13:number; spread:number; spread3:number; spreadDelta:number;
   strength:RegimeStrength|"NEUTRAL";
 }
 export function computeRegime(c:Candle[]):ComputedRegime {
-  const closed4h=[...c].sort((a,b)=>a.timestamp-b.timestamp);
-  const d=daily(closed4h),closes=d.map(x=>x.close);
-  const neutral:ComputedRegime={state:"CHOP",direction:null,sizeMultiplier:0,price:closes.at(-1)??0,e21:0,e5:0,e13:0,spread:0,spread3:0,spreadDelta:0,strength:"NEUTRAL"};
+  const bars=[...c].sort((a,b)=>a.timestamp-b.timestamp);
+  const d=daily(bars),closes=d.map(x=>x.close);
+  const neutral:ComputedRegime={state:"CHOP",direction:null,sizeMultiplier:0,price:closes.at(-1)??0,e21:0,e8:0,e5:0,e13:0,spread:0,spread3:0,spreadDelta:0,strength:"NEUTRAL"};
   if(closes.length<22)return neutral;
-  const e5s=ema(closes,5),e13s=ema(closes,13),e21s=ema(closes,21);
-  const price=closes.at(-1)!,e5=e5s.at(-1)!,e13=e13s.at(-1)!,e21=e21s.at(-1)!;
-  const aboveE21=price>e21,emaStack=e5>e13?"BULL":"BEAR";
-  const spread=(e5-e13)/price*100;
-  const spread3=closes.length>=25?(e5s.at(-4)!-e13s.at(-4)!)/closes.at(-4)!*100:spread;
+  // Regime classification and size are macro EMA8/21 based. EMA5/13 is reserved for ENTRY_1 and 4H trade management.
+  const e8s=ema(closes,8),e21s=ema(closes,21);
+  const price=closes.at(-1)!,e8=e8s.at(-1)!,e21=e21s.at(-1)!;
+  const aboveE21=price>e21,emaStack=e8>e21?"BULL":"BEAR";
+  const spread=(e8-e21)/price*100;
+  const spread3=closes.length>=25?(e8s.at(-4)!-e21s.at(-4)!)/closes.at(-4)!*100:spread;
   const spreadDelta=spread-spread3;
   let strength:RegimeStrength;
   if(Math.abs(spreadDelta)<0.05)strength="MED";
@@ -65,7 +66,7 @@ export function computeRegime(c:Candle[]):ComputedRegime {
   else state="CHOP";
   const direction:Direction|null=state.startsWith("BULL")?"LONG":state.startsWith("BEAR")?"SHORT":null;
   const sizeMultiplier:0|0.5|1=strength==="LOW"||state==="CHOP"?0.5:1;
-  return{state,direction,sizeMultiplier,price,e21,e5,e13,spread,spread3,spreadDelta,strength:direction?strength:"NEUTRAL"};
+  return{state,direction,sizeMultiplier,price,e21,e8,e5:e8,e13:e21,spread,spread3,spreadDelta,strength:direction?strength:"NEUTRAL"};
 }
 
 export function getStochHistoryPointCount(closes:number[]):number{return Math.max(0,rsiSeries(closes).length-17);}
