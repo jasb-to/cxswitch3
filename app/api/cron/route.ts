@@ -243,7 +243,9 @@ export async function GET(request:Request){
   console.log(marketStructureLog(pair,c4,price));
   const existing=active.find(x=>x.pair===pair);
   const historyForEntry=historyAtStart;
-  const entry1State=historyForEntry.filter((h:any)=>h.pair===pair&&h.type==="ENTRY_1"&&h.status==="ACTIVE").sort((a:any,b:any)=>b.timestamp-a.timestamp)[0];
+  // A prior ENTRY_1 is lifecycle context only while this pair still has an active position.
+  // This prevents a closed trade's stale history row from permanently blocking a fresh ENTRY_1.
+  const entry1State=existing?historyForEntry.filter((h:any)=>h.pair===pair&&h.direction===existing.direction&&h.type==="ENTRY_1"&&h.status==="ACTIVE").sort((a:any,b:any)=>b.timestamp-a.timestamp)[0]:undefined;
   const entry2AlreadyFired=!!entry1State&&historyForEntry.some((h:any)=>h.pair===pair&&h.direction===entry1State.direction&&h.type==="ENTRY_2"&&h.timestamp>entry1State.timestamp);
   const result=generateSignal(pair,c1,c4,c15,price,undefined,undefined,entry1State,entry2AlreadyFired,active.map((x:any)=>({pair:x.pair,direction:x.direction})));
   const snapshot:any=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.currentPrice=price;snapshot.momentumCandles4h=c4.slice(-220);stateMarket=snapshot;
@@ -276,7 +278,7 @@ export async function GET(request:Request){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
       const dailySide=normalizeSide(snapshot.dailyDirection);
-      // Daily EMA8/21 sets direction; 4H EMA5/13 confirms ENTRY_1 momentum.
+      // Daily EMA5/13 sets direction; 4H EMA5/13 confirms momentum.
       const conflict=snapshot.regime==="CHOP"||!dailySide;
       let waitReason=snapshot.regime==="CHOP"?"regime CHOP":conflict?"daily regime unavailable":"setup incomplete";
       if(!conflict&&gateDebug){
