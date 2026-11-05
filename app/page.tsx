@@ -61,7 +61,7 @@ function JarvisCard({m,a,j,isActive}:{m?:Market;a?:Alert;j?:JarvisPair;isActive:
  </div>
 }
 export default function Dashboard(){
- const[market,setMarket]=useState<Record<string,Market>>({}),[active,setActive]=useState<Record<string,Alert>>({}),[latest,setLatest]=useState<Record<string,Alert>>({}),[history,setHistory]=useState<Signal[]>([]),[logs,setLogs]=useState<string[]>([]),[prices,setPrices]=useState<Record<string,number>>({}),[system,setSystem]=useState<System|null>(null),[loading,setLoading]=useState(true),[lastFetch,setLastFetch]=useState(0),[resetting,setResetting]=useState<string|null>(null),[copied,setCopied]=useState<string|null>(null),[jarvis,setJarvis]=useState<Jarvis|null>(null),[showDetails,setShowDetails]=useState<Record<string,boolean>>({});
+ const[market,setMarket]=useState<Record<string,Market>>({}),[active,setActive]=useState<Record<string,Alert>>({}),[latest,setLatest]=useState<Record<string,Alert>>({}),[history,setHistory]=useState<Signal[]>([]),[logs,setLogs]=useState<string[]>([]),[prices,setPrices]=useState<Record<string,number>>({}),[system,setSystem]=useState<System|null>(null),[loading,setLoading]=useState(true),[lastFetch,setLastFetch]=useState(0),[resetting,setResetting]=useState<string|null>(null),[copied,setCopied]=useState<string|null>(null),[jarvis,setJarvis]=useState<Jarvis|null>(null);
  async function load(){try{const r=await fetch("/api/signals",{cache:"no-store"});const d=await r.json();const m:Record<string,Market>={};for(const x of d.marketData||[])if(x?.pair){m[x.pair]=x;if(x.dailyDirection===undefined)console.warn("[dashboard] dailyDirection missing from market snapshot",x);if(x.fourHDirection===undefined)console.warn("[dashboard] fourHDirection missing from market snapshot",x);if(x.jarvisState===undefined)console.warn("[dashboard] jarvisState missing from market snapshot",x)}const a:Record<string,Alert>={};for(const x of d.activeSignals||[])if(x?.pair)a[x.pair]=x;setMarket(m);setActive(a);setLatest(d.latestAlerts||{});setHistory(d.signalHistory||[]);setLogs(d.logs||[]);setSystem(d.system||null);try{const jr=await fetch("/api/jarvis",{cache:"no-store"});const jd=await jr.json();setJarvis(jd.data||null)}catch{}setLastFetch(Date.now())}catch(e){console.error("CXSwitch load failed",e)}finally{setLoading(false)}}
  async function reset(pair:string){if(resetting)return;setResetting(pair);try{await fetch("/api/symbol-reset",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pair})});await load()}finally{setResetting(null)}}
  async function copy(id:string,text:string){try{await copyText(text);setCopied(id);setTimeout(()=>setCopied(null),1500)}catch(e){console.error("copy failed",e)}}
@@ -87,7 +87,6 @@ export default function Dashboard(){
     const trendlineNote=m?.trendlinePrice!=null&&m?.distToTrendline!=null?` · TL ${m.distToTrendline.toFixed(1)}%`:"";
     const verdict=j?.verdict??a?.jarvisVerdict??"GOOD";
     const verdictTone=verdict==="GOOD"?"text-green-300 border-green-500/25 bg-green-500/10":verdict==="VETO"?"text-red-300 border-red-500/25 bg-red-500/10":"text-yellow-300 border-yellow-500/25 bg-yellow-500/10";
-    const isDetails=!!showDetails[pair];
     const strategyBlocked=m?.momentumAligned===false||!!m?.exhaustion;
     const strategyReady=m?.dailyDirection!=null&&m?.momentumAligned===true&&!m?.exhaustion;
     const cardBorder=strategyBlocked?"border-red-500/35":strategyReady?"border-emerald-500/35":"border-amber-500/25";
@@ -102,20 +101,20 @@ export default function Dashboard(){
       <div className="min-w-0 grid grid-cols-[3.5rem_minmax(0,1fr)] items-start gap-2 text-[11px] leading-5"><span className="pt-0.5 text-[9px] text-white/35 font-bold tracking-wide">STATUS</span><span className={`min-w-0 whitespace-normal break-words [overflow-wrap:anywhere] ${statusTone}`}>{status}{trendlineNote}</span></div>
       
       <div className="min-w-0 flex items-start gap-1 text-[9px] leading-4"><span className="pt-0.5 text-[9px] text-white/35 font-bold tracking-wide">STOCH</span><span className={`min-w-0 whitespace-normal break-words [overflow-wrap:anywhere] ${stochTone}`}>{typeof closedK==="number"&&typeof closedD==="number"?`${closedK.toFixed(1)} / ${closedD.toFixed(1)}`:"— / —"} — {stochState}{staleNote}</span></div>
-      <div className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 border-t border-white/[0.07] pt-2 text-[9px] leading-4"><span className="text-white/30 font-bold tracking-wide">JARVIS</span><span className={`rounded border px-2 py-1 text-[9px] font-black tracking-wider ${verdictTone}`}>{verdict}</span><button type="button" onClick={()=>setShowDetails(v=>({...v,[pair]:!v[pair]}))} className="justify-self-end whitespace-nowrap text-[9px] uppercase tracking-wider text-white/45 hover:text-white/80">{isDetails?"Hide Details":"Show Details"}</button></div>
+      <div className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 border-t border-white/[0.07] pt-2 text-[9px] leading-4"><span className="text-white/30 font-bold tracking-wide">JARVIS</span><span className={`rounded border px-2 py-1 text-[9px] font-black tracking-wider ${verdictTone}`}>{verdict}</span></div>
       {alertSent&&<div className="mt-1 rounded-md border border-white/[0.08] bg-white/[0.025] px-2 py-1.5">
         <div className={`text-[8px] font-black tracking-wide ${a.direction==="LONG"?"text-green-300":"text-red-300"}`}>{isActive?"ACTIVE TRADE":"ALERT SENT"} · {a.direction} {a.type} · ENTRY {money(a.entry)} · SL {money(a.stop)} · TP1 {money(a.tp1)} · TP2 {money(a.tp2??a.target)}</div>
         <div className="mt-1 text-[8px] text-white/55">4H MOMENTUM · {momentum?(momentum.managementState==="STAY"?"STAY IN TRADE":"EXIT TRADE")+` · ${momentum.direction} · P/L ${pct(momentum.pnlPct)} · ${momentum.reason}`:"—"}</div>
         {isActive&&mg&&<div className="mt-1 text-[8px] text-white/45">{mg.recommendation} — {mg.reason}{mg.nextAction?` · ${mg.nextAction}`:""}</div>}
       </div>}
-      {isDetails&&<div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
+      <div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
         {isActive&&<div>POSITION SIZE · {Math.round((m?.sizeMultiplier??a?.sizeMultiplier??0)*100)}% size</div>}
         <div>JARVIS STATE · {m?.jarvisState??j?.currentAnalysis??j?.reason??"—"}</div>
         <div>JARVIS REASON · {j?.reason??a?.jarvisReason??"—"}</div>
         <div>STRUCTURE · {m?.structureShift?.reason??"—"}</div>
         <div>STRATEGY STATUS · {status}</div>
         <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {m?.distToTrendline!=null?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
-      </div>}
+      </div>
     </article>})}</div></section>
 
   <section className="mx-auto max-w-7xl px-5 pb-6"><div className="rounded-2xl border border-white/[0.08] bg-[#0b0b0b] p-4"><div className="flex items-center justify-between"><div><div className="text-[9px] uppercase tracking-[0.18em] text-white/25">Cron / signal log</div><div className="mt-1 text-sm font-semibold">Latest system activity</div></div><div className="flex items-center gap-2"><div className="text-[8px] text-white/25">{logs.length} lines</div><button type="button" onClick={()=>copy("logs",logs.join("\n"))} className="inline-flex items-center gap-1 rounded-md border border-white/[0.08] px-2 py-1 text-[8px] uppercase tracking-wider text-white/45">{copied==="logs"?<Check size={10}/>:<Copy size={10}/>} {copied==="logs"?"COPIED":"COPY LOG"}</button></div></div><div className="mt-3 max-h-[420px] overflow-auto rounded-xl border border-white/[0.06] bg-black/30 p-2 select-text" style={{WebkitUserSelect:"text",userSelect:"text"}}>{logs.length?logs.map((line,i)=><div key={`${i}-${line}`} className={`border-l-2 px-3 py-2 text-[9px] leading-5 text-white/55 font-mono mb-1 rounded-r-md select-text ${logClass(line,i)}`} style={{WebkitUserSelect:"text",userSelect:"text"}}>{line}</div>):<div className="p-3 text-[9px] text-white/30">No cron or signal log recorded.</div>}</div></div></section>
