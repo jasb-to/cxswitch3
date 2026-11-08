@@ -426,6 +426,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const hardCapMacro=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
  const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
  const fourHDirection=e5>e13?"LONG":e5<e13?"SHORT":null;
+ const e5_4h=ema(closes,5).at(-1)??0,e13_4h=ema(closes,13).at(-1)??0;
+ const fourHDirection=e5_4h>e13_4h?"LONG":e5_4h<e13_4h?"SHORT":null;
  const entry1MomentumAligned=!!fast.direction&&fourHDirection===fast.direction;
  const entry2MomentumAligned=!!macro.direction&&fourHDirection===macro.direction;
  const nearFast=nearTrendline,nearMacro=nearTrendline;
@@ -487,8 +489,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const confirming=macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:macro.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false;
  const ema8_4h=ema(closes,8),ema21_4h=ema(closes,21);
  const emaAligned=macro.direction==="LONG"?price>(ema8_4h.at(-1)??0)&&price>(ema21_4h.at(-1)??0):macro.direction==="SHORT"?price<(ema8_4h.at(-1)??0)&&price<(ema21_4h.at(-1)??0):false;
- const e5_4h=ema(closes,5).at(-1)??0,e13_4h=ema(closes,13).at(-1)??0;
- const fourHDirection=e5_4h>e13_4h?"LONG":e5_4h<e13_4h?"SHORT":null;
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
  const activePairPosition=_activeSignals.some(x=>x.pair===pair);
  const activeMatch=!!macro.direction&&_activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
