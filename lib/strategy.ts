@@ -424,15 +424,18 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
  const hardCapFast=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const hardCapMacro=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
- const entry1Ready=!!fast.direction&&nearTrendline&&stochExtremeFast&&!hardCapFast;
- const entry2Ready=!!macro.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro;
+ const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
+ const fourHDirection=e5>e13?"LONG":e5<e13?"SHORT":null;
+ const entry1MomentumAligned=!!fast.direction&&fourHDirection===fast.direction;
+ const entry2MomentumAligned=!!macro.direction&&fourHDirection===macro.direction;
+ const nearFast=nearTrendline,nearMacro=nearTrendline;
+ const entry1Ready=!!fast.direction&&nearFast&&stochExtremeFast&&!hardCapFast&&entry1MomentumAligned;
+ const entry2Ready=!!macro.direction&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&entry2MomentumAligned;
  const last=bars.at(-1),prev=bars.at(-2);
  const beyond=macro.direction==="LONG"?!!trendline&&price>trendline.price*1.008:macro.direction==="SHORT"?!!trendline&&price<trendline.price*0.992:false;
  const confirming=!!last&&!!prev&&(macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:macro.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false);
  const e8=ema(closes,8),e21=ema(closes,21);
  const emaAligned=macro.direction==="LONG"?price>(e8.at(-1)??0)&&price>(e21.at(-1)??0):macro.direction==="SHORT"?price<(e8.at(-1)??0)&&price<(e21.at(-1)??0):false;
- const e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
- const fourHDirection=e5>e13?"LONG":e5<e13?"SHORT":null;
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
  const activePairPosition=activeSignals.some(x=>x.pair===pair);
  const activeMatch=!!macro.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
@@ -451,10 +454,12 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  if(!fast.direction)missing.push("ENTRY_1 daily EMA5/13 unavailable");
  if(!stochExtremeFast)missing.push("ENTRY_1 Stoch extreme not met");
  if(!stochTurningMacro)missing.push("ENTRY_2 Stoch turn not met");
+ if(fast.direction&&!entry1MomentumAligned)missing.push("WAIT — 4H EMA5/13 momentum misaligned with daily trend (ENTRY_1)");
+ if(macro.direction&&!entry2MomentumAligned)missing.push("WAIT — 4H EMA5/13 momentum misaligned with daily trend (ENTRY_2)");
  if(!activeMatch)missing.push("ADD requires an active same-direction position");
  if(hardCap)missing.push("hard Stoch exhaustion cap");
  if(!rawType)missing.push("V28 stage trigger not met");
- return {direction,zone:null,trendlineSlope:0,trendline:trendline?{price:trendline.price,distancePct:Math.abs(trendlineDist)*100,r2:trendline.r2,reason:"V28 shared 4H trendline"}:null,alignment:{daily:macro.direction,entry1Daily:fast.direction,fourH:fourHDirection,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null},momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,filtersPass:!hardCap,trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline,stochExtreme:stochExtremeFast,stochTurning:stochTurningMacro,beyondTrendline:beyond,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:entry1Ready?"Daily EMA5/13 + shared 4H trendline proximity + Stoch extreme":"not_ready",entry2Reason:entry2Ready?"Daily EMA8/21 + shared 4H trendline proximity + Stoch turn":"not_ready"},stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType};
+ return {direction,zone:null,trendlineSlope:0,trendline:trendline?{price:trendline.price,distancePct:Math.abs(trendlineDist)*100,r2:trendline.r2,reason:"V28 shared 4H trendline"}:null,alignment:{daily:macro.direction,entry1Daily:fast.direction,fourH:fourHDirection,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null},momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,filtersPass:!hardCap,trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline,stochExtreme:stochExtremeFast,stochTurning:stochTurningMacro,beyondTrendline:beyond,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:entry1Ready?"Daily EMA5/13 + shared 4H trendline proximity + Stoch extreme + 4H EMA5/13 alignment":(!entry1MomentumAligned?"WAIT — 4H EMA5/13 momentum misaligned with daily trend":"not_ready"),entry2Reason:entry2Ready?"Daily EMA8/21 + shared 4H trendline proximity + Stoch turn + 4H EMA5/13 alignment":(!entry2MomentumAligned?"WAIT — 4H EMA5/13 momentum misaligned with daily trend":"not_ready"),entry1MomentumAligned,entry2MomentumAligned},stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType};
 }
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,_entry1State?:any,_entry2AlreadyFired=false,_activeSignals:Array<{pair:string;direction:"LONG"|"SHORT";type?:string}>=[]):SignalResult{
  void candles1h;void candles15m;void lastBreakout;void _entry1State;void _entry2AlreadyFired;
@@ -472,8 +477,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
  const hardCapFast=fast.direction==="LONG"?st.k>95:fast.direction==="SHORT"?st.k<5:false;
  const hardCapMacro=macro.direction==="LONG"?st.k>95:macro.direction==="SHORT"?st.k<5:false;
- const entry1Eligible=!!fast.direction&&nearTrendline&&stochExtremeFast&&!hardCapFast;
- const entry2Eligible=!!macro.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro;
+ const entry1MomentumAligned=!!fast.direction&&fourHDirection===fast.direction;
+ const entry2MomentumAligned=!!macro.direction&&fourHDirection===macro.direction;
+ const nearFast=nearTrendline,nearMacro=nearTrendline;
+ const entry1Eligible=!!fast.direction&&nearFast&&stochExtremeFast&&!hardCapFast&&entry1MomentumAligned;
+ const entry2Eligible=!!macro.direction&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro&&entry2MomentumAligned;
  const last=bars.at(-1)!,prev=bars.at(-2)!;
  const beyondTrendline=macro.direction==="LONG"?!!trendline&&price>trendlinePrice*1.008:macro.direction==="SHORT"?!!trendline&&price<trendlinePrice*0.992:false;
  const confirming=macro.direction==="LONG"?last.close>last.open&&last.close>prev.close:macro.direction==="SHORT"?last.close<last.open&&last.close<prev.close:false;
@@ -494,6 +502,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  else if(entry2Eligible&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";rawDirection=macro.direction;}
  else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
  debug.push(`[V28] ${pair} | Daily=${macro.direction} Fast=${fast.direction} | Shared 4H TL=${trendlinePrice.toFixed(2)} Dist=${(trendlineDist*100).toFixed(2)}% | Stoch=${st.k} | Type=${rawType}`);
+ if(fast.direction&&!entry1MomentumAligned)debug.push("[WAIT] 4H EMA5/13 momentum misaligned with daily trend — ENTRY_1 blocked (Daily Fast="+fast.direction+", 4H="+(fourHDirection??"NEUTRAL")+")");
+ if(macro.direction&&!entry2MomentumAligned)debug.push("[WAIT] 4H EMA5/13 momentum misaligned with daily trend — ENTRY_2 blocked (Daily Macro="+macro.direction+", 4H="+(fourHDirection??"NEUTRAL")+")");
  if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
  const finalType=rawType; // Valid setups fire without a price-movement hysteresis lock.
  if(!finalType){debug.push("[WAIT] No V28 shared-trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
