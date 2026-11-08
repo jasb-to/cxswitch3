@@ -311,10 +311,31 @@ export async function GET(request:Request){
   if(VERBOSE_CRON_LOGS)dbg.filter(x=>x.startsWith("[SWINGS]")||x.startsWith("[TL]")||x.startsWith("[TL POINTS]")).forEach(x=>console.log(x));
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
-  const signal=result.signal;
+  let signal=result.signal;
+  let recentExitCooldown=false;
+  if(signal){
+    // Read history after signal generation: an exit earlier in this same cron
+    // must also block an immediate re-entry for the same symbol.
+    const latestSignalHistory=await getSignalHistory();
+    const now=Date.now();
+    const recentExit=latestSignalHistory.find((h:any)=>
+      h.pair===pair &&
+      h.status!=="ACTIVE" &&
+      !!h.exitReason &&
+      h.exitReason!=="manual_symbol_reset" &&
+      Number.isFinite(Number(h.exitTimestamp)) &&
+      Number(h.exitTimestamp)<=now &&
+      now-Number(h.exitTimestamp)<4*60*60*1000
+    );
+    if(recentExit){
+      recentExitCooldown=true;
+      console.log(`[SIGNAL BLOCKED] recent_exit_cooldown pair=${pair} exitReason=${recentExit.exitReason} exitAt=${new Date(Number(recentExit.exitTimestamp)).toISOString()}`);
+      signal=undefined;
+    }
+  }
   dispatchPairSignal=signal;
   if(signal){snapshot.strategyStatus=`FIRED — ${signal.type} ${signal.direction}`;console.log(`[SIGNAL DECISION] ${pair} status=fired type=${signal.type} direction=${signal.direction} id=${signal.id}`);}
-  else {const blocked=dbg.find((x:string)=>x.startsWith("[SIGNAL BLOCKED]"))||dbg.find((x:string)=>x.startsWith("[WAIT]"))||gateDebug;snapshot.strategyStatus=blocked?`WAIT — ${blocked.replace(/^\[[^\]]+\]\s*/, "")}`:"WAIT — no Signal object returned";console.log(`[SIGNAL DECISION] ${pair} status=not_fired reason=${snapshot.strategyStatus}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${snapshot.alignedDirection||"NONE"} status=suppressed reason=no_signal_object`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=no_signal_object`);}
+  else {const blocked=recentExitCooldown?"recent_exit_cooldown":dbg.find((x:string)=>x.startsWith("[SIGNAL BLOCKED]"))||dbg.find((x:string)=>x.startsWith("[WAIT]"))||gateDebug;snapshot.strategyStatus=blocked?`WAIT — ${blocked.replace(/^\[[^\]]+\]\s*/, "")}`:"WAIT — no Signal object returned";console.log(`[SIGNAL DECISION] ${pair} status=not_fired reason=${snapshot.strategyStatus}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${snapshot.alignedDirection||"NONE"} status=suppressed reason=no_signal_object`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=no_signal_object`);}
   if(!signal){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
