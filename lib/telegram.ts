@@ -148,25 +148,32 @@ export async function sendManagementAlert(update:{
 }){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
-  const text=update.kind==="EXPIRED"
-    ? `⌛ EXPIRED — ${update.pair} ${update.direction} signal expired or price moved beyond the V28 entry window.`
-    : update.kind==="STOP_HIT"
-    ? `🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price)}.`
-    : update.kind==="TARGET_HIT"
-      ? `🎯 TARGET HIT — ${update.pair} ${update.direction} reached ${formatPrice(update.price)}. Trade closed.`
-    : update.kind==="STOCH_EXTREME_OPPOSITE"
-      ? `🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (Stoch RSI extreme opposite)`
-    : update.kind==="4H_MOMENTUM_MISALIGNED" || update.reason==="4h_ema5_13_misaligned_unprofitable_exit"
-      ? `🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (4H Momentum Misaligned)`
-    : update.kind==="TRAIL"
-    ? `CX — ${update.pair} ${update.direction}. Trail stop raised to ${formatPrice(update.stop)}.`
-    : update.kind==="TRAIL_EXIT"
-      ? `🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price??update.stop)} (Chandelier).`
-      : update.kind==="RSI_EXTREME"
-        ? `CX — ${update.pair} ${update.direction}. 4H RSI extreme confirmed on two closed candles. EXIT TRADE.`
-        : update.kind==="1D_REVERSAL"
-          ? `CX — ${update.pair} ${update.direction}. 1D EMA 5/13 reversal confirmed on two closed daily candles. EXIT TRADE.`
-          : `🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price)} (4H structural exit).`;
+  let text:string;
+  // Exit copy is reason-driven. Never label a management exit as a stop hit
+  // unless the recorded exit reason is exactly sl_hit.
+  if(update.reason==="sl_hit"){
+    text=`🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price)}`;
+  }else if(update.reason==="4h_ema5_13_misaligned_unprofitable_exit"){
+    text=`🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (4H Momentum Misaligned)`;
+  }else if(update.reason==="stoch_extreme_opposite_exit"){
+    text=`🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (StochRSI Opposite Extreme)`;
+  }else if(update.kind==="EXPIRED"){
+    text=`⌛ EXPIRED — ${update.pair} ${update.direction} signal expired or price moved beyond the V28 entry window.`;
+  }else if(update.kind==="TARGET_HIT"){
+    text=`🎯 TARGET HIT — ${update.pair} ${update.direction} reached ${formatPrice(update.price)}. Trade closed.`;
+  }else if(update.kind==="TRAIL"){
+    text=`CX — ${update.pair} ${update.direction}. Trail stop raised to ${formatPrice(update.stop)}.`;
+  }else if(update.kind==="TRAIL_EXIT"){
+    text=`🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price??update.stop)} (Chandelier Stop)`;
+  }else if(update.kind==="RSI_EXTREME"){
+    text=`🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (4H RSI Extreme)`;
+  }else if(update.kind==="1D_REVERSAL"){
+    text=`🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (1D EMA Reversal)`;
+  }else if(update.kind==="4H_REVERSAL"){
+    text=`🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (4H Structural Exit)`;
+  }else{
+    text=`🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (${update.reason||"Management Exit"})`;
+  }
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
   if(!response.ok){
     const body=await response.text().catch(()=>"");
