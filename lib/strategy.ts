@@ -1,10 +1,10 @@
 // lib/strategy.ts — v28 "Trendline Break: StochRSI Timing + Position Build"
 // ============================================================
-// Architecture: stateful trendline, hysteresis bands, TV-exact StochRSI
+// Architecture: stateful trendline, TV-exact StochRSI
 // EXIT: Stoch extreme opposite (matches chart)
 // ALERTS: ENTRY_1, ENTRY_2 and ADD
 
-import { getHysteresisState, setHysteresisState, getTrendlineState, setTrendlineState } from "./state";
+import { getTrendlineState, setTrendlineState } from "./state";
 
 export interface Candle {
   timestamp: number;
@@ -410,41 +410,8 @@ function atr(candles: Candle[], period: number = 14): number {
   return avg(trs);
 }
 
-// --- STAGED HYSTERESIS STATE ---
-interface HysteresisState {
-  lastSignalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
-  lastSignalPrice: number;
-  lockUntil: number;
-}
-const hysteresisStore: Map<string, HysteresisState> = new Map();
-
-export async function loadHysteresisFromKV(): Promise<void> {
-  const state = await getHysteresisState();
-  hysteresisStore.clear();
-  for (const [pair, data] of Object.entries(state)) hysteresisStore.set(pair, data as HysteresisState);
-}
-export async function saveHysteresisToKV(): Promise<void> {
-  const state: Record<string, any> = {};
-  for (const [pair, data] of hysteresisStore.entries()) state[pair] = data;
-  await setHysteresisState(state);
-}
-const HYSTERESIS_BAND = 0.005; // 0.5%
-function getHysteresis(pair: string, now: number): HysteresisState {
-  const state = hysteresisStore.get(pair);
-  const validStage = state?.lastSignalType === "ENTRY_1" || state?.lastSignalType === "ENTRY_2" || state?.lastSignalType === "ADD";
-  if (!state || !validStage || !Number.isFinite(state.lockUntil) || now > state.lockUntil) {
-    if (state) hysteresisStore.delete(pair); // also clears the former ENTRY_1-only persisted shape
-    return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
-  }
-  return state;
-}
-function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price: number, now: number): void {
-  const lockDuration = type === "ADD" ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-  hysteresisStore.set(pair, { lastSignalType: type, lastSignalPrice: price, lockUntil: now + lockDuration });
-}
-
 // --- MAIN SIGNAL ---
-export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]):any {
+export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number,activeSignals:Array<{pair:string;direction:"LONG"|"SHORT";type?:string}>=[]):any {
  const bars=[...candles4h],price=currentPrice??bars.at(-1)?.close??0;
  const dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles);
  const closes=bars.map(x=>x.close),st=stochRsi(closes),av=adx(bars);
@@ -469,8 +436,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
  const activePairPosition=activeSignals.some(x=>x.pair===pair);
  const activeMatch=!!macro.direction&&activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
- const priorStage=getHysteresis(pair,Date.now());
- const entry2Continuation=activeMatch&&priorStage.lastSignalType==="ENTRY_1";
+ const entry2Continuation=activeMatch&&activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction&&x.type==="ENTRY_1");
  const volUp=!!last&&last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3;
  const stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const adxStrong=av>20;
@@ -490,7 +456,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  if(!rawType)missing.push("V28 stage trigger not met");
  return {direction,zone:null,trendlineSlope:0,trendline:trendline?{price:trendline.price,distancePct:Math.abs(trendlineDist)*100,r2:trendline.r2,reason:"V28 shared 4H trendline"}:null,alignment:{daily:macro.direction,entry1Daily:fast.direction,fourH:fourHDirection,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null},momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,filtersPass:!hardCap,trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline,stochExtreme:stochExtremeFast,stochTurning:stochTurningMacro,beyondTrendline:beyond,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:entry1Ready?"Daily EMA5/13 + shared 4H trendline proximity + Stoch extreme":"not_ready",entry2Reason:entry2Ready?"Daily EMA8/21 + shared 4H trendline proximity + Stoch turn":"not_ready"},stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType};
 }
-export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,_entry1State?:any,_entry2AlreadyFired=false,_activeSignals:Array<{pair:string;direction:"LONG"|"SHORT"}>=[]):SignalResult{
+export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,_entry1State?:any,_entry2AlreadyFired=false,_activeSignals:Array<{pair:string;direction:"LONG"|"SHORT";type?:string}>=[]):SignalResult{
  void candles1h;void candles15m;void lastBreakout;void _entry1State;void _entry2AlreadyFired;
  const debug:string[]=[],bars=[...candles4h],now=nowOverride??Date.now();
  if(bars.length<30){debug.push("[WAIT] Insufficient 4H candle data");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
@@ -518,12 +484,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const momentumAligned=!!macro.direction&&fourHDirection===macro.direction;
  const activePairPosition=_activeSignals.some(x=>x.pair===pair);
  const activeMatch=!!macro.direction&&_activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction);
- let hyst=getHysteresis(pair,now);
- if(hyst.lastSignalType==="ADD"&&!activeMatch){
-  hysteresisStore.delete(pair);
-  hyst={lastSignalType:null,lastSignalPrice:0,lockUntil:0};
- }
- const entry2Continuation=activeMatch&&hyst.lastSignalType==="ENTRY_1";
+ const entry2Continuation=activeMatch&&_activeSignals.some(x=>x.pair===pair&&x.direction===macro.direction&&x.type==="ENTRY_1");
  const volUp=last.volume>avg(bars.slice(-10).map(x=>x.volume))*1.3;
  const stochMomentum=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const adxStrong=av>20;
@@ -534,19 +495,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro){rawType="ADD";rawDirection=macro.direction;}
  debug.push(`[V28] ${pair} | Daily=${macro.direction} Fast=${fast.direction} | Shared 4H TL=${trendlinePrice.toFixed(2)} Dist=${(trendlineDist*100).toFixed(2)}% | Stoch=${st.k} | Type=${rawType}`);
  if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
- let finalType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
- if(hyst.lastSignalType==="ADD")finalType="ADD";
- else if(hyst.lastSignalType==="ENTRY_2")finalType=rawType==="ADD"?"ADD":"ENTRY_2";
- else if(hyst.lastSignalType==="ENTRY_1")finalType=rawType==="ADD"?"ADD":rawType==="ENTRY_2"?"ENTRY_2":"ENTRY_1";
- else finalType=rawType; // ENTRY_2 may start the staged lifecycle without a prior ENTRY_1.
- if(finalType==="ADD"&&!activeMatch)finalType=null;
- if(hyst.lastSignalType&&finalType===hyst.lastSignalType&&hyst.lastSignalPrice>0){
-  const move=Math.abs(price-hyst.lastSignalPrice)/hyst.lastSignalPrice;
-  if(move<HYSTERESIS_BAND){
-   debug.push(`[WAIT] Hysteresis lock: ${finalType} | move ${(move*100).toFixed(2)}% < ${(HYSTERESIS_BAND*100).toFixed(2)}%`);
-   return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
-  }
- }
+ const finalType=rawType; // Valid setups fire without a price-movement hysteresis lock.
  if(!finalType){debug.push("[WAIT] No V28 shared-trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const signalDirection:Direction|null=finalType==="ENTRY_1"?fast.direction:macro.direction;
  if(!signalDirection){debug.push("[WAIT] No directional EMA bias available");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
@@ -585,7 +534,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  }
  if(stopClamped)debug.push("[STOP] Clamped to 15x liquidation buffer: "+stop.toFixed(2)+" (was "+originalStop.toFixed(2)+")");
  debug.push("[RR] Original V28 R:R="+originalRr.toFixed(2)+" | Protected trade R:R="+actualRr.toFixed(2));
- if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType,price,now);
  const size=regime.sizeMultiplier===0.5?0.5:1;
  const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:signalDirection!,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(actualRr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:signalDirection+" "+finalType+" | "+(finalType==="ENTRY_1"?"Daily EMA5/13 early direction":"Daily EMA8/21 direction")+" + V28 trigger | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{targetCount:1,targetAtrMultiple:5,regime:regime.state,regimeSizeMultiplier:size,trendlinePrice:signalTl.price,trendlineR2:signalTl.r2,dailyDirection:macro.direction,entry1Direction:fast.direction,dailyE8_1d:ema(dailyCandles.map(x=>x.close),8).at(-1)??0,dailyE21_1d:ema(dailyCandles.map(x=>x.close),21).at(-1)??0,entry1E5_1d:ema(dailyCandles.map(x=>x.close),5).at(-1)??0,entry1E13_1d:ema(dailyCandles.map(x=>x.close),13).at(-1)??0,ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned,exhaustion:finalHardCap?"Stoch hard cap":null}};
  debug.push("[STOP] "+signal.stop+" | V28 swing/ATR stop");debug.push("[TARGET] "+signal.tp1+" | V28 ATR/swing target; TP2 mirrors TP1");debug.push("[SIGNAL] "+signal.direction+" "+signal.type+" entry="+signal.entry+" SL="+signal.stop+" TP="+signal.tp1+" RR="+signal.rr);
