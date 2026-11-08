@@ -87,7 +87,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
   let cooldownsAvailable=false,cooldownsChanged=false;
   try{cooldowns=await getExitAlertCooldowns();cooldownsAvailable=true;}
   catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Could not load exit cooldowns; continuing without cooldown context",error);}
-  for(const alert of active){
+  for(const alert of [...active]){
     try {
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
     const candles=Array.isArray(market?.momentumCandles4h)?market.momentumCandles4h:[];
