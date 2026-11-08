@@ -54,7 +54,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
 }
 
 const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_trend_reversal_unprofitable"]);
-const MANAGEMENT_EXIT_REASONS=new Set([...INDICATOR_EXIT_REASONS,"expired_ttl","missed_entry","sl_hit","tp_hit"]);
+// Every shouldHold=false result is terminal and must be removed from active_signals before entry evaluation.
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
 
@@ -87,7 +87,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
   let cooldownsAvailable=false,cooldownsChanged=false;
   try{cooldowns=await getExitAlertCooldowns();cooldownsAvailable=true;}
   catch(error){stateStoreFailed=true;console.error("[MANAGEMENT] Could not load exit cooldowns; continuing without cooldown context",error);}
-  for(const alert of active){
+  for(const alert of [...active]){
     try {
     const market=marketData.find((item:any)=>item?.pair===alert.pair);
     const candles=Array.isArray(market?.momentumCandles4h)?market.momentumCandles4h:[];
@@ -104,7 +104,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       persistExitCooldown(alert.pair,hold.reason,cooldowns);
       cooldownsChanged=true;
     }
-    if(!hold.shouldHold&&MANAGEMENT_EXIT_REASONS.has(hold.reason)){
+    if(!hold.shouldHold){
       // Commit the exit to history and active state before attempting Telegram delivery.
       const exitStatus=hold.reason==="tp_hit"?"TP_HIT":hold.reason==="sl_hit"?"SL_HIT":hold.reason==="expired_ttl"||hold.reason==="missed_entry"?"EXPIRED":"FAILED";
       await updateSignalHistoryStatus(alert.id,exitStatus,hold.reason,price);
@@ -232,12 +232,50 @@ export async function GET(request:Request){
 
   await loadHysteresisFromKV();
   await loadTrendlinesFromKV();
+
+ // Fetch one consistent candle snapshot for every pair before evaluating any entry.
+ // This lets position management clear exited/expired positions before generateSignal
+ // checks active_position_exists for that same pair.
+ const candleByPair=new Map<string,{c1:any[];c4:any[];c15:any[]}>();
+ await Promise.all(PAIRS.map(async(pair)=>{
+   try{
+     const [c1,c4,c15]=await Promise.all([
+       getCandles(krakenPairFormat(pair+"/USD"),60),
+       getCandles(krakenPairFormat(pair+"/USD"),240),
+       getCandles(krakenPairFormat(pair+"/USD"),15)
+     ]);
+     candleByPair.set(pair,{c1:c1||[],c4:c4||[],c15:c15||[]});
+   }catch(error){
+     console.error(`[PAIR] ${pair} — candle prefetch failed`,error);
+     alerts.push({pair,status:"error",stage:"candle_prefetch",error:String(error)});
+   }
+ }));
+
+ const preflightMarketData=PAIRS.flatMap(pair=>{
+   const candles=candleByPair.get(pair);
+   if(!candles?.c1.length||!candles.c4.length)return [];
+   return [{pair,currentPrice:Number(candles.c1.at(-1)?.close),momentumCandles4h:candles.c4.slice(-220)}];
+ }).filter((market:any)=>Number.isFinite(market.currentPrice)&&market.currentPrice>0);
+ const preflightStarted=Date.now();
+ console.log(`[PERF] Stage preflight observeAlertManagement started active=${active.length} markets=${preflightMarketData.length}`);
+ try{
+   if(await observeAlertManagement(active,preflightMarketData,alerts))stateDegraded=true;
+   console.log(`[PERF] Stage preflight observeAlertManagement completed in ${Date.now()-preflightStarted}ms active=${active.length}`);
+ }catch(error){
+   stateDegraded=true;
+   console.error(`[PERF] Stage preflight observeAlertManagement failed after ${Date.now()-preflightStarted}ms`,error);
+   alerts.push({status:"preflight_management_failed",reason:String(error)});
+ }
+
  await Promise.all(PAIRS.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;try{
-  const [c1,c4,c15]=await Promise.all([
-    getCandles(krakenPairFormat(pair+"/USD"),60),
-    getCandles(krakenPairFormat(pair+"/USD"),240),
-    getCandles(krakenPairFormat(pair+"/USD"),15)
-  ]);stateCandles4h=c4||[];stateCandles15m=c15||[];
+  const candleSet=candleByPair.get(pair);
+  if(!candleSet||!candleSet.c1.length||!candleSet.c4.length||!candleSet.c15.length){
+    console.log(`[PAIR] ${pair} — SKIP insufficient candles`);
+    alerts.push({pair,status:"skip",reason:"insufficient_candles"});
+    return;
+  }
+  const {c1,c4,c15}=candleSet;
+  stateCandles4h=c4||[];stateCandles15m=c15||[];
   const strategyCandles4h=c4||[],strategy4hCloses=strategyCandles4h.map((c:any)=>Number(c.close));
   const iso=(value:any)=>Number.isFinite(Number(value))?new Date(Number(value)).toISOString():"none";
   const stochPoints=getStochHistoryPointCount(strategy4hCloses);
@@ -377,15 +415,7 @@ export async function GET(request:Request){
    console.error(`[PERF] Stage updateHistoryMilestonesBatch failed after ${Date.now()-milestoneStarted}ms`,error);
    alerts.push({status:"milestone_batch_failed",reason:String(error)});
  }
- const managementStarted=Date.now();
- console.log(`[PERF] Stage observeAlertManagement started active=${active.length}`);
- try {
-   if(await observeAlertManagement(active,marketData,alerts))stateDegraded=true;
-   console.log(`[PERF] Stage observeAlertManagement completed in ${Date.now()-managementStarted}ms`);
- } catch(error) {
-   console.error(`[PERF] Stage observeAlertManagement failed after ${Date.now()-managementStarted}ms`,error);
-   alerts.push({status:"management_stage_failed",reason:String(error)});
- }
+ // Position management already ran in the preflight stage, before generateSignal.
  const reconcileStarted=Date.now();
  console.log(`[PERF] Stage reconcileAlertOutcomes started`);
  try {
