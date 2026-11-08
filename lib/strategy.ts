@@ -636,7 +636,10 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
   if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE",...state};
   const dailyTrend=trend1D(aggregateTo1D(bars)),dailyReversed=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG");
   if(dailyReversed&&!profitable)return{shouldHold:false,reason:"daily_ema8_21_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
-  const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k<20:st.k>80;
+  // Exit only when StochRSI reaches the opposite extreme to the entry direction.
+  // LONG entries use the oversold extreme (K < 20), so exit at overbought (K > 80).
+  // SHORT entries use the overbought extreme (K > 80), so exit at oversold (K < 20).
+  const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k>80:st.k<20;
   if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
   if(momentumAligned===false){
     if(profitable)return{shouldHold:true,reason:"4h_ema5_13_misaligned_daily_ema8_21_still_valid_tighten_stop_to_entry",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,...state};
