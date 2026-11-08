@@ -141,7 +141,8 @@ export async function sendJarvisOpportunity(update:{
 export async function sendManagementAlert(update:{
   pair:string;
   direction:"LONG"|"SHORT";
-  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL"|"STOCH_EXTREME_OPPOSITE"|"STOP_HIT"|"TARGET_HIT"|"EXPIRED";
+  kind:"TRAIL"|"TRAIL_EXIT"|"RSI_EXTREME"|"1D_REVERSAL"|"4H_REVERSAL"|"4H_MOMENTUM_MISALIGNED"|"STOCH_EXTREME_OPPOSITE"|"STOP_HIT"|"TARGET_HIT"|"EXPIRED";
+  reason?:string;
   stop?:number;
   price?:number;
 }){
@@ -155,6 +156,8 @@ export async function sendManagementAlert(update:{
       ? `🎯 TARGET HIT — ${update.pair} ${update.direction} reached ${formatPrice(update.price)}. Trade closed.`
     : update.kind==="STOCH_EXTREME_OPPOSITE"
       ? `🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (Stoch RSI extreme opposite)`
+    : update.kind==="4H_MOMENTUM_MISALIGNED" || update.reason==="4h_ema5_13_misaligned_unprofitable_exit"
+      ? `🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (4H Momentum Misaligned)`
     : update.kind==="TRAIL"
     ? `CX — ${update.pair} ${update.direction}. Trail stop raised to ${formatPrice(update.stop)}.`
     : update.kind==="TRAIL_EXIT"
