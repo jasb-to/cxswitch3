@@ -482,6 +482,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles),regime=computeRegime(bars);
  debug.push("[DAILY] EMA8/21="+(macro.direction??"NONE")+" | ENTRY_1 EMA5/13="+(fast.direction??"NONE")+" | size="+Math.round(regime.sizeMultiplier*100)+"%");
  const price=currentPrice??bars.at(-1)!.close,close=bars.at(-1)!.close,closes=bars.map(x=>x.close),st=stochRsi(closes),rv=rsi(closes),av=adx(bars);
+ const entry1TradeDirection:Direction|null=st.k<20?"LONG":st.k>80?"SHORT":null;
+ const entry1DailyOpposes=!!macro.direction&&!!entry1TradeDirection&&macro.direction!==entry1TradeDirection;
  const trendlineDirection=macro.direction??entry1TradeDirection;
  const trendline=trendlineDirection?getTrendline(pair,bars,trendlineDirection):null;
  const trendlinePrice=trendline?.price??0;
