@@ -431,12 +431,12 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const dailyCandles=aggregateTo1D(bars),macro=trend1D(dailyCandles),fast=trend1DEarly(dailyCandles);
  const closes=bars.map(x=>x.close),st=stochRsi(closes),av=adx(bars);
  // One shared 4H trendline, oriented by daily EMA 8/21 macro direction.
+ const entry1TradeDirection:Direction|null=st.k<20?"LONG":st.k>80?"SHORT":null;
+ const entry1DailyOpposes=!!macro.direction&&!!entry1TradeDirection&&macro.direction!==entry1TradeDirection;
  const trendlineDirection=macro.direction??entry1TradeDirection;
  const trendline=trendlineDirection?getTrendline(pair,bars,trendlineDirection):null;
  const trendlineDist=trendline&&trendline.price>0?(price-trendline.price)/trendline.price:Infinity;
  const nearTrendline=!!trendline&&Math.abs(trendlineDist)<0.012;
- const entry1TradeDirection:Direction|null=st.k<20?"LONG":st.k>80?"SHORT":null;
- const entry1DailyOpposes=!!macro.direction&&!!entry1TradeDirection&&macro.direction!==entry1TradeDirection;
  const stochExtremeFast=entry1TradeDirection!==null;
  const stochTurningMacro=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
@@ -487,8 +487,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const trendlinePrice=trendline?.price??0;
  const trendlineDist=trendlinePrice>0?(price-trendlinePrice)/trendlinePrice:Infinity;
  const nearTrendline=!!trendline&&Math.abs(trendlineDist)<0.012;
- const entry1TradeDirection:Direction|null=st.k<20?"LONG":st.k>80?"SHORT":null;
- const entry1DailyOpposes=!!macro.direction&&!!entry1TradeDirection&&macro.direction!==entry1TradeDirection;
  const stochExtremeFast=entry1TradeDirection!==null;
  const stochTurningMacro=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
