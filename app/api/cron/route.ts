@@ -1,7 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount, loadHysteresisFromKV, saveHysteresisToKV, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
@@ -112,10 +112,10 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       if(activeIndex>=0)active.splice(activeIndex,1);
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — EXIT @ ${price} (${hold.reason})`);
       alerts.push({pair:alert.pair,direction:alert.direction,status:"management_exit",reason:hold.reason,price});
-      const kind=hold.reason==="tp_hit"?"TARGET_HIT":hold.reason==="sl_hit"?"STOP_HIT":hold.reason==="stoch_extreme_opposite_exit"?"STOCH_EXTREME_OPPOSITE":"4H_REVERSAL";
+      const kind=hold.reason==="tp_hit"?"TARGET_HIT":hold.reason==="sl_hit"?"STOP_HIT":hold.reason==="stoch_extreme_opposite_exit"?"STOCH_EXTREME_OPPOSITE":hold.reason==="4h_ema5_13_misaligned_unprofitable_exit"?"4H_MOMENTUM_MISALIGNED":"4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
       if(hold.reason!=="expired_ttl"&&hold.reason!=="missed_entry"&&await claimTelegramAlert(key))
-        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price});
+        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price,reason:hold.reason});
     }
     } catch(error) {
       if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(error)))stateStoreFailed=true;
@@ -230,7 +230,6 @@ export async function GET(request:Request){
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],stateDegraded=false;
 
 
-  await loadHysteresisFromKV();
   await loadTrendlinesFromKV();
 
  // Fetch one consistent candle snapshot for every pair before evaluating any entry.
@@ -399,7 +398,6 @@ export async function GET(request:Request){
     console.log(`[PERF] ${pair} processed in ${Date.now()-pairStarted}ms`);
   }
  }));
-  await saveHysteresisToKV();
   await saveTrendlinesToKV();
  if(newSignals.length){
    active=mergeNewSignalsIntoActive(active,newSignals);
