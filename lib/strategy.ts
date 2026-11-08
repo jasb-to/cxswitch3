@@ -464,7 +464,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  else if(entry2Ready&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";direction=macro.direction;}
  else if(activeMatch&&macro.direction&&trendline&&beyond&&confirming&&emaAligned&&(momentumAligned||stochMomentum)&&!hardCapMacro){rawType="ADD";direction=macro.direction;}
  const hardCap=rawType==="ENTRY_1"?hardCapFast:hardCapMacro,regime=computeRegime(bars),missing:string[]=[];
- if(!macro.direction)missing.push("daily EMA8/21 unavailable for shared 4H trendline");
+ if(!macro.direction)missing.push("Daily EMA8/21 unavailable: ENTRY_2 and ADD unavailable; ENTRY_1 may use Stoch direction");
  if(!trendline)missing.push("shared 4H trendline unavailable");
  if(!nearTrendline)missing.push("outside 1.2% shared trendline proximity");
  if(entry1DailyOpposes)missing.push("ENTRY_1 blocked: Daily EMA8/21 explicitly opposes Stoch direction");
