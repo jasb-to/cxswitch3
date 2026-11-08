@@ -559,20 +559,35 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const low=Math.min(...recent.map(x=>x.low)),high=Math.max(...recent.map(x=>x.high));let stop:number,target:number;
  if(finalType==="ENTRY_1"||finalType==="ENTRY_2"){stop=signalDirection==="LONG"?Math.min(low,price-2*avalue):Math.max(high,price+2*avalue);target=signalDirection==="LONG"?price+5*avalue:price-5*avalue;}
  else{stop=signalDirection==="LONG"?Math.min(signalTl.price*0.995,price-1.5*avalue):Math.max(signalTl.price*1.005,price+1.5*avalue);const floor=signalDirection==="LONG"?price+(price-stop)*MIN_RR:price-(stop-price)*MIN_RR;target=signalDirection==="LONG"?Math.max(high,floor):Math.min(low,floor);}
- // Keep the protective stop inside the configured 15x liquidation buffer.
+ // Qualify the setup against the original V28 swing/ATR stop before applying
+ // the 15x liquidation safety clamp. The clamp protects the live stop; it must
+ // not retroactively invalidate a setup that passed V28's original MIN_RR gate.
+ const originalStop=stop;
+ const originalRisk=signalDirection==="LONG"?price-originalStop:originalStop-price;
+ const originalReward=signalDirection==="LONG"?target-price:price-target;
+ const originalRr=originalRisk>0?originalReward/originalRisk:NaN;
+ if(!Number.isFinite(originalRr)||originalRr<MIN_RR){
+  return{debug:["[SIGNAL BLOCKED] R:R "+originalRr.toFixed(2)+" < "+MIN_RR]};
+ }
+
+ // Keep the actual protective stop inside the configured 15x liquidation buffer.
  const liquidationPrice=signalDirection==="LONG"
   ? price*(1-1/MAX_LEVERAGE+MAINTENANCE_MARGIN_RATE)
   : price*(1+1/MAX_LEVERAGE-MAINTENANCE_MARGIN_RATE);
- const originalStop=stop;
  if(signalDirection==="LONG"&&stop<liquidationPrice)stop=liquidationPrice;
  else if(signalDirection==="SHORT"&&stop>liquidationPrice)stop=liquidationPrice;
  const stopClamped=stop!==originalStop;
- const rr=signalDirection==="LONG"?(target-price)/(price-stop):(price-target)/(stop-price);
+ const actualRisk=signalDirection==="LONG"?price-stop:stop-price;
+ const actualReward=signalDirection==="LONG"?target-price:price-target;
+ const actualRr=actualRisk>0?actualReward/actualRisk:NaN;
+ if(!Number.isFinite(actualRr)||actualRisk<=0||actualReward<=0){
+  return{debug:["[SIGNAL BLOCKED] Invalid protected trade risk/reward"]};
+ }
  if(stopClamped)debug.push("[STOP] Clamped to 15x liquidation buffer: "+stop.toFixed(2)+" (was "+originalStop.toFixed(2)+")");
- if(!Number.isFinite(rr)||rr<MIN_RR)return{debug:["[SIGNAL BLOCKED] R:R "+rr.toFixed(2)+" < "+MIN_RR+" after liquidation-buffer clamp"]};
+ debug.push("[RR] Original V28 R:R="+originalRr.toFixed(2)+" | Protected trade R:R="+actualRr.toFixed(2));
  if(finalType!==hyst.lastSignalType)setHysteresis(pair,finalType,price,now);
  const size=regime.sizeMultiplier===0.5?0.5:1;
- const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:signalDirection!,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(rr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:signalDirection+" "+finalType+" | "+(finalType==="ENTRY_1"?"Daily EMA5/13 early direction":"Daily EMA8/21 direction")+" + V28 trigger | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{targetCount:1,targetAtrMultiple:5,regime:regime.state,regimeSizeMultiplier:size,trendlinePrice:signalTl.price,trendlineR2:signalTl.r2,dailyDirection:macro.direction,entry1Direction:fast.direction,dailyE8_1d:ema(dailyCandles.map(x=>x.close),8).at(-1)??0,dailyE21_1d:ema(dailyCandles.map(x=>x.close),21).at(-1)??0,entry1E5_1d:ema(dailyCandles.map(x=>x.close),5).at(-1)??0,entry1E13_1d:ema(dailyCandles.map(x=>x.close),13).at(-1)??0,ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned,exhaustion:finalHardCap?"Stoch hard cap":null}};
+ const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:signalDirection!,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(actualRr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:signalDirection+" "+finalType+" | "+(finalType==="ENTRY_1"?"Daily EMA5/13 early direction":"Daily EMA8/21 direction")+" + V28 trigger | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{targetCount:1,targetAtrMultiple:5,regime:regime.state,regimeSizeMultiplier:size,trendlinePrice:signalTl.price,trendlineR2:signalTl.r2,dailyDirection:macro.direction,entry1Direction:fast.direction,dailyE8_1d:ema(dailyCandles.map(x=>x.close),8).at(-1)??0,dailyE21_1d:ema(dailyCandles.map(x=>x.close),21).at(-1)??0,entry1E5_1d:ema(dailyCandles.map(x=>x.close),5).at(-1)??0,entry1E13_1d:ema(dailyCandles.map(x=>x.close),13).at(-1)??0,ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned,exhaustion:finalHardCap?"Stoch hard cap":null}};
  debug.push("[STOP] "+signal.stop+" | V28 swing/ATR stop");debug.push("[TARGET] "+signal.tp1+" | V28 ATR/swing target; TP2 mirrors TP1");debug.push("[SIGNAL] "+signal.direction+" "+signal.type+" entry="+signal.entry+" SL="+signal.stop+" TP="+signal.tp1+" RR="+signal.rr);
  return{signal,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
 }
