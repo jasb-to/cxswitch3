@@ -20,7 +20,7 @@ test("Current V28 risk layer clamps stops to the configured 15x liquidation buff
   assert.match(strategy, /const MAX_LEVERAGE = 15/);
   assert.match(strategy, /MAINTENANCE_MARGIN_RATE = 0\.01/);
   assert.match(strategy, /liquidationPrice/);
-  assert.match(strategy, /after liquidation-buffer clamp/);
+  assert.match(strategy, /Protected trade R:R=/);
 });
 
 test("All stages use one shared pair-level 4H trendline oriented by daily macro direction", () => {
