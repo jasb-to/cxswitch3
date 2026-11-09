@@ -1,6 +1,6 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
-import { getCandles, krakenPairFormat } from "@/lib/kraken";
+import { getCandles, krakenPairFormat, markKrakenOhlcPairSuccess } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
@@ -249,6 +249,7 @@ export async function GET(request:Request){
      if(failed?.status==="rejected")throw failed.reason;
      const [c1,c4,c15]=results.map((result)=>result.status==="fulfilled"?result.value:[]);
      if(!c1.length||!c4.length||!c15.length)throw new Error("Kraken returned an empty candle interval");
+     markKrakenOhlcPairSuccess(krakenPairFormat(pair+"/USD"));
      candleByPair.set(pair,{c1,c4,c15});
    }catch(error){
      console.error(`[PAIR] ${pair} — candle prefetch failed; pair skipped for this run`,error);
