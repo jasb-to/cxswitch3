@@ -68,7 +68,7 @@ test("4H EMA5/13 misalignment exits an unprofitable trade and protects a profita
 test("Daily reversal exit uses macro EMA8/21 only, with opposite Stoch as a separate exit", () => {
   const hold = body("shouldHold");
   assert.ok(strategy.includes("reason:\"sl_hit\""));
-  assert.ok(strategy.includes("reason:\"tp_hit\"));
+  assert.ok(strategy.includes('reason:"tp_hit"'));
   assert.match(hold, /trend1DMacro\(aggregateTo1D\(bars\)\)/);
   assert.match(hold, /daily_ema8_21_reversed_unprofitable/);
   assert.match(hold, /stoch_extreme_opposite_exit/);
