@@ -62,3 +62,19 @@ test("4H EMA5/13 misalignment still tightens a profitable trade to breakeven", (
   assert.equal(result.newStop, 100);
   assert.match(result.reason, /tighten_stop_to_entry/);
 });
+
+function dailyCandlesFromCloses(closes) {
+  return closes.map((close, i) => ({ timestamp: i * 24 * 60 * 60 * 1000, open: close, high: close + 1, low: close - 1, close, volume: 1 }));
+}
+
+test("dual daily trends agree in established trends but fast bias requires price and slope confirmation", () => {
+  const rising = dailyCandlesFromCloses(Array.from({ length: 40 }, (_, i) => 100 + i));
+  const falling = dailyCandlesFromCloses(Array.from({ length: 40 }, (_, i) => 200 - i));
+  assert.equal(strategy.trend1DMacro(rising).direction, "LONG");
+  assert.equal(strategy.trend1DFast(rising).direction, "LONG");
+  assert.equal(strategy.trend1DMacro(falling).direction, "SHORT");
+  assert.equal(strategy.trend1DFast(falling).direction, "SHORT");
+  const fast = strategy.trend1DFast(rising);
+  assert.equal(fast.priceAboveEma5, true);
+  assert.equal(fast.slopeUp, true);
+});
