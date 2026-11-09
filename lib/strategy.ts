@@ -430,7 +430,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  const bars=[...candles4h],price=currentPrice??bars.at(-1)?.close??0;
  const dailyCandles=aggregateTo1D(bars),macro=trend1DMacro(dailyCandles),fast=trend1DFast(dailyCandles);
  const closes=bars.map(x=>x.close),st=stochRsi(closes),av=adx(bars);
- // One shared 4H trendline, oriented by daily EMA 8/21 macro direction.
+ // ENTRY_1 uses a fast-direction 4H trendline; ENTRY_2 and ADD use the macro-direction line.
  const entry1TradeDirection:Direction|null=fast.direction;
 
  const trendlineFast=fast.direction?getTrendline(pair,bars,fast.direction):null;
@@ -465,7 +465,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  else if(entry2Ready&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";direction=macro.direction;}
  else if(activeMatch&&macro.direction&&trendline&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap){rawType="ADD";direction=macro.direction;}
  const regime=computeRegime(bars),missing:string[]=[];
- if(!macro.direction)missing.push("Daily EMA8/21 unavailable: ENTRY_2 and ADD unavailable; ENTRY_1 may use Stoch direction");
+ if(!macro.direction)missing.push("Daily macro EMA8/21 unavailable: ENTRY_2 and ADD unavailable");
  if(!trendline)missing.push("shared 4H trendline unavailable");
  if(!nearFast)missing.push("ENTRY_1 outside 1.2% fast-direction 4H trendline proximity");
  if(!nearMacro)missing.push("ENTRY_2/ADD outside 1.2% macro-direction 4H trendline proximity");
