@@ -24,9 +24,22 @@ test("Current V28 risk layer clamps stops to the configured 15x liquidation buff
 });
 
 test("ENTRY_1 and macro stages persist independent direction-specific 4H trendlines", () => {
-  assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT"\)/);
-  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{direction\}`/);
-  assert.match(strategy, /trendlineFast=fast\.direction\?getTrendline\(pair,bars,fast\.direction\)/);
-  assert.match(strategy, /trendlineMacro=macro\.direction\?getTrendline\(pair,bars,macro\.direction\)/);
+  assert.ok(strategy.includes('function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", track: "FAST" | "MACRO")'));
+  assert.ok(strategy.includes('const stateKey = `${pair}:${track}:${direction}`'));
+  assert.ok(strategy.includes('getTrendline(pair,bars,fast.direction,"FAST")'));
+  assert.ok(strategy.includes('getTrendline(pair,bars,macro.direction,"MACRO")'));
   assert.match(strategy, /finalType==="ENTRY_1"\?trendlineFast:trendlineMacro/);
+});
+
+test("Track-scoped trendline KV migration preserves scoped keys and duplicates legacy pair:direction keys", () => {
+  assert.ok(strategy.includes('const trackSpecific = key.match(/^(.*):(FAST|MACRO):(LONG|SHORT)$/)'));
+  assert.ok(strategy.includes('const legacyDirection = key.match(/^(.*):(LONG|SHORT)$/)'));
+  assert.match(strategy, /for \(const track of \["FAST", "MACRO"\] as const\)/);
+  assert.ok(strategy.includes('const migratedKey = `${legacyDirection[1]}:${track}:${legacyDirection[2]}`'));
+  assert.ok(strategy.includes('for (const track of ["FAST", "MACRO"] as const)'));
+  assert.ok(strategy.includes('for (const [key, value] of selected) trendlineStore.set(key, value.data as TrendlineState)'));
+  assert.ok(strategy.includes('for (const [key, data] of trendlineStore.entries())'));
+  assert.ok(strategy.includes('state[key] = data;'));
+  assert.match(strategy, /for \(const \[key, value\] of selected\) trendlineStore\.set\(key,/);
+  assert.match(strategy, /for \(const \[key, data\] of trendlineStore\.entries\(\)\)\s*\{\s*state\[key\] = data;/);
 });
