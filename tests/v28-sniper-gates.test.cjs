@@ -83,7 +83,7 @@ test("ENTRY_1 uses the fast-direction trendline while ENTRY_2 and ADD use the ma
   assert.match(generate, /trendlineFast=fast\.direction\?getTrendline\(pair,bars,fast\.direction\)/);
   assert.match(generate, /trendlineMacro=macro\.direction\?getTrendline\(pair,bars,macro\.direction\)/);
   assert.match(generate, /const signalTl=finalType==="ENTRY_1"\?trendlineFast:trendlineMacro/);
-  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{direction\}`/);
+  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{track\}:\$\{direction\}`/);
 });
 
 test("hysteresis suppresses duplicate alerts only on the same 4H candle inside the 0.5% price band", () => {
