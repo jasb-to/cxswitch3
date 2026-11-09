@@ -61,7 +61,7 @@ async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000, maxA
         // not cause the retry to fail immediately using the same signal.
         signal: opts?.signal ?? AbortSignal.timeout(timeoutMs),
       });
-      if (retryable && res.status === 429 && attempt === 0) {
+      if (retryable && res.status === 429 && attempt + 1 < attempts) {
         console.warn("[KRAKEN] HTTP 429; retrying once after backoff");
         await new Promise(resolve => setTimeout(resolve, 1000));
         continue;
@@ -69,7 +69,7 @@ async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000, maxA
       return res;
     } catch (error) {
       const name = (error as { name?: string })?.name;
-      if (retryable && attempt === 0 && (name === "TimeoutError" || name === "AbortError")) {
+      if (retryable && attempt + 1 < attempts && (name === "TimeoutError" || name === "AbortError")) {
         console.warn(`[KRAKEN] ${name}; retrying request once`);
         await new Promise(resolve => setTimeout(resolve, 250));
         continue;
