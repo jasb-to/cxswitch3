@@ -75,12 +75,15 @@ test("Daily reversal exit uses macro EMA8/21 only, with opposite Stoch as a sepa
   assert.doesNotMatch(hold, /trend1DFast/);
 });
 
-test("all entry stages share one trendline, with Stoch direction fallback when Daily direction is unavailable", () => {
+test("ENTRY_1 uses the fast-direction trendline while ENTRY_2 and ADD use the macro-direction trendline", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /trendlineDirection=macro\.direction\?\?entry1TradeDirection/);
-  assert.match(generate, /trendlineDirection=macro\.direction\?\?entry1TradeDirection/);
-  assert.match(generate, /const signalTl=trendline/);
+  assert.match(evaluate, /trendlineFast=fast\.direction\?getTrendline\(pair,bars,fast\.direction\)/);
+  assert.match(evaluate, /trendlineMacro=macro\.direction\?getTrendline\(pair,bars,macro\.direction\)/);
+  assert.match(generate, /trendlineFast=fast\.direction\?getTrendline\(pair,bars,fast\.direction\)/);
+  assert.match(generate, /trendlineMacro=macro\.direction\?getTrendline\(pair,bars,macro\.direction\)/);
+  assert.match(generate, /const signalTl=finalType==="ENTRY_1"\?trendlineFast:trendlineMacro/);
+  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{direction\}`/);
 });
 
 test("hysteresis suppresses duplicate alerts only on the same 4H candle inside the 0.5% price band", () => {
