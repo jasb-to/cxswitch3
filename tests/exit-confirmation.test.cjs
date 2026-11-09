@@ -14,7 +14,7 @@ test("V28 active trade exit checks include hard stop, one target, daily reversal
 });
 
 test("target is one 5 ATR objective; TP2 is compatibility mirror only", () => {
-  assert.ok(strategy.includes("targetCount:1,targetAtrMultiple:5"));
+  assert.match(strategy, /target=signalDirection==="LONG"\?price\+5\*avalue:price-5\*avalue/);
   assert.ok(strategy.includes("tp2:Math.round(target*100)/100"));
   assert.doesNotMatch(strategy, /entry\+15\*a|entry-15\*a/);
 });
