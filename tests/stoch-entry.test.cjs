@@ -45,7 +45,7 @@ test("ADD alone requires an active same-direction position and the 4H breakout c
   const generate = body("generateSignal");
   assert.match(evaluate, /activeMatch=!!macro\.direction&&activeSignals\.some/);
   assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
-  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap)"));
+  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendlineMacro&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap)"));
   assert.match(generate, /volUp\|\|stochMomentum\|\|adxStrong/);
 });
 

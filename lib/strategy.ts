@@ -101,7 +101,7 @@ export async function loadTrendlinesFromKV(): Promise<void> {
   const state = await getTrendlineState();
   trendlineStore.clear();
   // Migrate legacy direction-labelled trendline keys; current cache entries are pair:LONG / pair:SHORT.
-  // Prefer the former MACRO line because the shared line is oriented by daily EMA 8/21.
+  // Direction-specific pair:LONG and pair:SHORT cache entries are loaded independently.
   const selected = new Map<string, { data: unknown; priority: number; updated: number }>();
   for (const [key, data] of Object.entries(state)) {
     const legacy = key.match(/^(.*):(FAST|MACRO):(LONG|SHORT)$/);
@@ -435,10 +435,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
 
  const trendlineFast=fast.direction?getTrendline(pair,bars,fast.direction):null;
  const trendlineMacro=macro.direction?getTrendline(pair,bars,macro.direction):null;
- const trendline=trendlineMacro??trendlineFast;
- const trendlineDist=trendline&&trendline.price>0?(price-trendline.price)/trendline.price:Infinity;
- const nearFast=!!trendlineFast&&trendlineFast.price>0&&Math.abs((price-trendlineFast.price)/trendlineFast.price)<0.012;
- const nearMacro=!!trendlineMacro&&trendlineMacro.price>0&&Math.abs((price-trendlineMacro.price)/trendlineMacro.price)<0.012;
+ const fastTrendlineDistancePct=trendlineFast&&trendlineFast.price>0?(price-trendlineFast.price)/trendlineFast.price*100:null;
+ const macroTrendlineDistancePct=trendlineMacro&&trendlineMacro.price>0?(price-trendlineMacro.price)/trendlineMacro.price*100:null;
+ const nearFast=fastTrendlineDistancePct!==null&&Math.abs(fastTrendlineDistancePct)<1.2;
+ const nearMacro=macroTrendlineDistancePct!==null&&Math.abs(macroTrendlineDistancePct)<1.2;
  const stochExtremeFast=!!entry1TradeDirection&&((entry1TradeDirection==="LONG"&&st.k<20)||(entry1TradeDirection==="SHORT"&&st.k>80));
  const stochTurningMacro=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
@@ -463,10 +463,10 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,direction:Direction|null=null;
  if(entry1Ready&&!activePairPosition){rawType="ENTRY_1";direction=entry1TradeDirection;}
  else if(entry2Ready&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";direction=macro.direction;}
- else if(activeMatch&&macro.direction&&trendline&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap){rawType="ADD";direction=macro.direction;}
+ else if(activeMatch&&macro.direction&&trendlineMacro&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap){rawType="ADD";direction=macro.direction;}
  const regime=computeRegime(bars),missing:string[]=[];
  if(!macro.direction)missing.push("Daily macro EMA8/21 unavailable: ENTRY_2 and ADD unavailable");
- if(!trendline)missing.push("directional 4H trendline unavailable");
+ if(!trendlineFast&&!trendlineMacro)missing.push("directional 4H trendline unavailable");
  if(!nearFast)missing.push("ENTRY_1 outside 1.2% fast-direction 4H trendline proximity");
  if(!nearMacro)missing.push("ENTRY_2/ADD outside 1.2% macro-direction 4H trendline proximity");
  if(!entry1TradeDirection)missing.push("ENTRY_1 fast daily bias unavailable: requires EMA5/13 stack, price vs EMA5 and EMA5 slope");
@@ -475,7 +475,8 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  if(!activeMatch)missing.push("ADD requires an active same-direction position");
  if(hardCap)missing.push("hard Stoch exhaustion cap");
  if(!rawType)missing.push("V28 stage trigger not met");
- return {direction,zone:null,trendlineSlope:0,trendline:trendline?{price:trendline.price,distancePct:Math.abs(trendlineDist)*100,r2:trendline.r2,reason:"V28 directional 4H trendline"}:null,alignment:{daily:macro.direction,entry1Daily:fast.direction,fourH:fourHDirection,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null},momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,filtersPass:!hardCap,trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline:nearFast||nearMacro,stochExtreme:stochExtremeFast,stochTurning:stochTurningMacro,beyondTrendline:beyond,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:entry1Ready?"Fast daily bias + directional 4H Stoch extreme + fast-direction trendline proximity":"not_ready",entry2Reason:entry2Ready?"Daily macro EMA8/21 + macro-direction trendline proximity + Stoch turn outside directional extreme":"not_ready",addMomentumConfirmed:volUp||stochMomentum||adxStrong},stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType};
+ const selectedTrendline=rawType==="ENTRY_1"?trendlineFast:trendlineMacro;
+ return {direction,zone:null,trendlineSlope:0,trendline:selectedTrendline?{price:selectedTrendline.price,distancePct:Math.abs(rawType==="ENTRY_1"?(fastTrendlineDistancePct??Infinity):(macroTrendlineDistancePct??Infinity)),r2:selectedTrendline.r2,reason:rawType==="ENTRY_1"?"V28 fast-direction 4H trendline":"V28 macro-direction 4H trendline"}:null,trendlines:{fast:trendlineFast?{price:trendlineFast.price,distancePct:fastTrendlineDistancePct}:null,macro:trendlineMacro?{price:trendlineMacro.price,distancePct:macroTrendlineDistancePct}:null},alignment:{daily:macro.direction,entry1Daily:fast.direction,fourH:fourHDirection,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null},momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,filtersPass:!hardCap,trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline:nearFast||nearMacro,stochExtreme:stochExtremeFast,stochTurning:stochTurningMacro,beyondTrendline:beyond,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:entry1Ready?"Fast daily bias + directional 4H Stoch extreme + fast-direction trendline proximity":"not_ready",entry2Reason:entry2Ready?"Daily macro EMA8/21 + macro-direction trendline proximity + Stoch turn outside directional extreme":"not_ready",addMomentumConfirmed:volUp||stochMomentum||adxStrong},stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType};
 }
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,_entry1State?:any,_entry2AlreadyFired=false,_activeSignals:Array<{pair:string;direction:"LONG"|"SHORT";type?:string}>=[]):SignalResult{
  void candles1h;void candles15m;void lastBreakout;void _entry1State;void _entry2AlreadyFired;
@@ -488,11 +489,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
  const trendlineFast=fast.direction?getTrendline(pair,bars,fast.direction):null;
  const trendlineMacro=macro.direction?getTrendline(pair,bars,macro.direction):null;
- const trendline=trendlineMacro??trendlineFast;
- const trendlinePrice=trendline?.price??0;
- const trendlineDist=trendlinePrice>0?(price-trendlinePrice)/trendlinePrice:Infinity;
- const nearFast=!!trendlineFast&&trendlineFast.price>0&&Math.abs((price-trendlineFast.price)/trendlineFast.price)<0.012;
- const nearMacro=!!trendlineMacro&&trendlineMacro.price>0&&Math.abs((price-trendlineMacro.price)/trendlineMacro.price)<0.012;
+ const fastTrendlineDistancePct=trendlineFast&&trendlineFast.price>0?(price-trendlineFast.price)/trendlineFast.price*100:null;
+ const macroTrendlineDistancePct=trendlineMacro&&trendlineMacro.price>0?(price-trendlineMacro.price)/trendlineMacro.price*100:null;
+ const nearFast=fastTrendlineDistancePct!==null&&Math.abs(fastTrendlineDistancePct)<1.2;
+ const nearMacro=macroTrendlineDistancePct!==null&&Math.abs(macroTrendlineDistancePct)<1.2;
  const stochExtremeFast=!!entry1TradeDirection&&((entry1TradeDirection==="LONG"&&st.k<20)||(entry1TradeDirection==="SHORT"&&st.k>80));
  const stochTurningMacro=macro.direction==="LONG"?st.k>st.d:macro.direction==="SHORT"?st.k<st.d:false;
  const stochExtremeMacro=macro.direction==="LONG"?st.k<20:macro.direction==="SHORT"?st.k>80:false;
@@ -518,8 +518,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let rawDirection:Direction|null=null;
  if(entry1Eligible&&!activePairPosition){rawType="ENTRY_1";rawDirection=entry1TradeDirection;}
  else if(entry2Eligible&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";rawDirection=macro.direction;}
- else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap){rawType="ADD";rawDirection=macro.direction;}
- debug.push("[V28] "+pair+" | DAILY_MACRO="+(macro.direction??"NONE")+" FAST_BIAS="+(fast.direction??"NEUTRAL")+" (EMA5="+fast.ema5.toFixed(4)+" EMA13="+fast.ema13.toFixed(4)+" priceVsEMA5="+(fast.priceAboveEma5?"ABOVE":"BELOW")+" slope="+(fast.slopeUp?"UP":"DOWN")+") | ENTRY_1="+entry1TradeDirection+" | Shared 4H TL="+trendlinePrice.toFixed(2)+" Dist="+(trendlineDist*100).toFixed(2)+"% | Stoch="+st.k+" | Type="+rawType);
+ else if(activeMatch&&macro.direction&&trendlineMacro&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap){rawType="ADD";rawDirection=macro.direction;}
+ debug.push("[V28] "+pair+" | DAILY_MACRO="+(macro.direction??"NONE")+" FAST_BIAS="+(fast.direction??"NEUTRAL")+" (EMA5="+fast.ema5.toFixed(4)+" EMA13="+fast.ema13.toFixed(4)+" priceVsEMA5="+(fast.priceAboveEma5?"ABOVE":"BELOW")+" slope="+(fast.slopeUp?"UP":"DOWN")+") | ENTRY_1="+entry1TradeDirection+" | FastTL Dist="+(fastTrendlineDistancePct===null?"N/A":fastTrendlineDistancePct.toFixed(2)+"%")+" | MacroTL Dist="+(macroTrendlineDistancePct===null?"N/A":macroTrendlineDistancePct.toFixed(2)+"%")+" | Stoch="+st.k+" | Type="+rawType);
  if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
  const finalType=rawType;
  const candleTimestamp=bars.at(-1)!.timestamp;

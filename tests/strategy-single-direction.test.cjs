@@ -96,3 +96,20 @@ test("ENTRY_1 is gated by fast daily bias, its directional trendline and Stoch e
   assert.match(source, /if\(entry1Eligible&&!activePairPosition\)\{rawType="ENTRY_1";rawDirection=entry1TradeDirection;\}/);
   assert.doesNotMatch(source, /filtersPass=!!dailyTrend/);
 });
+
+
+test("Fast and Macro trendline distances are calculated and logged independently", () => {
+  assert.match(source, /const fastTrendlineDistancePct=trendlineFast&&trendlineFast\.price>0/);
+  assert.match(source, /const macroTrendlineDistancePct=trendlineMacro&&trendlineMacro\.price>0/);
+  assert.match(source, /const nearFast=fastTrendlineDistancePct!==null&&Math\.abs\(fastTrendlineDistancePct\)<1\.2/);
+  assert.match(source, /const nearMacro=macroTrendlineDistancePct!==null&&Math\.abs\(macroTrendlineDistancePct\)<1\.2/);
+  assert.match(source, /FastTL Dist=/);
+  assert.match(source, /MacroTL Dist=/);
+  assert.doesNotMatch(source, /Shared 4H TL=/);
+  assert.match(source, /finalType==="ENTRY_1"\?trendlineFast:trendlineMacro/);
+});
+
+test("ADD breakout and confirmation use only the Macro trendline", () => {
+  assert.match(source, /beyondTrendline=macro\.direction[\s\S]*?trendlineMacro/);
+  assert.match(source, /activeMatch&&macro\.direction&&trendlineMacro&&beyondTrendline/);
+});
