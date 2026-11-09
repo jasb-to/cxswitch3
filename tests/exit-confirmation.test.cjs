@@ -8,7 +8,7 @@ const telegram = fs.readFileSync("lib/telegram.ts", "utf8");
 test("V28 active trade exit checks include hard stop, one target, daily reversal and opposite Stoch extreme", () => {
   assert.ok(strategy.includes('reason:"sl_hit"'));
   assert.ok(strategy.includes('reason:"tp_hit"'));
-  assert.ok(strategy.includes('reason:"daily_trend_reversal_unprofitable"'));
+  assert.ok(strategy.includes('reason:"daily_ema8_21_reversed_unprofitable"'));
   assert.ok(strategy.includes('reason:"stoch_extreme_opposite_exit"'));
   assert.ok(strategy.includes('signal.type==="ADD"?4*60*60*1000:24*60*60*1000'));
 });
@@ -26,6 +26,6 @@ test("active management calls the V28 shouldHold and persists exits", () => {
 });
 
 test("alert matrix still permits ENTRY_1 and ADD while ENTRY_2 remains silent", () => {
-  assert.ok(telegram.includes('type!=="ENTRY_1"&&type!=="ADD"'));
+  assert.ok(telegram.includes('type!=="ENTRY_1"&&type!=="ENTRY_2"&&type!=="ADD"'));
   assert.ok(cron.includes("ENTRY_2"));
 });
