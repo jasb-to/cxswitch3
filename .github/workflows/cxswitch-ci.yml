@@ -1,6 +1,8 @@
 name: CXSwitch CI
 
 on:
+  push:
+    branches: [fix/v28-entry-exit-consistency]
   pull_request:
     branches: [main]
 
