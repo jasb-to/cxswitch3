@@ -54,7 +54,8 @@ export async function sendAlert(signal:any){
       ? "Reason: fresh 4H Stoch RSI cross"
       : type==="ENTRY_2"?"Reason: ENTRY_2 retest confirmed":"";
   const lines=[
-    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type==="ADD"?"ADD (Position Building)":type}`,"",
+    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type==="ADD"?"ADD (Position Building)":type}`,
+    ...(signal.testOnly===true?["🧪 TEST ONLY — NOT A TRADING SIGNAL",""]:[]),
     `${dir} ${signal.symbol} — ${signal.bias}`,
     `Entry: ${formatPrice(entry)} · MARKET`,
     `SL: ${formatPrice(stop)}`,
