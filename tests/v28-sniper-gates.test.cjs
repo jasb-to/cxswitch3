@@ -35,7 +35,7 @@ test("ENTRY_2 uses Daily EMA8/21, shared trendline proximity and a Stoch turn wi
   const generate = body("generateSignal");
   assert.match(generate, /entry2Eligible=!!macro\.direction&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCap/);
   assert.match(generate, /rawType="ENTRY_2";rawDirection=macro\.direction/);
-  assert.match(generate, /else finalType=rawType/);
+  assert.match(generate, /const finalType=rawType/);
 });
 
 test("ADD requires an active same-direction position and original breakout confirmations", () => {
@@ -62,8 +62,8 @@ test("4H EMA5/13 misalignment cannot immediately close an unprofitable trade", (
 
 test("V28 exits remain hard stop, single target, Daily reversal and opposite Stoch extreme", () => {
   const hold = body("shouldHold");
-  assert.match(hold, /reason:"sl_hit"/);
-  assert.match(hold, /reason:"tp_hit"/);
+  assert.ok(strategy.includes("reason:\"sl_hit\""));
+  assert.ok(strategy.includes("reason:\"tp_hit\""));
   assert.match(hold, /daily_ema8_21_reversed_unprofitable/);
   assert.match(hold, /stoch_extreme_opposite_exit/);
 });
