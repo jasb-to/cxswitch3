@@ -18,8 +18,8 @@ const body = (name) => {
 test("ENTRY_1, ENTRY_2 and ADD all reference one shared 4H trendline", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /getTrendline(pair,bars,trendlineDirection)/);
-  assert.match(generate, /getTrendline(pair,bars,trendlineDirection)/);
+  assert.match(evaluate, /getTrendline\\(pair,bars,trendlineDirection\\)/);
+  assert.match(generate, /getTrendline\\(pair,bars,trendlineDirection\\)/);
   assert.match(generate, /const signalTl=trendline/);
   assert.doesNotMatch(strategySource, /getTrendline\(pair,bars,fast\.direction/);
   assert.doesNotMatch(strategySource, /track: "FAST" \| "MACRO"/);
@@ -35,7 +35,7 @@ test("ENTRY_2 uses macro EMA8/21, shared-line proximity and Stoch turn without r
   const generate = body("generateSignal");
   assert.match(generate, /entry2Eligible=!!macro.direction&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCap/);
   assert.match(generate, /rawType="ENTRY_2";rawDirection=macro\.direction/);
-  assert.match(generate, /else finalType=rawType/);
+  assert.match(generate, /const finalType=rawType/);
   assert.doesNotMatch(generate, /hasEntry1|entry1AlreadyFired|entry1State/);
 });
 
