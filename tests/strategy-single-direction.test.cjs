@@ -91,7 +91,7 @@ test("daily macro uses EMA8/21 and the ENTRY_1 fast direction uses EMA5/13", () 
   assert.ok(fast.includes("ema(closes, 13)"));
 });
 test("ENTRY_1 is gated by trendline proximity and Stoch extreme, not global momentum", () => {
-  assert.match(source, /entry1Eligible=!!fast\.direction&&nearTrendline&&stochExtremeFast&&!hardCapFast/);
-  assert.match(source, /if\(entry1Eligible&&!activePairPosition\)\{rawType="ENTRY_1";rawDirection=fast\.direction;\}/);
+  assert.match(source, /entry1Eligible=!!entry1TradeDirection&&!entry1DailyOpposes&&nearFast&&stochExtremeFast&&!hardCap/);
+  assert.match(source, /if\(entry1Eligible&&!activePairPosition\)\{rawType="ENTRY_1";rawDirection=entry1TradeDirection;\}/);
   assert.doesNotMatch(source, /filtersPass=!!dailyTrend/);
 });
