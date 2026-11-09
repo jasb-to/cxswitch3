@@ -88,7 +88,7 @@ const ohlcFailureState = new Map<string, { failures: number; openedAt?: number }
 
 export async function getCandles(pair: string, interval: number = 60, since?: number): Promise<Candle[]> {
   const failureState = ohlcFailureState.get(pair);
-  if (failureState?.failures >= OHLC_MAX_CONSECUTIVE_FAILURES) {
+  if (failureState && failureState.failures >= OHLC_MAX_CONSECUTIVE_FAILURES) {
     if (failureState.openedAt && Date.now() - failureState.openedAt < OHLC_CIRCUIT_COOLDOWN_MS) {
       throw new Error(`Kraken OHLC circuit open for ${pair} after ${failureState.failures} consecutive failures`);
     }
