@@ -31,11 +31,15 @@ test("ENTRY_1 and macro stages persist independent direction-specific 4H trendli
   assert.match(strategy, /finalType==="ENTRY_1"\?trendlineFast:trendlineMacro/);
 });
 
-ntest("Track-scoped trendline KV migration preserves scoped keys and duplicates legacy pair:direction keys", () => {
+test("Track-scoped trendline KV migration preserves scoped keys and duplicates legacy pair:direction keys", () => {
   assert.ok(strategy.includes('const trackSpecific = key.match(/^(.*):(FAST|MACRO):(LONG|SHORT)$/)'));
   assert.ok(strategy.includes('const legacyDirection = key.match(/^(.*):(LONG|SHORT)$/)'));
   assert.match(strategy, /for \(const track of \["FAST", "MACRO"\] as const\)/);
   assert.ok(strategy.includes('const migratedKey = `${legacyDirection[1]}:${track}:${legacyDirection[2]}`'));
+  assert.ok(strategy.includes('for (const track of ["FAST", "MACRO"] as const)'));
+  assert.ok(strategy.includes('for (const [key, value] of selected) trendlineStore.set(key, value.data as TrendlineState)'));
+  assert.ok(strategy.includes('for (const [key, data] of trendlineStore.entries())'));
+  assert.ok(strategy.includes('state[key] = data;'));
   assert.match(strategy, /for \(const \[key, value\] of selected\) trendlineStore\.set\(key,/);
   assert.match(strategy, /for \(const \[key, data\] of trendlineStore\.entries\(\)\)\s*\{\s*state\[key\] = data;/);
 });
