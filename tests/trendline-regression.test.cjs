@@ -26,6 +26,6 @@ test("Current V28 risk layer clamps stops to the configured 15x liquidation buff
 test("All stages use one shared pair-level 4H trendline oriented by daily macro direction", () => {
   assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT"\)/);
   assert.match(strategy, /const stateKey = pair/);
-  assert.match(strategy, /const trendline=macro\.direction\?getTrendline\(pair,bars,macro\.direction\):null/);
+  assert.match(strategy, /const trendlineDirection=macro\.direction\?\?entry1TradeDirection/);
   assert.doesNotMatch(strategy, /track: "FAST" \| "MACRO"|\$\{pair\}:\$\{track\}:\$\{direction\}/);
 });
