@@ -12,23 +12,28 @@ const body = (name) => {
   return strategy.slice(start, end > 0 ? end : strategy.length);
 };
 
-test("Daily macro direction is EMA 8/21; fast EMA 5/13 remains a separate diagnostic", () => {
-  const macro = strategy.match(/function trend1D\([\s\S]*?\n\}/)?.[0] ?? "";
-  const fast = strategy.match(/function trend1DEarly\([\s\S]*?\n\}/)?.[0] ?? "";
+test("Daily macro uses EMA 8/21 and fast bias requires EMA 5/13, price confirmation and EMA5 slope", () => {
+  const macro = body("trend1DMacro");
+  const fast = body("trend1DFast");
   assert.match(macro, /ema\(closes,\s*8\)/);
   assert.match(macro, /ema\(closes,\s*21\)/);
   assert.match(fast, /ema\(closes,\s*5\)/);
   assert.match(fast, /ema\(closes,\s*13\)/);
+  assert.match(fast, /priceAboveEma5/);
+  assert.match(fast, /slopeUp/);
+  assert.match(fast, /ema5 > ema13 && priceAboveEma5 && slopeUp/);
+  assert.match(fast, /ema5 < ema13 && price < ema5 && slope < 0/);
 });
 
-test("ENTRY_1 uses 4H Stoch extreme and is vetoed only by an explicitly opposing Daily macro", () => {
+test("ENTRY_1 uses the fast daily bias and directional 4H Stoch extreme, independent of macro opposition", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /entry1TradeDirection:Direction\|null=st\.k<20\?"LONG":st\.k>80\?"SHORT":null/);
-  assert.match(evaluate, /entry1DailyOpposes=!!macro\.direction&&!!entry1TradeDirection&&macro\.direction!==entry1TradeDirection/);
-  assert.match(evaluate, /entry1Ready=!!entry1TradeDirection&&!entry1DailyOpposes&&nearFast&&stochExtremeFast&&!hardCap/);
-  assert.match(generate, /entry1Eligible=!!entry1TradeDirection&&!entry1DailyOpposes&&nearFast&&stochExtremeFast&&!hardCap/);
+  assert.match(evaluate, /entry1TradeDirection:Direction\|null=fast\.direction/);
+  assert.match(evaluate, /entry1Ready=!!entry1TradeDirection&&nearFast&&stochExtremeFast&&!hardCap/);
+  assert.match(generate, /entry1TradeDirection:Direction\|null=fast\.direction/);
+  assert.match(generate, /entry1Eligible=!!entry1TradeDirection&&nearFast&&stochExtremeFast&&!hardCap/);
   assert.match(generate, /rawType="ENTRY_1";rawDirection=entry1TradeDirection/);
+  assert.doesNotMatch(generate, /entry1DailyOpposes/);
 });
 
 test("ENTRY_2 uses Daily EMA8/21, shared trendline proximity and a Stoch turn without ENTRY_1 prerequisite", () => {
@@ -52,20 +57,22 @@ test("4H EMA5/13 is management context, not an ENTRY_1 or ENTRY_2 entry veto", (
   assert.match(generate, /ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned/);
 });
 
-test("4H EMA5/13 misalignment cannot immediately close an unprofitable trade", () => {
+test("4H EMA5/13 misalignment exits an unprofitable trade and protects a profitable trade at breakeven", () => {
   const hold = body("shouldHold");
-  assert.match(hold, /if\(momentumAligned===false\)/);
-  assert.match(hold, /4h_ema5_13_misaligned_unprofitable_hold/);
-  assert.doesNotMatch(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
+  assert.match(hold, /momentumAligned===false&&!profitable/);
+  assert.match(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
+  assert.match(hold, /momentumAligned===false&&profitable/);
   assert.match(hold, /newStop:s\.entry/);
 });
 
-test("V28 exits remain hard stop, single target, Daily reversal and opposite Stoch extreme", () => {
+test("Daily reversal exit uses macro EMA8/21 only, with opposite Stoch as a separate exit", () => {
   const hold = body("shouldHold");
   assert.ok(strategy.includes("reason:\"sl_hit\""));
-  assert.ok(strategy.includes("reason:\"tp_hit\""));
+  assert.ok(strategy.includes("reason:\"tp_hit\"));
+  assert.match(hold, /trend1DMacro\(aggregateTo1D\(bars\)\)/);
   assert.match(hold, /daily_ema8_21_reversed_unprofitable/);
   assert.match(hold, /stoch_extreme_opposite_exit/);
+  assert.doesNotMatch(hold, /trend1DFast/);
 });
 
 test("all entry stages share one trendline, with Stoch direction fallback when Daily direction is unavailable", () => {
@@ -89,16 +96,21 @@ test("hysteresis suppresses duplicate alerts only on the same 4H candle inside t
 test("cron reports the actual reason a trigger did not produce a Signal object", () => {
   assert.match(cron, /startsWith\("\[HYSTERESIS\]"/);
   assert.match(cron, /detail=\$\{snapshot\.strategyStatus\}/);
+  assert.match(cron, /MACRO EMA8\/21=/);
+  assert.match(cron, /FAST EMA5\/13=/);
 });
 
 test("Telegram permits ENTRY_1, ENTRY_2 and ADD through the same sender", () => {
   assert.match(telegram, /type!=="ENTRY_1"&&type!=="ENTRY_2"&&type!=="ADD"/);
   assert.match(cron, /signalType:signal\.type/);
+  assert.match(cron, /4h_ema5_13_misaligned_unprofitable_exit/);
 });
 
 test("dashboard keeps macro, fast direction and management momentum separately visible", () => {
   assert.match(dashboard, /DAILY MACRO \(8\/21\)/);
   assert.match(dashboard, /FAST BIAS \(5\/13\)/);
+  assert.match(dashboard, /PRICE \{m\?\.dailyFastPriceAboveEma5/);
+  assert.match(dashboard, /EMA5 SLOPE/);
   assert.match(dashboard, /4H EMA5\/13 MOMENTUM/);
   assert.match(dashboard, /WEAK \(HOLD\)/);
   assert.doesNotMatch(dashboard, /WEAK \(EXIT\)/);
