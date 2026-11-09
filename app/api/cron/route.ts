@@ -13,7 +13,7 @@ export const dynamic="force-dynamic";
 export const revalidate=0;
 // Give transient market-data/API latency room without relying on the platform default.
 // Kraken OHLC can require a retry across two bounded batches; allow transient upstream latency.
-export const maxDuration=60;
+export const maxDuration = 60;
 const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC"] as const;
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
@@ -240,23 +240,39 @@ export async function GET(request:Request){
  const candleByPair=new Map<string,{c1:any[];c4:any[];c15:any[]}>();
  await Promise.all(PAIRS.map(async(pair)=>{
    try{
-     const [c1,c4,c15]=await Promise.all([
+     const results=await Promise.allSettled([
        getCandles(krakenPairFormat(pair+"/USD"),60),
        getCandles(krakenPairFormat(pair+"/USD"),240),
        getCandles(krakenPairFormat(pair+"/USD"),15)
      ]);
-     candleByPair.set(pair,{c1:c1||[],c4:c4||[],c15:c15||[]});
+     const failed=results.find((result)=>result.status==="rejected");
+     if(failed?.status==="rejected")throw failed.reason;
+     const [c1,c4,c15]=results.map((result)=>result.status==="fulfilled"?result.value:[]);
+     if(!c1.length||!c4.length||!c15.length)throw new Error("Kraken returned an empty candle interval");
+     candleByPair.set(pair,{c1,c4,c15});
    }catch(error){
-     console.error(`[PAIR] ${pair} — candle prefetch failed`,error);
+     console.error(`[PAIR] ${pair} — candle prefetch failed; pair skipped for this run`,error);
      alerts.push({pair,status:"error",stage:"candle_prefetch",error:String(error)});
    }
  }));
 
  const preflightMarketData=PAIRS.flatMap(pair=>{
    const candles=candleByPair.get(pair);
-   if(!candles?.c1.length||!candles.c4.length)return [];
+   if(!candles?.c1.length||!candles.c4.length||!candles.c15.length)return [];
    return [{pair,currentPrice:Number(candles.c1.at(-1)?.close),momentumCandles4h:candles.c4.slice(-220)}];
  }).filter((market:any)=>Number.isFinite(market.currentPrice)&&market.currentPrice>0);
+
+ // Do not manage positions, evaluate entries, or write active_signals without
+ // any complete market snapshot. In particular, preserve existing positions
+ // (including LINK) exactly as stored when Kraken is unavailable.
+ if(preflightMarketData.length===0){
+   console.error("[CRON] market data unavailable, skipping signal evaluation");
+   console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${active.length} marketData=0 new=0 alerts=${alerts.length}`);
+   console.log(`[PERF] Total cron duration ${Date.now()-started}ms`);
+   console.log("========================================");
+   return NextResponse.json({success:true,skipped:true,reason:"market_data_unavailable",activeSignals:active.length,marketData:0,newSignals:0,alerts});
+ }
+
  const preflightStarted=Date.now();
  console.log(`[PERF] Stage preflight observeAlertManagement started active=${active.length} markets=${preflightMarketData.length}`);
  try{
