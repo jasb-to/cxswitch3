@@ -18,7 +18,7 @@ const body = (name) => {
 test("ENTRY_1, ENTRY_2 and ADD all reference one shared 4H trendline", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /getTrendline\\(pair,bars,trendlineDirection\\)/);
+  assert.match(evaluate, /getTrendline\(pair,bars,trendlineDirection\)/);
   assert.match(generate, /getTrendline\\(pair,bars,trendlineDirection\\)/);
   assert.match(generate, /const signalTl=trendline/);
   assert.doesNotMatch(strategySource, /getTrendline\(pair,bars,fast\.direction/);
