@@ -42,3 +42,23 @@ test("Chandelier trailing stop logic is absent", () => {
   const source = fs.readFileSync(require.resolve("../lib/strategy.ts"), "utf8");
   assert.doesNotMatch(source, /chandelier_trailing_stop|chandelier_stop_update|highest high \/ lowest low/);
 });
+
+
+test("4H EMA5/13 misalignment alone does not immediately close an unprofitable V28 entry", () => {
+  const falling = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 130 - i));
+  const rising = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 70 + i));
+  const longHold = strategy.shouldHold(signal("LONG"), falling, 99);
+  const shortHold = strategy.shouldHold(signal("SHORT"), rising, 101);
+  assert.equal(longHold.shouldHold, true);
+  assert.equal(longHold.reason, "4h_ema5_13_misaligned_unprofitable_hold");
+  assert.equal(shortHold.shouldHold, true);
+  assert.equal(shortHold.reason, "4h_ema5_13_misaligned_unprofitable_hold");
+});
+
+test("4H EMA5/13 misalignment still tightens a profitable trade to breakeven", () => {
+  const falling = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 130 - i));
+  const result = strategy.shouldHold(signal("LONG"), falling, 101);
+  assert.equal(result.shouldHold, true);
+  assert.equal(result.newStop, 100);
+  assert.match(result.reason, /tighten_stop_to_entry/);
+});
