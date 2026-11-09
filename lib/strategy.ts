@@ -615,7 +615,11 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitA
   if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
   if(momentumAligned===false){
     if(profitable)return{shouldHold:true,reason:"4h_ema5_13_misaligned_daily_ema8_21_still_valid_tighten_stop_to_entry",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,...state};
-    return{shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+    // 4H EMA5/13 is management context, not an entry gate. Do not immediately
+    // invalidate a valid V28 Stoch/trendline entry solely because tactical
+    // momentum is still on the other side. Keep the protective stop active;
+    // daily reversal, opposite Stoch extreme, SL, TP and TTL remain terminal.
+    return{shouldHold:true,reason:"4h_ema5_13_misaligned_unprofitable_hold",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
   }
   return{shouldHold:true,reason:"4h_momentum_and_daily_macro_valid",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
 }
