@@ -53,7 +53,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
-const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_ema8_21_reversed_unprofitable"]);
+const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_ema8_21_reversed_unprofitable","4h_ema5_13_misaligned_unprofitable_exit"]);
 // Every shouldHold=false result is terminal and must be removed from active_signals before entry evaluation.
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
@@ -298,7 +298,8 @@ export async function GET(request:Request){
   const canonicalDailyDirection=String(snapshot.dailyDirection||"NEUTRAL");
   // Keep dashboard and Jarvis daily bias identical to the canonical regime calculated by strategy.ts.  snapshot.dailyDirection=canonicalDailyDirection;
   snapshot.fourHDirection=snapshot.ema8_4h>snapshot.ema21_4h?"BULL":snapshot.ema8_4h<snapshot.ema21_4h?"BEAR":"NEUTRAL";
-  snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"||canonicalDailyDirection==="LONG"?"LONG":canonicalDailyDirection==="BEAR"||canonicalDailyDirection==="SHORT"?"SHORT":"NEUTRAL"};
+  snapshot.dailyLive={state:canonicalDailyDirection,candidateState:canonicalDailyDirection,direction:canonicalDailyDirection==="BULL"||canonicalDailyDirection==="LONG"?"LONG":canonicalDailyDirection==="BEAR"||canonicalDailyDirection==="SHORT"?"SHORT":"NEUTRAL",fast513:{direction:snapshot.entry1Direction??"NEUTRAL",ema5:snapshot.dailyFastEma5??null,ema13:snapshot.dailyFastEma13??null,price:snapshot.dailyFastPrice??null,priceAboveEma5:snapshot.dailyFastPriceAboveEma5??null,ema5Slope:snapshot.dailyFastEma5Slope??null,ema5SlopeUp:snapshot.dailyFastEma5SlopeUp??null}};
+  console.log(`[DAILY DIRECTION] ${pair} | MACRO EMA8/21=${canonicalDailyDirection} | FAST EMA5/13=${snapshot.entry1Direction??"NEUTRAL"} priceVsEMA5=${snapshot.dailyFastPriceAboveEma5===true?"ABOVE":snapshot.dailyFastPriceAboveEma5===false?"BELOW":"UNKNOWN"} EMA5Slope=${Number(snapshot.dailyFastEma5Slope)>0?"UP":Number(snapshot.dailyFastEma5Slope)<0?"DOWN":"FLAT"}`);
   const dbg=result.debug||[];
   const activeSuppression=dbg.find((x:string)=>x.startsWith("[SUPPRESSED]")&&x.includes("active_position_exists"));
   if(activeSuppression)console.log(`[PAIR] ${pair} ${activeSuppression}`);
@@ -352,7 +353,7 @@ export async function GET(request:Request){
           if(missing.length)waitReason=`need ${missing.join(", ")}`;
         }catch{}
       }
-      console.log(`[PAIR] ${pair} | REGIME=${snapshot.regime||"—"} 1D close=${round(Number(snapshot.dailyClose)||0)} EMA21=${round(Number(snapshot.dailyE21)||0)} EMA5/13=${round(Number(snapshot.ema5_1d)||0)}/${round(Number(snapshot.ema13_1d)||0)} | 4H EMA5/13=${round(Number(snapshot.ema5_4h)||0)}/${round(Number(snapshot.ema13_4h)||0)} ${snapshot.fourHTacticalDirection||"—"} | aligned=${snapshot.alignedDirection||"NO"} | ${snapshot.strategyStatus||"WAIT — "+waitReason}`);
+      console.log(`[PAIR] ${pair} | REGIME=${snapshot.regime||"—"} 1D close=${round(Number(snapshot.dailyClose)||0)} EMA21=${round(Number(snapshot.dailyE21)||0)} FAST EMA5/13=${round(Number(snapshot.dailyFastEma5)||0)}/${round(Number(snapshot.dailyFastEma13)||0)} bias=${snapshot.entry1Direction||"NEUTRAL"} priceVsEMA5=${snapshot.dailyFastPriceAboveEma5===true?"ABOVE":snapshot.dailyFastPriceAboveEma5===false?"BELOW":"—"} slope=${Number(snapshot.dailyFastEma5Slope)>0?"UP":Number(snapshot.dailyFastEma5Slope)<0?"DOWN":"FLAT"} | 4H EMA5/13=${round(Number(snapshot.ema5_4h)||0)}/${round(Number(snapshot.ema13_4h)||0)} ${snapshot.fourHTacticalDirection||"—"} | aligned=${snapshot.alignedDirection||"NO"} | ${snapshot.strategyStatus||"WAIT — "+waitReason}`);
     }
     return;
   }

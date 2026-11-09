@@ -44,15 +44,15 @@ test("Chandelier trailing stop logic is absent", () => {
 });
 
 
-test("4H EMA5/13 misalignment alone does not immediately close an unprofitable V28 entry", () => {
+test("4H EMA5/13 misalignment exits an unprofitable LONG and SHORT immediately", () => {
   const falling = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 130 - i));
   const rising = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 70 + i));
-  const longHold = strategy.shouldHold(signal("LONG"), falling, 99);
-  const shortHold = strategy.shouldHold(signal("SHORT"), rising, 101);
-  assert.equal(longHold.shouldHold, true);
-  assert.equal(longHold.reason, "4h_ema5_13_misaligned_unprofitable_hold");
-  assert.equal(shortHold.shouldHold, true);
-  assert.equal(shortHold.reason, "4h_ema5_13_misaligned_unprofitable_hold");
+  const longExit = strategy.shouldHold(signal("LONG"), falling, 99);
+  const shortExit = strategy.shouldHold(signal("SHORT"), rising, 101);
+  assert.equal(longExit.shouldHold, false);
+  assert.equal(longExit.reason, "4h_ema5_13_misaligned_unprofitable_exit");
+  assert.equal(shortExit.shouldHold, false);
+  assert.equal(shortExit.reason, "4h_ema5_13_misaligned_unprofitable_exit");
 });
 
 test("4H EMA5/13 misalignment still tightens a profitable trade to breakeven", () => {
@@ -61,4 +61,20 @@ test("4H EMA5/13 misalignment still tightens a profitable trade to breakeven", (
   assert.equal(result.shouldHold, true);
   assert.equal(result.newStop, 100);
   assert.match(result.reason, /tighten_stop_to_entry/);
+});
+
+function dailyCandlesFromCloses(closes) {
+  return closes.map((close, i) => ({ timestamp: i * 24 * 60 * 60 * 1000, open: close, high: close + 1, low: close - 1, close, volume: 1 }));
+}
+
+test("dual daily trends agree in established trends but fast bias requires price and slope confirmation", () => {
+  const rising = dailyCandlesFromCloses(Array.from({ length: 40 }, (_, i) => 100 + i));
+  const falling = dailyCandlesFromCloses(Array.from({ length: 40 }, (_, i) => 200 - i));
+  assert.equal(strategy.trend1DMacro(rising).direction, "LONG");
+  assert.equal(strategy.trend1DFast(rising).direction, "LONG");
+  assert.equal(strategy.trend1DMacro(falling).direction, "SHORT");
+  assert.equal(strategy.trend1DFast(falling).direction, "SHORT");
+  const fast = strategy.trend1DFast(rising);
+  assert.equal(fast.priceAboveEma5, true);
+  assert.equal(fast.slopeUp, true);
 });

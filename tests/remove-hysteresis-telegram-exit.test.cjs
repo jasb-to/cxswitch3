@@ -26,12 +26,13 @@ test("ENTRY_2 may start independently and may continue a same-direction ENTRY_1"
   assert.match(strategy, /entry2Continuation=activeMatch&&_activeSignals\.some/);
 });
 
-test("4H EMA5/13 misalignment alone is not a terminal exit for an unprofitable entry", () => {
+test("4H EMA5/13 misalignment exits an unprofitable entry and protects a profitable one", () => {
   const start = strategy.indexOf("export function shouldHold(");
   assert.notEqual(start, -1);
   const hold = strategy.slice(start);
-  assert.match(hold, /4h_ema5_13_misaligned_unprofitable_hold/);
-  assert.doesNotMatch(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
+  assert.match(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
+  assert.match(hold, /momentumAligned===false&&!profitable/);
+  assert.match(hold, /momentumAligned===false&&profitable/);
   assert.match(hold, /newStop:s\.entry/);
 });
 
