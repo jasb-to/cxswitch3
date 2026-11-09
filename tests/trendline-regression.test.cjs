@@ -24,9 +24,18 @@ test("Current V28 risk layer clamps stops to the configured 15x liquidation buff
 });
 
 test("ENTRY_1 and macro stages persist independent direction-specific 4H trendlines", () => {
-  assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT"\)/);
-  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{direction\}`/);
+  assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT", track: "FAST" \| "MACRO"\)/);
+  assert.match(strategy, /const stateKey = `\$\{pair\}:\$\{track\}:\$\{direction\}`/);
   assert.match(strategy, /trendlineFast=fast\.direction\?getTrendline\(pair,bars,fast\.direction\)/);
   assert.match(strategy, /trendlineMacro=macro\.direction\?getTrendline\(pair,bars,macro\.direction\)/);
   assert.match(strategy, /finalType==="ENTRY_1"\?trendlineFast:trendlineMacro/);
+});
+
+\ntest("Track-scoped trendline KV migration preserves scoped keys and duplicates legacy pair:direction keys", () => {
+  assert.match(strategy, /const trackSpecific = key\.match\(\/\^\(\.\*\):\(FAST\|MACRO\):\(LONG\|SHORT\)\$\/\)/);
+  assert.match(strategy, /const legacyDirection = key\.match\(\/\^\(\.\*\):\(LONG\|SHORT\)\$\/\)/);
+  assert.match(strategy, /for \(const track of \["FAST", "MACRO"\] as const\)/);
+  assert.match(strategy, /const migratedKey = `\$\{legacyDirection\[1\]\}:\$\{track\}:\$\{legacyDirection\[2\]\}`/);
+  assert.match(strategy, /for \(const \[key, value\] of selected\) trendlineStore\.set\(key,/);
+  assert.match(strategy, /for \(const \[key, data\] of trendlineStore\.entries\(\)\)\s*\{\s*state\[key\] = data;/);
 });
