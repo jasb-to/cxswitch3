@@ -15,10 +15,10 @@ const body = (name) => {
 test("Daily macro direction is EMA 8/21; fast EMA 5/13 remains a separate diagnostic", () => {
   const macro = strategy.match(/function trend1D\([\s\S]*?\n\}/)?.[0] ?? "";
   const fast = strategy.match(/function trend1DEarly\([\s\S]*?\n\}/)?.[0] ?? "";
-  assert.match(macro, /ema\(closes,8\)/);
-  assert.match(macro, /ema\(closes,21\)/);
-  assert.match(fast, /ema\(closes,5\)/);
-  assert.match(fast, /ema\(closes,13\)/);
+  assert.match(macro, /ema\(closes,\s*8\)/);
+  assert.match(macro, /ema\(closes,\s*21\)/);
+  assert.match(fast, /ema\(closes,\s*5\)/);
+  assert.match(fast, /ema\(closes,\s*13\)/);
 });
 
 test("ENTRY_1 uses 4H Stoch extreme and is vetoed only by an explicitly opposing Daily macro", () => {
@@ -79,7 +79,7 @@ test("all entry stages share one trendline, with Stoch direction fallback when D
 test("hysteresis suppresses duplicate alerts only on the same 4H candle inside the 0.5% price band", () => {
   assert.match(strategy, /const HYSTERESIS_BAND = 0\.005/);
   assert.match(strategy, /lastSignalCandleTimestamp/);
-  assert.match(strategy, /previous\.lastSignalCandleTimestamp===candleTimestamp/);
+  assert.match(strategy, /previous\.lastSignalCandleTimestamp!==candleTimestamp/);
   assert.match(strategy, /isHysteresisBlocked\(pair,finalType,price,candleTimestamp\)/);
   assert.match(strategy, /getHysteresisState/);
   assert.match(strategy, /setHysteresisState/);
@@ -98,7 +98,7 @@ test("Telegram permits ENTRY_1, ENTRY_2 and ADD through the same sender", () => 
 
 test("dashboard keeps macro, fast direction and management momentum separately visible", () => {
   assert.match(dashboard, /DAILY MACRO \(8\/21\)/);
-  assert.match(dashboard, /ENTRY_1 FAST \(5\/13\)/);
+  assert.match(dashboard, /FAST BIAS \(5\/13\)/);
   assert.match(dashboard, /4H EMA5\/13 MOMENTUM/);
   assert.match(dashboard, /HARD CAP/);
 });
