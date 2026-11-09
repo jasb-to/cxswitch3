@@ -15,19 +15,20 @@ const body = (name) => {
   return strategySource.slice(start, end > 0 ? end : strategySource.length);
 };
 
-test("ENTRY_1, ENTRY_2 and ADD all reference one shared 4H trendline", () => {
+test("ENTRY_1 uses fast-direction trendline; ENTRY_2 and ADD use macro-direction trendline", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /getTrendline\(pair,bars,trendlineDirection\)/);
-  assert.match(generate, /getTrendline\(pair,bars,trendlineDirection\)/);
-  assert.match(generate, /const signalTl=trendline/);
-  assert.doesNotMatch(strategySource, /getTrendline\(pair,bars,fast\.direction/);
-  assert.doesNotMatch(strategySource, /track: "FAST" \| "MACRO"/);
+  assert.match(evaluate, /trendlineFast=fast\.direction\?getTrendline\(pair,bars,fast\.direction\)/);
+  assert.match(evaluate, /trendlineMacro=macro\.direction\?getTrendline\(pair,bars,macro\.direction\)/);
+  assert.match(generate, /trendlineFast=fast\.direction\?getTrendline\(pair,bars,fast\.direction\)/);
+  assert.match(generate, /trendlineMacro=macro\.direction\?getTrendline\(pair,bars,macro\.direction\)/);
+  assert.match(generate, /const signalTl=finalType==="ENTRY_1"\?trendlineFast:trendlineMacro/);
+  assert.match(strategySource, /const stateKey = `\$\{pair\}:\$\{direction\}`/);
 });
 
 test("ENTRY_1 uses fast daily EMA5/13, shared-line proximity and Stoch extreme", () => {
   const generate = body("generateSignal");
-  assert.match(generate, /entry1Eligible=!!entry1TradeDirection&&!entry1DailyOpposes&&nearFast&&stochExtremeFast&&!hardCap/);
+  assert.match(generate, /entry1Eligible=!!entry1TradeDirection&&nearFast&&stochExtremeFast&&!hardCap/);
   assert.match(generate, /rawType="ENTRY_1";rawDirection=entry1TradeDirection/);
 });
 
