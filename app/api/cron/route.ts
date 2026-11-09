@@ -61,7 +61,7 @@ function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK
 function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean{
   const message=error instanceof Error?error.message:String(error);
   if(message.startsWith("Telegram alerting is not configured:")||
-     message.startsWith("Only ENTRY_1 and ADD alerts are permitted:")||
+     message.startsWith("Only ENTRY_1, ENTRY_2 and ADD alerts are permitted:")||
      message.startsWith("Telegram alert refused:"))return true;
   const statusPrefix="Telegram sendMessage failed (";
   if(!message.startsWith(statusPrefix))return false;
