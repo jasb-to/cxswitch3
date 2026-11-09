@@ -54,7 +54,8 @@ test("ADD requires an active same-direction position and original breakout confi
 test("4H EMA5/13 is management context, not an ENTRY_1 or ENTRY_2 entry veto", () => {
   const generate = body("generateSignal");
   assert.doesNotMatch(generate, /if\(!momentumAligned\)|if\(momentumAligned/);
-  assert.match(generate, /ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned/);
+  assert.match(generate, /context:\{regime:regime\.state,trendlinePrice:signalTl\.price,momentumAligned,fourHDirection,dailyDirection:macro\.direction,entry1Direction:fast\.direction\}/);
+  assert.doesNotMatch(generate, /targetCount|targetAtrMultiple|dailyFastEma|ema5_4h:e5_4h|exhaustion:/);
 });
 
 test("4H EMA5/13 misalignment exits an unprofitable trade and protects a profitable trade at breakeven", () => {
