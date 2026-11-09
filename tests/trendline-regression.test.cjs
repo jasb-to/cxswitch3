@@ -20,12 +20,12 @@ test("Current V28 risk layer clamps stops to the configured 15x liquidation buff
   assert.match(strategy, /const MAX_LEVERAGE = 15/);
   assert.match(strategy, /MAINTENANCE_MARGIN_RATE = 0\.01/);
   assert.match(strategy, /liquidationPrice/);
-  assert.match(strategy, /after liquidation-buffer clamp/);
+  assert.match(strategy, /Protected trade R:R=/);
 });
 
 test("All stages use one shared pair-level 4H trendline oriented by daily macro direction", () => {
   assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT"\)/);
   assert.match(strategy, /const stateKey = pair/);
-  assert.match(strategy, /const trendline=macro\.direction\?getTrendline\(pair,bars,macro\.direction\):null/);
+  assert.match(strategy, /const trendlineDirection=macro\.direction\?\?entry1TradeDirection/);
   assert.doesNotMatch(strategy, /track: "FAST" \| "MACRO"|\$\{pair\}:\$\{track\}:\$\{direction\}/);
 });

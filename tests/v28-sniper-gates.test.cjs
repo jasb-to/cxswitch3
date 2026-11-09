@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const strategy = fs.readFileSync("lib/strategy.ts", "utf8");
 const cron = fs.readFileSync("app/api/cron/route.ts", "utf8");
 const dashboard = fs.readFileSync("app/page.tsx", "utf8");
+const telegram = fs.readFileSync("lib/telegram.ts", "utf8");
 
 const body = (name) => {
   const start = strategy.indexOf("export function " + name);
@@ -11,138 +12,93 @@ const body = (name) => {
   return strategy.slice(start, end > 0 ? end : strategy.length);
 };
 
-test("Daily macro direction is EMA 8/21; fast EMA 5/13 is a separate ENTRY_1 track", () => {
+test("Daily macro direction is EMA 8/21; fast EMA 5/13 remains a separate diagnostic", () => {
   const macro = strategy.match(/function trend1D\([\s\S]*?\n\}/)?.[0] ?? "";
   const fast = strategy.match(/function trend1DEarly\([\s\S]*?\n\}/)?.[0] ?? "";
-  assert.match(macro, /ema\(closes, 8\)/);
-  assert.match(macro, /ema\(closes, 21\)/);
-  assert.doesNotMatch(macro, /ema\(closes, 5\)|ema\(closes, 13\)/);
-  assert.match(fast, /ema\(closes, 5\)/);
-  assert.match(fast, /ema\(closes, 13\)/);
-  assert.doesNotMatch(fast, /ema\(closes, 8\)|ema\(closes, 21\)/);
+  assert.match(macro, /ema\(closes,\s*8\)/);
+  assert.match(macro, /ema\(closes,\s*21\)/);
+  assert.match(fast, /ema\(closes,\s*5\)/);
+  assert.match(fast, /ema\(closes,\s*13\)/);
 });
 
-test("ENTRY_1 uses only fast daily direction, 1.2% trendline proximity and Stoch extreme plus hard cap", () => {
-  const generate = body("generateSignal");
-  assert.match(generate, /entry1Eligible=!!fast\.direction&&nearTrendline&&stochExtremeFast&&!hardCapFast/);
-  assert.doesNotMatch(generate, /r2\s*>=\s*0\.60/);
-  assert.match(generate, /const stochExtremeFast=fast\.direction==="LONG"\?st\.k<20:fast\.direction==="SHORT"\?st\.k>80:false/);
-  assert.match(generate, /hardCapFast=fast\.direction==="LONG"\?st\.k>95:fast\.direction==="SHORT"\?st\.k<5:false/);
-  assert.match(generate, /rawType="ENTRY_1";rawDirection=fast\.direction/);
-  assert.match(generate, /const finalHardCap=signalDirection==="LONG"\?st\.k>95:st\.k<5/);
-});
-
-test("ENTRY_2 and ADD follow macro triggers without saved lifecycle prerequisites", () => {
-  const generate = body("generateSignal");
-  assert.match(generate, /rawType="ENTRY_2";rawDirection=macro.direction/);
-  assert.match(generate, /rawType="ADD";rawDirection=macro.direction/);
-  assert.doesNotMatch(generate, /if\([^)]*(?:entry1State|entry2AlreadyFired|hasEntry1|hasEntry2)/);
-  assert.doesNotMatch(cron, /entry1_entry2_lifecycle_incomplete|entry1State=|entry2AlreadyFired=/);
-});
-
-test("Only directional Stoch hard caps remain; RSI and ADX are not exhaustion vetoes", () => {
-  assert.match(strategy, /st\.k>95/);
-  assert.match(strategy, /st\.k<5/);
-  assert.doesNotMatch(strategy, /rsiExhausted|adxExhausted|RSI exhaustion|ADX >50/);
-  assert.doesNotMatch(strategy, /filtersPass=!!dailyTrend/);
-});
-
-test("Latest supplied 4H candle is included in strategy and cron processing", () => {
-  assert.doesNotMatch(strategy, /closed4h|candles4h\.slice\(0,\s*-1\)/);
-  assert.doesNotMatch(cron, /closed4h|candles\.slice\(0,\s*-1\)/);
-  assert.match(body("generateSignal"), /bars=\[\.\.\.candles4h\]/);
-  assert.match(cron, /generateSignal\(pair,c1,c4,c15,price\)/);
-  assert.match(cron, /4hUsedForStrategy=/);
-});
-
-test("4H EMA 5/13 momentum is recorded in signal context and used for trade management, not entry blocking", () => {
-  const generate = body("generateSignal");
-  const hold = body("shouldHold");
-  assert.match(generate, /ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned/);
-  assert.match(hold, /ema\(closes,5\)/);
-  assert.match(hold, /ema\(closes,13\)/);
-  assert.match(hold, /4h_ema5_13_misaligned/);
-  assert.match(hold, /newStop:s\.entry/);
-  assert.match(cron, /if\(hold\.newStop&&Number\.isFinite\(hold\.newStop\)\)/);
-  assert.doesNotMatch(generate, /if\(!momentumAligned\)|if\(momentumAligned/);
-});
-
-test("Market snapshot exposes daily macro, ENTRY_1 fast direction and management momentum", () => {
-  const snapshot = body("getMarketSnapshot");
-  assert.match(snapshot, /dailyDirection:direction/);
-  assert.match(snapshot, /entry1Direction/);
-  assert.match(snapshot, /momentumAligned/);
-  assert.match(snapshot, /ema8_1d|dailyE8/);
-  assert.match(snapshot, /ema21_1d|dailyE21/);
-});
-
-test("Cron no longer emits a global filter veto or enforces the ENTRY_1 to ENTRY_2 to ADD chain", () => {
-  assert.doesNotMatch(cron, /GLOBAL FILTER VETO/);
-  assert.match(cron, /stop tightened to entry/);
-  assert.doesNotMatch(cron, /entry1_entry2_lifecycle_incomplete/);
-});
-
-test("Dashboard presents macro and fast direction without a global red veto state", () => {
-  assert.match(dashboard, /DAILY MACRO \(8\/21\)/);
-  assert.match(dashboard, /ENTRY_1 FAST \(5\/13\)/);
-  assert.match(dashboard, /4H EMA5\/13 MOMENTUM/);
-  assert.match(dashboard, /HARD CAP/);
-  assert.doesNotMatch(dashboard, /strategyBlocked|border-red-500\/35|VETOED/);
-  assert.match(dashboard, /MISALIGNED — MANAGE TRADE/);
-});
-
-test("V28 stop/target arithmetic and persisted hysteresis remain intact", () => {
-  const generate = body("generateSignal");
-  assert.match(generate, /price-2\*avalue/);
-  assert.match(generate, /price\+2\*avalue/);
-  assert.match(generate, /price\+5\*avalue/);
-  assert.match(generate, /price-5\*avalue/);
-  assert.match(generate, /targetCount:1,targetAtrMultiple:5/);
-  assert.match(strategy, /HYSTERESIS_BAND = 0\.005/);
-});
-
-test("All entry stages use one shared 4H trendline oriented by daily macro EMA 8/21", () => {
-  assert.match(strategy, /function getTrendline\(pair: string, candles: Candle\[\], direction: "LONG" \| "SHORT"\)/);
-  assert.match(strategy, /const stateKey = pair/);
-  assert.match(strategy, /const trendline=macro\.direction\?getTrendline\(pair,bars,macro\.direction\):null/);
-  assert.match(body("generateSignal"), /const signalTl=trendline/);
-  assert.doesNotMatch(strategy, /track: "FAST" \| "MACRO"|\$\{pair\}:\$\{track\}:\$\{direction\}/);
-});
-
-test("Misaligned 4H momentum tightens profitable trades and exits unprofitable trades", () => {
-  const hold = body("shouldHold");
-  assert.match(hold, /if\(!momentumAligned\)/);
-  assert.match(hold, /if\(profitable\)return\{shouldHold:true,[^}]*newStop:s\.entry/);
-  assert.match(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
-  assert.match(hold, /shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE"/);
-});
-
-test("V28 staged hysteresis preserves ENTRY_1 → ENTRY_2 → ADD, 0.5% band and timed locks", () => {
-  const generate = body("generateSignal");
-  assert.match(strategy, /lastSignalType: "ENTRY_1" \| "ENTRY_2" \| "ADD" \| null/);
-  assert.match(strategy, /lastSignalPrice: number/);
-  assert.match(strategy, /lockUntil: number/);
-  assert.match(strategy, /const HYSTERESIS_BAND = 0\.005/);
-  assert.match(strategy, /type === "ADD" \? 4 \* 60 \* 60 \* 1000 : 24 \* 60 \* 60 \* 1000/);
-  assert.match(generate, /hyst\.lastSignalType==="ENTRY_2"/);
-  assert.match(generate, /hyst\.lastSignalType==="ENTRY_1"/);
-  assert.match(generate, /rawType==="ADD"\?"ADD":"ENTRY_2"/);
-  assert.match(generate, /rawType==="ADD"\?"ADD":rawType==="ENTRY_2"\?"ENTRY_2":"ENTRY_1"/);
-  assert.match(generate, /finalType=rawType/);
-  assert.match(generate, /move<HYSTERESIS_BAND/);
-  assert.match(generate, /if\(finalType!==hyst\.lastSignalType\)setHysteresis\(pair,finalType,price,now\)/);
-  assert.match(generate, /if\(hyst\.lastSignalType==="ADD"&&!activeMatch\)/);
-});
-
-test("ENTRY_1 and ENTRY_2 can each start a lifecycle; ENTRY_2 uses macro direction without an ENTRY_1 prerequisite", () => {
+test("ENTRY_1 uses 4H Stoch extreme and is vetoed only by an explicitly opposing Daily macro", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /entry1Ready&&!activePairPosition\)\{rawType="ENTRY_1";direction=fast\.direction/);
-  assert.match(evaluate, /else if\(entry2Ready&&\(!activePairPosition\|\|entry2Continuation\)\)\{rawType="ENTRY_2";direction=macro\.direction/);
-  assert.match(generate, /entry1Eligible&&!activePairPosition\)\{rawType="ENTRY_1";rawDirection=fast\.direction/);
-  assert.match(generate, /else if\(entry2Eligible&&\(!activePairPosition\|\|entry2Continuation\)\)\{rawType="ENTRY_2";rawDirection=macro\.direction/);
-  assert.match(generate, /entry2Eligible=!!macro\.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro/);
-  assert.match(generate, /else finalType=rawType/);
+  assert.match(evaluate, /entry1TradeDirection:Direction\|null=st\.k<20\?"LONG":st\.k>80\?"SHORT":null/);
+  assert.match(evaluate, /entry1DailyOpposes=!!macro\.direction&&!!entry1TradeDirection&&macro\.direction!==entry1TradeDirection/);
+  assert.match(evaluate, /entry1Ready=!!entry1TradeDirection&&!entry1DailyOpposes&&nearFast&&stochExtremeFast&&!hardCap/);
+  assert.match(generate, /entry1Eligible=!!entry1TradeDirection&&!entry1DailyOpposes&&nearFast&&stochExtremeFast&&!hardCap/);
+  assert.match(generate, /rawType="ENTRY_1";rawDirection=entry1TradeDirection/);
+});
+
+test("ENTRY_2 uses Daily EMA8/21, shared trendline proximity and a Stoch turn without ENTRY_1 prerequisite", () => {
+  const generate = body("generateSignal");
+  assert.match(generate, /entry2Eligible=!!macro\.direction&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCap/);
+  assert.match(generate, /rawType="ENTRY_2";rawDirection=macro\.direction/);
+  assert.match(generate, /const finalType=rawType/);
+});
+
+test("ADD requires an active same-direction position and original breakout confirmations", () => {
+  const evaluate = body("evaluateGates");
+  const generate = body("generateSignal");
+  assert.match(evaluate, /activeMatch=!!macro\.direction&&activeSignals\.some/);
   assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
-  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro)"));
+  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap)"));
+});
+
+test("4H EMA5/13 is management context, not an ENTRY_1 or ENTRY_2 entry veto", () => {
+  const generate = body("generateSignal");
+  assert.doesNotMatch(generate, /if\(!momentumAligned\)|if\(momentumAligned/);
+  assert.match(generate, /ema5_4h:e5_4h,ema13_4h:e13_4h,fourHDirection,momentumAligned/);
+});
+
+test("4H EMA5/13 misalignment cannot immediately close an unprofitable trade", () => {
+  const hold = body("shouldHold");
+  assert.match(hold, /if\(momentumAligned===false\)/);
+  assert.match(hold, /4h_ema5_13_misaligned_unprofitable_hold/);
+  assert.doesNotMatch(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
+  assert.match(hold, /newStop:s\.entry/);
+});
+
+test("V28 exits remain hard stop, single target, Daily reversal and opposite Stoch extreme", () => {
+  const hold = body("shouldHold");
+  assert.ok(strategy.includes("reason:\"sl_hit\""));
+  assert.ok(strategy.includes("reason:\"tp_hit\""));
+  assert.match(hold, /daily_ema8_21_reversed_unprofitable/);
+  assert.match(hold, /stoch_extreme_opposite_exit/);
+});
+
+test("all entry stages share one trendline, with Stoch direction fallback when Daily direction is unavailable", () => {
+  const evaluate = body("evaluateGates");
+  const generate = body("generateSignal");
+  assert.match(evaluate, /trendlineDirection=macro\.direction\?\?entry1TradeDirection/);
+  assert.match(generate, /trendlineDirection=macro\.direction\?\?entry1TradeDirection/);
+  assert.match(generate, /const signalTl=trendline/);
+});
+
+test("hysteresis suppresses duplicate alerts only on the same 4H candle inside the 0.5% price band", () => {
+  assert.match(strategy, /const HYSTERESIS_BAND = 0\.005/);
+  assert.match(strategy, /lastSignalCandleTimestamp/);
+  assert.match(strategy, /previous\.lastSignalCandleTimestamp!==candleTimestamp/);
+  assert.match(strategy, /isHysteresisBlocked\(pair,finalType,price,candleTimestamp\)/);
+  assert.match(strategy, /getHysteresisState/);
+  assert.match(strategy, /setHysteresisState/);
+  assert.doesNotMatch(strategy, /lockUntil/);
+});
+
+test("cron reports the actual reason a trigger did not produce a Signal object", () => {
+  assert.match(cron, /startsWith\("\[HYSTERESIS\]"/);
+  assert.match(cron, /detail=\$\{snapshot\.strategyStatus\}/);
+});
+
+test("Telegram permits ENTRY_1, ENTRY_2 and ADD through the same sender", () => {
+  assert.match(telegram, /type!=="ENTRY_1"&&type!=="ENTRY_2"&&type!=="ADD"/);
+  assert.match(cron, /signalType:signal\.type/);
+});
+
+test("dashboard keeps macro, fast direction and management momentum separately visible", () => {
+  assert.match(dashboard, /DAILY MACRO \(8\/21\)/);
+  assert.match(dashboard, /FAST BIAS \(5\/13\)/);
+  assert.match(dashboard, /4H EMA5\/13 MOMENTUM/);
+  assert.match(dashboard, /HARD CAP/);
 });

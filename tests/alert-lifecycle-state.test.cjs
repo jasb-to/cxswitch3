@@ -49,6 +49,6 @@ test("dashboard still distinguishes completed alert states", () => {
 
 test("ENTRY_2 uses the normal Telegram dispatch, history and active-state pipeline",()=>{assert.ok(!cron.includes('reason=entry2_internal'));assert.ok(cron.includes('signalType:signal.type'));assert.ok(cron.includes('newSignals.push(signal)'));assert.ok(cron.includes('await appendSignalHistory(signal)'));});
 
-test("ADD requires an active same-direction position and retains the four-hour alert cooldown",()=>{const strategy=fs.readFileSync("lib/strategy.ts","utf8");assert.ok(strategy.includes('activeMatch=!!macro.direction&&_activeSignals.some'));assert.ok(strategy.includes('else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro)'));assert.ok(cron.includes('reason=add_hysteresis_4h'));});
+test("ADD requires an active same-direction position and retains the four-hour alert cooldown",()=>{const strategy=fs.readFileSync("lib/strategy.ts","utf8");assert.ok(strategy.includes('activeMatch=!!macro.direction&&_activeSignals.some'));assert.ok(strategy.includes('else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap)'));assert.ok(strategy.includes('HYSTERESIS_BAND = 0.005'));assert.ok(strategy.includes('lastSignalCandleTimestamp'));assert.ok(strategy.includes('isHysteresisBlocked'));});
 
 test("hard stop dispatches Telegram EXIT",()=>{assert.ok(cron.includes('kind:"STOP_HIT",price'));});

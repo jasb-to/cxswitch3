@@ -18,8 +18,8 @@ const body = (name) => {
 test("ENTRY_1, ENTRY_2 and ADD all reference one shared 4H trendline", () => {
   const evaluate = body("evaluateGates");
   const generate = body("generateSignal");
-  assert.match(evaluate, /getTrendline\(pair,bars,macro\.direction\)/);
-  assert.match(generate, /getTrendline\(pair,bars,macro\.direction\)/);
+  assert.match(evaluate, /getTrendline\(pair,bars,trendlineDirection\)/);
+  assert.match(generate, /getTrendline\(pair,bars,trendlineDirection\)/);
   assert.match(generate, /const signalTl=trendline/);
   assert.doesNotMatch(strategySource, /getTrendline\(pair,bars,fast\.direction/);
   assert.doesNotMatch(strategySource, /track: "FAST" \| "MACRO"/);
@@ -27,16 +27,16 @@ test("ENTRY_1, ENTRY_2 and ADD all reference one shared 4H trendline", () => {
 
 test("ENTRY_1 uses fast daily EMA5/13, shared-line proximity and Stoch extreme", () => {
   const generate = body("generateSignal");
-  assert.match(generate, /entry1Eligible=!!fast\.direction&&nearTrendline&&stochExtremeFast&&!hardCapFast/);
-  assert.match(generate, /rawType="ENTRY_1";rawDirection=fast\.direction/);
+  assert.match(generate, /entry1Eligible=!!entry1TradeDirection&&!entry1DailyOpposes&&nearFast&&stochExtremeFast&&!hardCap/);
+  assert.match(generate, /rawType="ENTRY_1";rawDirection=entry1TradeDirection/);
 });
 
 test("ENTRY_2 uses macro EMA8/21, shared-line proximity and Stoch turn without requiring ENTRY_1", () => {
   const generate = body("generateSignal");
-  assert.match(generate, /entry2Eligible=!!macro\.direction&&nearTrendline&&stochTurningMacro&&!stochExtremeMacro&&!hardCapMacro/);
+  assert.match(generate, /entry2Eligible=!!macro.direction&&nearMacro&&stochTurningMacro&&!stochExtremeMacro&&!hardCap/);
   assert.match(generate, /rawType="ENTRY_2";rawDirection=macro\.direction/);
-  assert.match(generate, /else finalType=rawType/);
-  assert.doesNotMatch(generate, /hasEntry1|entry1AlreadyFired|entry1State/);
+  assert.match(generate, /const finalType=rawType/);
+  assert.match(generate, /entry2Eligible=!!macro\.direction&&nearMacro&&stochTurningMacro/);
 });
 
 test("ADD alone requires an active same-direction position and the 4H breakout confirmations", () => {
@@ -44,7 +44,7 @@ test("ADD alone requires an active same-direction position and the 4H breakout c
   const generate = body("generateSignal");
   assert.match(evaluate, /activeMatch=!!macro\.direction&&activeSignals\.some/);
   assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
-  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCapMacro)"));
+  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap)"));
   assert.match(generate, /volUp\|\|stochMomentum\|\|adxStrong/);
 });
 

@@ -57,7 +57,7 @@ test("cron persists V28 management exits and reconciles active state after batch
   assert.ok(!cron.includes("serializeActiveStateWrite"));
   assert.equal((cron.match(/await setActiveSignals\(active\);/g) || []).length, 2);
   assert.ok(cron.includes("shouldHold(toSignalLike(alert)"));
-  assert.ok(cron.includes("MANAGEMENT_EXIT_REASONS.has(hold.reason)"));
+  assert.ok(cron.includes("INDICATOR_EXIT_REASONS.has(hold.reason)"));
   assert.ok(!cron.includes("chandelier_stop_update"));
   assert.ok(!cron.includes("updateActiveSignalStop(alert.pair,alert.direction,hold.newStop)"));
   assert.ok(cron.includes("active.splice(activeIndex,1)"));
