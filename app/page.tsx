@@ -88,7 +88,7 @@ export default function Dashboard(){
     const verdictTone=verdict==="GOOD"?"text-green-300 border-green-500/25 bg-green-500/10":verdict==="VETO"?"text-red-300 border-red-500/25 bg-red-500/10":"text-yellow-300 border-yellow-500/25 bg-yellow-500/10";
     const momentumAligned=m?.momentumAligned??m?.alignment?.momentumAligned;
     const positionMomentumAligned=isActive?(a?.momentumAligned??momentumAligned):momentumAligned;
-    const momentumDisplay=positionMomentumAligned===true?"ALIGNED":positionMomentumAligned===false?(isActive?(pnlPct!==null&&pnlPct>0?"WEAK (TIGHTEN STOP)":"WEAK (EXIT)"):"WEAK"):"WAITING";
+    const momentumDisplay=positionMomentumAligned===true?"ALIGNED":positionMomentumAligned===false?(isActive?(pnlPct!==null&&pnlPct>0?"WEAK (TIGHTEN STOP)":"WEAK (HOLD)"):"WEAK"):"WAITING";
     const momentumDisplayTone=positionMomentumAligned===true?"text-emerald-400":momentumDisplay.includes("EXIT")?"text-red-400":momentumDisplay.startsWith("WEAK")?"text-yellow-300":"text-white/45";
     const exhaustion=m?.exhaustion??m?.alignment?.exhaustion??null;
     const strategyReady=m?.dailyDirection!=null;
