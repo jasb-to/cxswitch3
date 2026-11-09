@@ -9,22 +9,38 @@ const route = read("app/api/cron/route.ts");
 const state = read("lib/state.ts");
 const telegram = read("lib/telegram.ts");
 
-test("strategy has no price-movement hysteresis lock or hysteresis KV state", () => {
-  for (const token of ["HYSTERESIS_BAND", "hysteresisStore", "getHysteresis(", "setHysteresis(", "loadHysteresisFromKV", "saveHysteresisToKV"]) {
-    assert.doesNotMatch(strategy, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  }
-  assert.doesNotMatch(state, /getHysteresisState|setHysteresisState|v28_hysteresis_state/);
-  assert.doesNotMatch(route, /loadHysteresisFromKV|saveHysteresisToKV|add_hysteresis_4h/);
+test("V28 duplicate suppression is candle-scoped and KV-persisted", () => {
+  assert.match(strategy, /const HYSTERESIS_BAND = 0\.005/);
+  assert.match(strategy, /lastSignalCandleTimestamp/);
+  assert.match(strategy, /isHysteresisBlocked\(/);
+  assert.match(strategy, /getHysteresisState/);
+  assert.match(strategy, /setHysteresisState/);
+  assert.match(route, /loadTrendlinesFromKV\(\)/);
+  assert.match(route, /saveTrendlinesToKV\(\)/);
+  assert.match(state, /v28_hysteresis_state/);
 });
 
-test("ENTRY_2 continuation is derived from the active ENTRY_1 position, not a lock", () => {
-  assert.match(strategy, /activeSignals\.some\(x=>x\.pair===pair&&x\.direction===macro\.direction&&x\.type==="ENTRY_1"\)/);
-  assert.match(strategy, /_activeSignals\.some\(x=>x\.pair===pair&&x\.direction===macro\.direction&&x\.type==="ENTRY_1"\)/);
+test("ENTRY_2 may start independently and may continue a same-direction ENTRY_1", () => {
+  assert.match(strategy, /entry2Continuation=activeMatch&&activeSignals\.some/);
+  assert.match(strategy, /entry2Ready&&\(!activePairPosition\|\|entry2Continuation\)/);
+  assert.match(strategy, /entry2Continuation=activeMatch&&_activeSignals\.some/);
 });
 
-test("4H momentum-misaligned exit has explicit non-stop Telegram wording", () => {
-  assert.match(route, /hold\.reason==="4h_ema5_13_misaligned_unprofitable_exit"\?"4H_MOMENTUM_MISALIGNED"/);
-  assert.match(route, /reason:hold\.reason/);
-  assert.match(telegram, /update\.reason==="4h_ema5_13_misaligned_unprofitable_exit"/);
-  assert.match(telegram, /closed at \$\{formatPrice\(update\.price\)\} \(4H Momentum Misaligned\)/);
+test("4H EMA5/13 misalignment alone is not a terminal exit for an unprofitable entry", () => {
+  const start = strategy.indexOf("export function shouldHold(");
+  assert.notEqual(start, -1);
+  const hold = strategy.slice(start);
+  assert.match(hold, /4h_ema5_13_misaligned_unprofitable_hold/);
+  assert.doesNotMatch(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
+  assert.match(hold, /newStop:s\.entry/);
+});
+
+test("Telegram entry sender permits all three V28 signal types", () => {
+  assert.match(telegram, /type!=="ENTRY_1"&&type!=="ENTRY_2"&&type!=="ADD"/);
+  assert.match(route, /signalType:signal\.type/);
+});
+
+test("no-signal diagnostics report hysteresis rather than a generic missing Signal object", () => {
+  assert.match(route, /startsWith\("\[HYSTERESIS\]"\)/);
+  assert.match(route, /detail=\$\{snapshot\.strategyStatus\}/);
 });
