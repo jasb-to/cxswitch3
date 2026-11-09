@@ -32,3 +32,11 @@ test("a failed pre-send review releases the claimed lifecycle key", () => {
 test("ambiguous Telegram outcomes retain the claim to avoid duplicate messages", () => {
   assert.match(cron, /status=ambiguous_delivery; retaining lifecycle claim/);
 });
+
+test("protected test endpoint can exercise each alert type without creating trades", () => {
+  const endpoint = fs.readFileSync(path.join(root, "app/api/cron/test-telegram/route.ts"), "utf8");
+  assert.match(endpoint, /requestedType === "all"/);
+  assert.match(endpoint, /sendAlert\(/);
+  assert.match(endpoint, /testOnly: true/);
+  assert.match(endpoint, /messageId: delivery\.messageId/);
+});
