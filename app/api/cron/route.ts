@@ -53,7 +53,7 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
-const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_trend_reversal_unprofitable"]);
+const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_ema8_21_reversed_unprofitable"]);
 // Every shouldHold=false result is terminal and must be removed from active_signals before entry evaluation.
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
 function toSignalLike(t:any):Signal{return{...t,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||""} as Signal;}
