@@ -96,6 +96,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     if(!candles.length||!Number.isFinite(price)||price<=0)continue;
     const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
      const livePnlPct=alert.entry>0?((price-Number(alert.entry))/Number(alert.entry)*100)*(alert.direction==="LONG"?1:-1):null;alert.currentPrice=price;if(livePnlPct!==null)alert.unrealizedPnlPct=livePnlPct;alert.shouldHold=hold.shouldHold;alert.fourHDirection=hold.fourHDirection;alert.momentumAligned=hold.momentumAligned;alert.managementState=hold.managementState;alert.managementRecommendation=hold.recommendation;alert.momentumProfit=hold.profitable??(livePnlPct!==null?livePnlPct>0:null);
+    if(hold.reason==="4h_ema5_13_misaligned_unprofitable_hold")console.log(`[MANAGEMENT] ${alert.pair} ${alert.direction} — holding; 4H EMA5/13 misaligned but this alone is not a terminal V28 exit (P/L ${livePnlPct===null?"unknown":livePnlPct.toFixed(3)+"%"})`);
     if(hold.newStop&&Number.isFinite(hold.newStop)){
       const currentStop=Number(alert.stop)||0;
       const tightens=alert.direction==="LONG"?hold.newStop>currentStop:currentStop===0||hold.newStop<currentStop;
@@ -336,7 +337,7 @@ export async function GET(request:Request){
   }
   dispatchPairSignal=signal;
   if(signal){snapshot.strategyStatus=`FIRED — ${signal.type} ${signal.direction}`;console.log(`[SIGNAL DECISION] ${pair} status=fired type=${signal.type} direction=${signal.direction} id=${signal.id}`);}
-  else {const blocked=recentExitCooldown?"recent_exit_cooldown":dbg.find((x:string)=>x.startsWith("[SIGNAL BLOCKED]"))||dbg.find((x:string)=>x.startsWith("[WAIT]"))||gateDebug;snapshot.strategyStatus=blocked?`WAIT — ${blocked.replace(/^\[[^\]]+\]\s*/, "")}`:"WAIT — no Signal object returned";console.log(`[SIGNAL DECISION] ${pair} status=not_fired reason=${snapshot.strategyStatus}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${snapshot.alignedDirection||"NONE"} status=suppressed reason=no_signal_object`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=no_signal_object`);}
+  else {const blocked=recentExitCooldown?"recent_exit_cooldown":dbg.find((x:string)=>x.startsWith("[HYSTERESIS]"))||dbg.find((x:string)=>x.startsWith("[SIGNAL BLOCKED]"))||dbg.find((x:string)=>x.startsWith("[WAIT]"))||gateDebug;snapshot.strategyStatus=blocked?`WAIT — ${blocked.replace(/^\[[^\]]+\]\s*/, "")}`:"WAIT — no Signal object returned";console.log(`[SIGNAL DECISION] ${pair} status=not_fired reason=${snapshot.strategyStatus}`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${snapshot.alignedDirection||"NONE"} status=suppressed reason=no_signal_object detail=${snapshot.strategyStatus}`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=no_signal_object detail=${snapshot.strategyStatus}`);}
   if(!signal){
     if(!existing){
       const normalizeSide=(value:any):"LONG"|"SHORT"|null=>{const side=String(value??"").toUpperCase();return side==="BULL"||side==="BULLISH"||side==="LONG"?"LONG":side==="BEAR"||side==="BEARISH"||side==="SHORT"?"SHORT":null;};
