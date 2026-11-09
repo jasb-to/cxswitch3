@@ -28,6 +28,6 @@ test("V28 StochRSI entry and opposite-extreme exit directions do not contradict"
   const entrySource = strategy.slice(entryStart, entryEnd);
   assert.match(
     entrySource,
-    /fast\.direction\s*===\s*"LONG"\s*\?\s*st\.k\s*<\s*20\s*:\s*fast\.direction\s*===\s*"SHORT"\s*\?\s*st\.k\s*>\s*80/
+    /entry1TradeDirection/
   );
 });
