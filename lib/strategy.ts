@@ -397,7 +397,7 @@ export function trend1DFast(candles1d: Candle[]): { direction: Direction | null;
   const priceAboveEma5 = price > ema5, slope = ema5 - previousEma5, slopeUp = slope > 0;
   const direction: Direction | null =
     ema5 > ema13 && priceAboveEma5 && slopeUp ? "LONG" :
-    ema5 < ema13 && price < ema5 && !slopeUp ? "SHORT" : null;
+    ema5 < ema13 && price < ema5 && slope < 0 ? "SHORT" : null;
   const highs = candles1d.slice(-20).map(c => c.high), lows = candles1d.slice(-20).map(c => c.low);
   const hh = highs.at(-1)! > Math.max(...highs.slice(0, -1)), ll = lows.at(-1)! < Math.min(...lows.slice(0, -1));
   const strength = (direction === "LONG" && hh) || (direction === "SHORT" && ll) ? "STRONG" : direction ? "MEDIUM" : "WEAK";
