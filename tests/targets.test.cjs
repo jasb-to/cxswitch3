@@ -12,7 +12,7 @@ test("V28 ENTRY_1/ENTRY_2 stop uses the wider 20-bar swing or 2 ATR", () => {
 test("V28 has one 5 ATR objective; TP2 mirrors TP1 for compatibility", () => {
   assert.ok(strategy.includes("price+5*avalue"));
   assert.ok(strategy.includes("price-5*avalue"));
-  assert.ok(strategy.includes("targetCount:1,targetAtrMultiple:5"));
+  assert.match(strategy, /target=signalDirection==="LONG"\?price\+5\*avalue:price-5\*avalue/);
   assert.ok(strategy.includes("tp2:Math.round(target*100)/100"));
   assert.doesNotMatch(strategy, /price\+15\*avalue|price-15\*avalue/);
 });
