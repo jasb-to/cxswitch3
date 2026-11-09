@@ -77,10 +77,10 @@ test("Strong bearish regime uses full size; daily macro and 4H tactical directio
 });
 
 test("daily macro uses EMA8/21 and the ENTRY_1 fast direction uses EMA5/13", () => {
-  const macroStart = source.indexOf("function trend1D(");
+  const macroStart = source.indexOf("export function trend1DMacro(");
   const macroEnd = source.indexOf(String.fromCharCode(10) + "}", macroStart);
   const macro = source.slice(macroStart, macroEnd);
-  const fastStart = source.indexOf("function trend1DEarly(");
+  const fastStart = source.indexOf("export function trend1DFast(");
   const fastEnd = source.indexOf(String.fromCharCode(10) + "}", fastStart);
   const fast = source.slice(fastStart, fastEnd);
   assert.ok(macro.includes("ema(closes, 8)"));
@@ -90,8 +90,9 @@ test("daily macro uses EMA8/21 and the ENTRY_1 fast direction uses EMA5/13", () 
   assert.ok(fast.includes("ema(closes, 5)"));
   assert.ok(fast.includes("ema(closes, 13)"));
 });
-test("ENTRY_1 is gated by trendline proximity and Stoch extreme, not global momentum", () => {
-  assert.match(source, /entry1Eligible=!!entry1TradeDirection&&!entry1DailyOpposes&&nearFast&&stochExtremeFast&&!hardCap/);
+test("ENTRY_1 is gated by fast daily bias, its directional trendline and Stoch extreme, not macro opposition", () => {
+  assert.match(source, /entry1Eligible=!!entry1TradeDirection&&nearFast&&stochExtremeFast&&!hardCap/);
+  assert.doesNotMatch(source, /entry1DailyOpposes/);
   assert.match(source, /if\(entry1Eligible&&!activePairPosition\)\{rawType="ENTRY_1";rawDirection=entry1TradeDirection;\}/);
   assert.doesNotMatch(source, /filtersPass=!!dailyTrend/);
 });
