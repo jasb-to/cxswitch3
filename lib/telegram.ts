@@ -70,10 +70,24 @@ export async function sendAlert(signal:any){
   // V28 mirrors its single executable target into tp1 and tp2 for compatibility; display it once.
 
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines}),signal:AbortSignal.timeout(6000)});
+  const body=await response.text().catch(()=>"");
+  let payload:any=null;
+  try{payload=JSON.parse(body);}catch{}
   if(!response.ok){
-    const body=await response.text().catch(()=>"");
     throw new Error(`Telegram sendMessage failed (${response.status}): ${body.slice(0,300)}`);
   }
+  if(!payload||typeof payload!=="object"){
+    throw new Error("Telegram sendMessage returned invalid JSON; delivery status ambiguous");
+  }
+  if(payload.ok!==true){
+    throw new Error(`Telegram sendMessage rejected by API (${response.status}): ${String(payload.description||"ok=false").slice(0,300)}`);
+  }
+  const messageId=Number(payload.result?.message_id);
+  if(!Number.isSafeInteger(messageId)||messageId<=0){
+    throw new Error("Telegram sendMessage response missing message_id; delivery status ambiguous");
+  }
+  console.log(`[TELEGRAM] accepted type=${type} message_id=${messageId}`);
+  return {messageId};
 }
 
 export async function sendJarvisUpdate(update:{
