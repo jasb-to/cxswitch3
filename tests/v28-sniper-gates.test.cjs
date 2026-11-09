@@ -87,7 +87,7 @@ test("hysteresis suppresses duplicate alerts only on the same 4H candle inside t
 });
 
 test("cron reports the actual reason a trigger did not produce a Signal object", () => {
-  assert.match(cron, /startsWith\("\\[HYSTERESIS\\]"/);
+  assert.match(cron, /startsWith\("\[HYSTERESIS\]"/);
   assert.match(cron, /detail=\$\{snapshot\.strategyStatus\}/);
 });
 
