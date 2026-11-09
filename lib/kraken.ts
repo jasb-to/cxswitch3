@@ -86,6 +86,11 @@ const OHLC_MAX_CONSECUTIVE_FAILURES = 3;
 const OHLC_CIRCUIT_COOLDOWN_MS = 60_000;
 const ohlcFailureState = new Map<string, { failures: number; openedAt?: number }>();
 
+export function markKrakenOhlcPairSuccess(pair: string): void {
+  // Reset only after all requested intervals for the pair succeeded.
+  ohlcFailureState.delete(pair);
+}
+
 export async function getCandles(pair: string, interval: number = 60, since?: number): Promise<Candle[]> {
   const failureState = ohlcFailureState.get(pair);
   if (failureState && failureState.failures >= OHLC_MAX_CONSECUTIVE_FAILURES) {
@@ -130,7 +135,6 @@ export async function getCandles(pair: string, interval: number = 60, since?: nu
       close: parseFloat(c[4]),
       volume: parseFloat(c[6]),
     }));
-    ohlcFailureState.delete(pair);
     return candles;
   } catch (error) {
     const failures = (ohlcFailureState.get(pair)?.failures ?? 0) + 1;
