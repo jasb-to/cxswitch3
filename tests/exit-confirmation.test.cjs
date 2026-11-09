@@ -22,7 +22,7 @@ test("target is one 5 ATR objective; TP2 is compatibility mirror only", () => {
 test("active management calls the V28 shouldHold and persists exits", () => {
   assert.ok(cron.includes("shouldHold(toSignalLike(alert)"));
   assert.ok(cron.includes('"stoch_extreme_opposite_exit"'));
-  assert.ok(cron.includes('"daily_trend_reversal_unprofitable"'));
+  assert.ok(cron.includes('"daily_ema8_21_reversed_unprofitable"'));
 });
 
 test("alert matrix still permits ENTRY_1 and ADD while ENTRY_2 remains silent", () => {
