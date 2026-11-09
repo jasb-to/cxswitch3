@@ -48,7 +48,7 @@ test("ADD requires an active same-direction position and original breakout confi
   const generate = body("generateSignal");
   assert.match(evaluate, /activeMatch=!!macro\.direction&&activeSignals\.some/);
   assert.match(generate, /activeMatch=!!macro\.direction&&_activeSignals\.some/);
-  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendline&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap)"));
+  assert.ok(generate.includes("else if(activeMatch&&macro.direction&&trendlineMacro&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap)"));
 });
 
 test("4H EMA5/13 is management context, not an ENTRY_1 or ENTRY_2 entry veto", () => {
