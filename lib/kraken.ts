@@ -45,11 +45,13 @@ function releaseInFlightSlot(): void {
   else inFlightRequests = Math.max(0, inFlightRequests - 1);
 }
 
-async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000): Promise<Response> {
+async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000, maxAttempts = 2): Promise<Response> {
   // Never automatically retry private POSTs: a timed-out exchange order may
-  // already have been accepted by the exchange.
+  // already have been accepted by the exchange. OHLC callers can also opt out
+  // of retries so a pair-level circuit breaker can fail fast during outages.
   const retryable = (opts?.method ?? "GET").toUpperCase() === "GET";
-  for (let attempt = 0; attempt < (retryable ? 2 : 1); attempt++) {
+  const attempts = retryable ? Math.max(1, maxAttempts) : 1;
+  for (let attempt = 0; attempt < attempts; attempt++) {
     await acquireInFlightSlot();
     try {
       await waitForRequestSlot();
@@ -59,7 +61,7 @@ async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000): Pro
         // not cause the retry to fail immediately using the same signal.
         signal: opts?.signal ?? AbortSignal.timeout(timeoutMs),
       });
-      if (retryable && res.status === 429 && attempt === 0) {
+      if (retryable && res.status === 429 && attempt + 1 < attempts) {
         console.warn("[KRAKEN] HTTP 429; retrying once after backoff");
         await new Promise(resolve => setTimeout(resolve, 1000));
         continue;
@@ -67,7 +69,7 @@ async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000): Pro
       return res;
     } catch (error) {
       const name = (error as { name?: string })?.name;
-      if (retryable && attempt === 0 && (name === "TimeoutError" || name === "AbortError")) {
+      if (retryable && attempt + 1 < attempts && (name === "TimeoutError" || name === "AbortError")) {
         console.warn(`[KRAKEN] ${name}; retrying request once`);
         await new Promise(resolve => setTimeout(resolve, 250));
         continue;
@@ -77,39 +79,66 @@ async function rateFetch(url: string, opts?: RequestInit, timeoutMs = 6000): Pro
       releaseInFlightSlot();
     }
   }
-  throw new Error("Kraken request failed after retry");
+  throw new Error(`Kraken request failed after ${attempts} attempt(s)`);
 }
 
-export async function getCandles(pair: string, interval: number = 60, since?: number): Promise<Candle[]> {
-  const defaultSince = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
-  const url = new URL(`${KRAKEN_API_URL}/0/public/OHLC`);
-  url.searchParams.set("pair", pair);
-  url.searchParams.set("interval", String(interval));
-  url.searchParams.set("since", String(since ?? defaultSince));
-  const res = await rateFetch(url.toString(), undefined, 4000);
-  if (!res.ok) throw new Error(`Kraken OHLC HTTP ${res.status}`);
-  const data = await res.json();
-  if (data.error?.length > 0) throw new Error(`Kraken OHLC error: ${data.error.join(", ")}`);
-  const key = Object.keys(data.result).find(k => k !== "last");
-  if (!key) throw new Error("No OHLC data");
-  const raw = data.result[key];
-  if (!Array.isArray(raw)) throw new Error(`OHLC not array: ${typeof raw}`);
+const OHLC_MAX_CONSECUTIVE_FAILURES = 3;
+const OHLC_CIRCUIT_COOLDOWN_MS = 60_000;
+const ohlcFailureState = new Map<string, { failures: number; openedAt?: number }>();
 
-  const intervalMs = interval * 60 * 1000;
-  const now = Date.now();
-  if (raw.length > 0) {
-    const lastCandleTime = raw[raw.length - 1][0] * 1000;
-    if (lastCandleTime + intervalMs > now) raw.pop();
+export async function getCandles(pair: string, interval: number = 60, since?: number): Promise<Candle[]> {
+  const failureState = ohlcFailureState.get(pair);
+  if (failureState && failureState.failures >= OHLC_MAX_CONSECUTIVE_FAILURES) {
+    if (failureState.openedAt && Date.now() - failureState.openedAt < OHLC_CIRCUIT_COOLDOWN_MS) {
+      throw new Error(`Kraken OHLC circuit open for ${pair} after ${failureState.failures} consecutive failures`);
+    }
+    // Permit a fresh attempt after the short cooldown rather than leaving the
+    // pair disabled for the lifetime of a warm serverless instance.
+    ohlcFailureState.delete(pair);
+    console.warn(`[KRAKEN] OHLC circuit half-open for ${pair}; allowing a fresh request`);
   }
 
-  return raw.map((c: any) => ({
-    timestamp: c[0] * 1000,
-    open: parseFloat(c[1]),
-    high: parseFloat(c[2]),
-    low: parseFloat(c[3]),
-    close: parseFloat(c[4]),
-    volume: parseFloat(c[6]),
-  }));
+  try {
+    const defaultSince = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
+    const url = new URL(`${KRAKEN_API_URL}/0/public/OHLC`);
+    url.searchParams.set("pair", pair);
+    url.searchParams.set("interval", String(interval));
+    url.searchParams.set("since", String(since ?? defaultSince));
+    // Hard 4s timeout and no per-request retry. The route batches three
+    // intervals per pair and the pair-level breaker caps repeated failures.
+    const res = await rateFetch(url.toString(), undefined, 4000, 1);
+    if (!res.ok) throw new Error(`Kraken OHLC HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error?.length > 0) throw new Error(`Kraken OHLC error: ${data.error.join(", ")}`);
+    const key = Object.keys(data.result).find(k => k !== "last");
+    if (!key) throw new Error("No OHLC data");
+    const raw = data.result[key];
+    if (!Array.isArray(raw)) throw new Error(`OHLC not array: ${typeof raw}`);
+
+    const intervalMs = interval * 60 * 1000;
+    const now = Date.now();
+    if (raw.length > 0) {
+      const lastCandleTime = raw[raw.length - 1][0] * 1000;
+      if (lastCandleTime + intervalMs > now) raw.pop();
+    }
+
+    const candles = raw.map((c: any) => ({
+      timestamp: c[0] * 1000,
+      open: parseFloat(c[1]),
+      high: parseFloat(c[2]),
+      low: parseFloat(c[3]),
+      close: parseFloat(c[4]),
+      volume: parseFloat(c[6]),
+    }));
+    ohlcFailureState.delete(pair);
+    return candles;
+  } catch (error) {
+    const failures = (ohlcFailureState.get(pair)?.failures ?? 0) + 1;
+    const openedAt = failures >= OHLC_MAX_CONSECUTIVE_FAILURES ? Date.now() : undefined;
+    ohlcFailureState.set(pair, { failures, openedAt });
+    console.error(`[KRAKEN] OHLC ${pair} failure ${failures}/${OHLC_MAX_CONSECUTIVE_FAILURES}: ${String(error)}`);
+    throw error;
+  }
 }
 
 export async function getCurrentPrice(pair: string): Promise<number> {
