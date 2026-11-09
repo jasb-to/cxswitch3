@@ -62,7 +62,8 @@ function isDefinitivelyRejectedBeforeDelivery(error:unknown):boolean{
   const message=error instanceof Error?error.message:String(error);
   if(message.startsWith("Telegram alerting is not configured:")||
      message.startsWith("Only ENTRY_1, ENTRY_2 and ADD alerts are permitted:")||
-     message.startsWith("Telegram alert refused:"))return true;
+     message.startsWith("Telegram alert refused:")||
+     message.startsWith("Telegram sendMessage rejected by API ("))return true;
   const statusPrefix="Telegram sendMessage failed (";
   if(!message.startsWith(statusPrefix))return false;
   const status=Number(message.slice(statusPrefix.length,statusPrefix.length+3));
@@ -266,7 +267,7 @@ export async function GET(request:Request){
    alerts.push({status:"preflight_management_failed",reason:String(error)});
  }
 
- await Promise.all(PAIRS.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;try{
+ await Promise.all(PAIRS.map(async (pair)=>{const pairStarted=Date.now();let stateMarket:any=undefined;let stateCandles4h:any[]=[];let stateCandles15m:any[]=[];let stateSignal:Signal|undefined=undefined;let dispatchPairSignal:Signal|undefined=undefined;let dispatchStage="signal_evaluation";let stateAddAttempted=false;let telegramClaimed=false;let telegramSendStarted=false;let claimedTelegramKey:string|undefined=undefined;try{
   const candleSet=candleByPair.get(pair);
   if(!candleSet||!candleSet.c1.length||!candleSet.c4.length||!candleSet.c15.length){
     console.log(`[PAIR] ${pair} — SKIP insufficient candles`);
@@ -370,26 +371,27 @@ export async function GET(request:Request){
   dispatchStage="claim_telegram_alert";
   const claimed=await claimTelegramAlert(alertKey);
   if(!claimed){console.log(`[PAIR] ${pair} — ${signal.type} blocked: lifecycle alert already claimed (${alertKey})`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=lifecycle_alert_already_claimed key=${alertKey}`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=lifecycle_alert_already_claimed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"telegram_deduped_blocked"});return;}
+  telegramClaimed=true;claimedTelegramKey=alertKey;
   dispatchStage="jarvis_review";
   const jarvisReview=await reviewFiredSignal(signal,snapshot);
   if(jarvisReview?.verdict==="VETO"){
-    await releaseTelegramAlert(alertKey);
+    await releaseTelegramAlert(alertKey);telegramClaimed=false;
     console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=jarvis_veto`);
     console.log(`[STATE ADD] pair=${pair} status=skipped reason=jarvis_veto`);
     console.log(`[JARVIS] ${pair} — ${signal.type} ${signal.direction} vetoed: ${jarvisReview.reason}`);
     alerts.push({pair,direction:signal.direction,type:signal.type,status:"jarvis_veto",reason:jarvisReview.reason});
     return;
   }
-  dispatchStage="telegram_send";
+  dispatchStage="telegram_send";telegramSendStarted=true;
   try{
-    await sendAlert({symbol:signal.pair,state:"ENTRY",price:signal.entry,bias:signal.direction,stopLoss:signal.stop,takeProfit:signal.tp2,takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,signalClass:signal.signalClass,sizeMultiplier:signal.sizeMultiplier,context:signal.context,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",jarvis:jarvisReview});
-    alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
+    const telegramDelivery=await sendAlert({symbol:signal.pair,state:"ENTRY",price:signal.entry,bias:signal.direction,stopLoss:signal.stop,takeProfit:signal.tp2,takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,signalClass:signal.signalClass,sizeMultiplier:signal.sizeMultiplier,context:signal.context,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",jarvis:jarvisReview});
+    alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent",telegramMessageId:telegramDelivery.messageId});
     newSignals.push(signal);
     console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
     console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=sent reason=telegram_api_accepted`);
   }catch(e){
     if(isDefinitivelyRejectedBeforeDelivery(e)){
-      try{await releaseTelegramAlert(alertKey);}
+      try{await releaseTelegramAlert(alertKey);telegramClaimed=false;}
       catch(releaseError){console.error(`[ALERT DISPATCH] pair=${pair} could not release rejected-delivery claim: ${String(releaseError)}`);}
     }else{
       // Telegram may have accepted the message even though the client never received
@@ -407,6 +409,10 @@ export async function GET(request:Request){
   console.log(`[STATE ADD] pair=${pair} status=queued_for_batch id=${signal.id}`);
   dispatchStage="complete";
  } catch(e){
+    if(telegramClaimed&&!telegramSendStarted&&claimedTelegramKey){
+      try{await releaseTelegramAlert(claimedTelegramKey);telegramClaimed=false;console.warn(`[ALERT DISPATCH] pair=${pair} released lifecycle claim after pre-send failure at stage=${dispatchStage}`);}
+      catch(releaseError){console.error(`[ALERT DISPATCH] pair=${pair} could not release pre-send lifecycle claim: ${String(releaseError)}`);}
+    }
     if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(e)))stateDegraded=true;
     console.error(`[PAIR] ${pair} — ERROR at stage=${dispatchStage}`,e);
     if(dispatchPairSignal){if(dispatchStage!=="telegram_send"&&dispatchStage!=="signal_history_append"&&dispatchStage!=="active_state_add"&&dispatchStage!=="complete")console.error(`[ALERT DISPATCH] pair=${pair} direction=${dispatchPairSignal.direction} status=failed reason=exception_at_${dispatchStage}: ${String(e)}`);if(!stateAddAttempted)console.error(`[STATE ADD] pair=${pair} status=skipped reason=exception_before_state_add stage=${dispatchStage}`);}
