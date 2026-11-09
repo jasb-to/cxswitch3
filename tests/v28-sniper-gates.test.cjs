@@ -100,5 +100,7 @@ test("dashboard keeps macro, fast direction and management momentum separately v
   assert.match(dashboard, /DAILY MACRO \(8\/21\)/);
   assert.match(dashboard, /FAST BIAS \(5\/13\)/);
   assert.match(dashboard, /4H EMA5\/13 MOMENTUM/);
+  assert.match(dashboard, /WEAK \\(HOLD\\)/);
+  assert.doesNotMatch(dashboard, /WEAK \\(EXIT\\)/);
   assert.match(dashboard, /HARD CAP/);
 });
