@@ -55,20 +55,20 @@ test("BULL_LOW is a half-size regime", () => {
   assert.equal(regime.state, "BULL_LOW");
   assert.equal(regime.sizeMultiplier, 0.5);
 });
-test("CHOP is a half-size regime without erasing the daily EMA5/13 trend", () => {
+test("Weak bullish regime is half-size and retains the daily macro direction", () => {
   const chopTargets = [...Array.from({ length: 36 }, (_, i) => 100 + i * (50 / 35)), 145, 140, 135, 138];
   const candles = candlesFromDaily(chopTargets);
   const regime = strategy.computeRegime(candles);
   const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
-  assert.equal(regime.state, "CHOP");
+  assert.equal(regime.state, "BULL_LOW");
   assert.equal(regime.sizeMultiplier, 0.5);
   assert.ok(["LONG", "SHORT", null].includes(snapshot.dailyDirection));
 });
-test("MED regimes use full size; daily EMA5/13 and 4H EMA5/13 roles are aligned", () => {
+test("Strong bearish regime uses full size; daily macro and 4H tactical directions remain visible", () => {
   const candles = candlesFromDaily(trendTargets("bearMed"));
   const regime = strategy.computeRegime(candles);
   const snapshot = strategy.getMarketSnapshot("TEST", [], candles, []);
-  assert.equal(regime.state, "BEAR_MED");
+  assert.equal(regime.state, "BEAR_HIGH");
   assert.equal(regime.sizeMultiplier, 1);
   assert.equal(snapshot.dailyDirection, "SHORT");
   assert.ok(["BULL", "BEAR", "NEUTRAL"].includes(snapshot.fourHTacticalDirection));
