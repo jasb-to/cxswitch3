@@ -20,7 +20,7 @@ test("Kraken OHLC circuit breaker is pair-scoped and opens after three consecuti
   assert.match(kraken, /ohlcFailureState\.delete\(pair\)/);
   assert.match(kraken, /OHLC_CIRCUIT_COOLDOWN_MS = 60_000/);
   assert.match(kraken, /markKrakenOhlcPairSuccess\(pair: string\)/);
-  assert.match(cron, /markKrakenOhlcPairSuccess\(krakenPairFormat\(pair\+"\\/USD"\)\)/);
+  assert.ok(cron.includes('markKrakenOhlcPairSuccess(krakenPairFormat(pair+"/USD"))'));
 });
 
 test("Cron skips incomplete pairs and aborts marketData=0 before position management or signal evaluation", () => {
