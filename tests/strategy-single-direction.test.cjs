@@ -71,7 +71,7 @@ test("Strong bearish regime uses full size; daily macro and 4H tactical directio
   assert.equal(regime.state, "BEAR_HIGH");
   assert.equal(regime.sizeMultiplier, 1);
   assert.equal(snapshot.dailyDirection, "SHORT");
-  assert.ok(["BULL", "BEAR", "NEUTRAL"].includes(snapshot.fourHTacticalDirection));
+  assert.ok(["LONG", "SHORT", "NEUTRAL"].includes(snapshot.fourHTacticalDirection));
   assert.match(source, /ema\(closes,\s*5\)/);
   assert.match(source, /ema\(closes,\s*13\)/);
 });
