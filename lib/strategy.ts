@@ -490,7 +490,6 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  return {direction,zone:null,trendlineSlope:0,trendline:selectedTrendline?{price:selectedTrendline.price,distancePct:Math.abs(rawType==="ENTRY_1"?(fastTrendlineDistancePct??Infinity):(macroTrendlineDistancePct??Infinity)),r2:selectedTrendline.r2,reason:rawType==="ENTRY_1"?"V28 fast-direction 4H trendline":"V28 macro-direction 4H trendline"}:null,trendlines:{fast:trendlineFast?{price:trendlineFast.price,distancePct:fastTrendlineDistancePct}:null,macro:trendlineMacro?{price:trendlineMacro.price,distancePct:macroTrendlineDistancePct}:null},alignment:{daily:macro.direction,entry1Daily:fast.direction,fourH:fourHDirection,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null},momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,filtersPass:!hardCap,trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline:nearFast||nearMacro,stochExtreme:stochExtremeFast,stochTurning:stochTurningMacro,beyondTrendline:beyond,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:entry1Ready?"Fast daily bias + directional 4H Stoch extreme + fast-direction trendline proximity":"not_ready",entry2Reason:entry2Ready?"Daily macro EMA8/21 + macro-direction trendline proximity + Stoch turn outside directional extreme":"not_ready",addMomentumConfirmed:volUp||stochMomentum||adxStrong},stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType};
 }
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,_lastBreakout?:any,_entry1State?:any,_entry2AlreadyFired=false,_activeSignals:Array<{pair:string;direction:"LONG"|"SHORT";type?:string}>=[]):SignalResult{
- void candles1h;void candles15m;
  const debug:string[]=[],bars=[...candles4h],now=nowOverride??Date.now();
  if(bars.length<30){debug.push("[WAIT] Insufficient 4H candle data");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const dailyCandles=aggregateTo1D(bars),macro=trend1DMacro(dailyCandles),fast=trend1DFast(dailyCandles),regime=computeRegime(bars);
@@ -581,8 +580,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 }
 
 // --- MARKET SNAPSHOT ---
-export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]):any{
- void candles1h;void candles15m;
+export function getMarketSnapshot(pair:string,_candles1h:Candle[],candles4h:Candle[],_candles15m:Candle[]):any{
  const bars=[...candles4h],dailyCandles=aggregateTo1D(bars),macro=trend1DMacro(dailyCandles),fast=trend1DFast(dailyCandles),reg=computeRegime(bars),q=bars.map(x=>x.close),dq=dailyCandles.map(x=>x.close);
  const st=stochRsi(q),st1=stochRsi(dq),e5=ema(q,5).at(-1)??0,e13=ema(q,13).at(-1)??0,e8=ema(q,8).at(-1)??0,e21=ema(q,21).at(-1)??0;
  const d5=ema(dq,5).at(-1)??0,d8=ema(dq,8).at(-1)??0,d13=ema(dq,13).at(-1)??0,d21=ema(dq,21).at(-1)??0;
@@ -608,8 +606,7 @@ export function filterExpiredSignals(signals:Signal[],prices:Record<string,numbe
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if(v.reason==="sl_hit")return"SL_HIT";if(v.reason==="tp_hit")return"TP_HIT";return"ACTIVE";}
 export interface HoldResult{shouldHold:boolean;reason:string;managementState:"STAY"|"EXIT";recommendation:"STAY IN TRADE"|"EXIT TRADE";newStop?:number;fourHDirection:Direction|null;momentumAligned:boolean|null;profitable:boolean|null}
-export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),lastExitAlertAt?:number):HoldResult{
-  void lastExitAlertAt;
+export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),_lastExitAlertAt?:number):HoldResult{
   const bars=[...c], fallbackDirection=s.context?.fourHDirection??null;
   const fallbackAligned=typeof s.context?.momentumAligned==="boolean"?s.context.momentumAligned:null;
   if(bars.length<22)return{shouldHold:true,reason:"insufficient_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE",fourHDirection:fallbackDirection,momentumAligned:fallbackAligned,profitable:null};
