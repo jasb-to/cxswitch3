@@ -100,7 +100,7 @@ function setHysteresis(pair:string,type:"ENTRY_1"|"ENTRY_2"|"ADD",price:number,c
 export async function loadTrendlinesFromKV(): Promise<void> {
   const state = await getTrendlineState();
   trendlineStore.clear();
-  // Migrate old pair:FAST|MACRO:DIRECTION keys into one shared trendline per pair.
+  // Migrate legacy direction-labelled trendline keys; current cache entries are pair:LONG / pair:SHORT.
   // Prefer the former MACRO line because the shared line is oriented by daily EMA 8/21.
   const selected = new Map<string, { data: unknown; priority: number; updated: number }>();
   for (const [key, data] of Object.entries(state)) {
@@ -466,7 +466,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  else if(activeMatch&&macro.direction&&trendline&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap){rawType="ADD";direction=macro.direction;}
  const regime=computeRegime(bars),missing:string[]=[];
  if(!macro.direction)missing.push("Daily macro EMA8/21 unavailable: ENTRY_2 and ADD unavailable");
- if(!trendline)missing.push("shared 4H trendline unavailable");
+ if(!trendline)missing.push("directional 4H trendline unavailable");
  if(!nearFast)missing.push("ENTRY_1 outside 1.2% fast-direction 4H trendline proximity");
  if(!nearMacro)missing.push("ENTRY_2/ADD outside 1.2% macro-direction 4H trendline proximity");
  if(!entry1TradeDirection)missing.push("ENTRY_1 fast daily bias unavailable: requires EMA5/13 stack, price vs EMA5 and EMA5 slope");
@@ -475,7 +475,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  if(!activeMatch)missing.push("ADD requires an active same-direction position");
  if(hardCap)missing.push("hard Stoch exhaustion cap");
  if(!rawType)missing.push("V28 stage trigger not met");
- return {direction,zone:null,trendlineSlope:0,trendline:trendline?{price:trendline.price,distancePct:Math.abs(trendlineDist)*100,r2:trendline.r2,reason:"V28 shared 4H trendline"}:null,alignment:{daily:macro.direction,entry1Daily:fast.direction,fourH:fourHDirection,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null},momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,filtersPass:!hardCap,trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline:nearFast||nearMacro,stochExtreme:stochExtremeFast,stochTurning:stochTurningMacro,beyondTrendline:beyond,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:entry1Ready?"Fast daily bias + directional 4H Stoch extreme + fast-direction trendline proximity":"not_ready",entry2Reason:entry2Ready?"Daily EMA8/21 + shared 4H trendline proximity + Stoch turn outside directional extreme":"not_ready",addMomentumConfirmed:volUp||stochMomentum||adxStrong},stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType};
+ return {direction,zone:null,trendlineSlope:0,trendline:trendline?{price:trendline.price,distancePct:Math.abs(trendlineDist)*100,r2:trendline.r2,reason:"V28 directional 4H trendline"}:null,alignment:{daily:macro.direction,entry1Daily:fast.direction,fourH:fourHDirection,regime:regime.state,sizeMultiplier:regime.sizeMultiplier,momentumAligned,exhaustion:hardCap?"Stoch hard cap":null},momentumAligned,exhaustion:hardCap?"Stoch hard cap":null,filtersPass:!hardCap,trigger:{entry1:rawType==="ENTRY_1",entry2:rawType==="ENTRY_2",add:rawType==="ADD",signalType:rawType,nearTrendline:nearFast||nearMacro,stochExtreme:stochExtremeFast,stochTurning:stochTurningMacro,beyondTrendline:beyond,confirming,emaAligned,volUp,stochMomentum,adxStrong,entry1Reason:entry1Ready?"Fast daily bias + directional 4H Stoch extreme + fast-direction trendline proximity":"not_ready",entry2Reason:entry2Ready?"Daily macro EMA8/21 + macro-direction trendline proximity + Stoch turn outside directional extreme":"not_ready",addMomentumConfirmed:volUp||stochMomentum||adxStrong},stopCalc:null,missing:[...new Set(missing)],allPassed:!!rawType};
 }
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],currentPrice?:number,nowOverride?:number,lastBreakout?:any,_entry1State?:any,_entry2AlreadyFired=false,_activeSignals:Array<{pair:string;direction:"LONG"|"SHORT";type?:string}>=[]):SignalResult{
  void candles1h;void candles15m;void lastBreakout;void _entry1State;void _entry2AlreadyFired;
@@ -524,13 +524,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const finalType=rawType;
  const candleTimestamp=bars.at(-1)!.timestamp;
  if(finalType&&isHysteresisBlocked(pair,finalType,price,candleTimestamp)){debug.push("[HYSTERESIS] Duplicate "+finalType+" suppressed on same 4H candle (<0.5% price move)");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
- if(!finalType){debug.push("[WAIT] No V28 shared-trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
+ if(!finalType){debug.push("[WAIT] No V28 dual-track trendline/Stoch trigger");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const signalDirection:Direction|null=finalType==="ENTRY_1"?entry1TradeDirection:macro.direction;
  if(!signalDirection){debug.push("[WAIT] No directional setup available");return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const finalHardCap=st.k>95||st.k<5;
  if(finalHardCap){debug.push("[WAIT] Stoch hard exhaustion cap for "+signalDirection);return{market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};}
  const signalTl=finalType==="ENTRY_1"?trendlineFast:trendlineMacro;
- if(!signalTl)return{debug:["[SIGNAL BLOCKED] shared 4H trendline unavailable"]};
+ if(!signalTl)return{debug:["[SIGNAL BLOCKED] directional 4H trendline unavailable for "+finalType]};
  const avalue=atr(bars,14),recent=bars.slice(-20);
  if(!Number.isFinite(avalue)||avalue<=0)return{debug:["[SIGNAL BLOCKED] invalid ATR"]};
  const low=Math.min(...recent.map(x=>x.low)),high=Math.max(...recent.map(x=>x.high));let stop:number,target:number;
