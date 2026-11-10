@@ -129,6 +129,39 @@ function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
   };
 }
 
+/** Advisory-only radar: consumes existing snapshot values and never changes V28 gates or execution. */
+export function buildJarvisNarrative(marketSnapshot:any[], activeSignals:any[]):Record<string,string> {
+  const activeByPair=new Map((activeSignals||[]).map(x=>[String(x?.pair||""),x]));
+  const narratives:Record<string,string>={};
+  for(const m of marketSnapshot||[]){
+    const pair=String(m?.pair||"?"); const active=activeByPair.get(pair);
+    const regime=String(m?.regime||"UNKNOWN").replace(/_/g," "); const adx=Number(m?.adx);
+    const context=[regime!=="UNKNOWN"?regime+" regime":null,Number.isFinite(adx)&&adx>25?"Strong trend":null].filter(Boolean).join(" · ");
+    if(active){
+      const price=Number(m?.currentPrice??m?.price),entry=Number(active.entry);
+      const pnl=Number.isFinite(price)&&Number.isFinite(entry)&&entry>0?((price-entry)/entry*100)*(active.direction==="SHORT"?-1:1):null;
+      const aligned=m?.momentumAligned??m?.alignment?.momentumAligned;
+      const momentum=aligned===true?"4H EMA5/13 momentum is aligned, holding for target.":aligned===false?"4H EMA5/13 momentum is misaligned; tighten stop and monitor exit conditions.":"4H EMA5/13 momentum is unavailable.";
+      const pnlText=pnl===null?"PnL unavailable":(pnl>=0?"+":"")+pnl.toFixed(2)+"% PnL";
+      narratives[pair]="ACTIVE "+String(active.direction||"").toUpperCase()+" · "+pnlText+". "+momentum+(context?" "+context+".":""); continue;
+    }
+    const macro=String(m?.dailyDirection||"NEUTRAL").toUpperCase(),fast=String(m?.entry1Direction||"NEUTRAL").toUpperCase();
+    const side=(v:string):"LONG"|"SHORT"|null=>v==="LONG"||v==="BULL"||v==="BULLISH"?"LONG":v==="SHORT"||v==="BEAR"||v==="BEARISH"?"SHORT":null;
+    const macroSide=side(macro),fastSide=side(fast),dir=macroSide||fastSide;
+    const distance=Number(m?.trendlineDistancePct??m?.distToTrendline);
+    const k=Number(m?.entry1ClosedStochK??m?.stochK4h??m?.stochK);
+    const nearLine=Number.isFinite(distance)&&distance<=1.2;
+    let analysis:string;
+    if(!macroSide||!fastSide) analysis="Macro "+macro+" · fast 5/13 bias "+fast+". Waiting for both directional readings.";
+    else if(macroSide!==fastSide) analysis="Watching "+pair+" · macro "+macroSide+" conflicts with fast 5/13 "+fastSide+". No aligned V28 setup yet.";
+    else if(!nearLine) analysis="Watching "+pair+" "+dir+". Trend is aligned, but price is "+(Number.isFinite(distance)?distance.toFixed(2)+"%":"an unknown distance")+" from the trendline. Need a pullback to the line.";
+    else if(!Number.isFinite(k)) analysis="Watching "+pair+" "+dir+". Price is at the trendline, but Stoch K is unavailable; waiting for the V28 Stoch condition.";
+    else if(dir==="LONG"?k<=20:k>=80) analysis="READY: "+pair+" "+dir+". Price is at the trendline and Stoch K is "+k.toFixed(1)+" (extreme). Waiting for the next candle close to confirm the V28 trigger.";
+    else analysis="Watching "+pair+" "+dir+". Price is at the trendline, but Stoch K is "+k.toFixed(1)+". Waiting for Stoch to hit "+(dir==="LONG"?"20":"80")+" to trigger.";
+    narratives[pair]=analysis+(context?" "+context+".":"");
+  }
+  return narratives;
+}
 function pairState(m:any, active:any): JarvisPairState {
   const candles=Array.isArray(m?.momentumCandles4h)?m.momentumCandles4h:[];
   const evaluation=candles.length?evaluateGates(String(m?.pair||"?"),candles,Number(m?.price||m?.currentPrice||0)):null;
@@ -190,12 +223,17 @@ export async function runJarvis(marketData:any[], active:any[]): Promise<JarvisS
   const activeByPair=new Map(active.map(x=>[x.pair,x]));
   const pairs:Record<string,JarvisPairState>={};
   for(const m of marketData) pairs[m.pair]=pairState(m,activeByPair.get(m.pair));
+  const narratives=buildJarvisNarrative(marketData,active);
+  for(const [pair,narrative] of Object.entries(narratives)){if(pairs[pair]){pairs[pair].currentAnalysis=narrative;pairs[pair].reason=activeByPair.has(pair)?"Active position · advisory momentum review":"Pre-signal radar · monitoring existing V28 conditions";}}
   const all=Object.values(pairs);
   const hasVeto=false;
   const hasWarn=all.some(x=>x.verdict==="WARN");
+  const watched=all.filter(x=>!x.position).length;
+  const closest=marketData.filter(m=>!activeByPair.has(m.pair)&&Number.isFinite(Number(m.trendlineDistancePct??m.distToTrendline))).sort((a,b)=>Number(a.trendlineDistancePct??a.distToTrendline)-Number(b.trendlineDistancePct??b.distToTrendline))[0];
+  const closestText=closest?" Closest is "+closest.pair+" "+String(closest.dailyDirection||"")+": "+Number(closest.trendlineDistancePct??closest.distToTrendline).toFixed(2)+"% from the trendline.":"";
   const snapshot:JarvisSnapshot={
     portfolioState:hasVeto?"VETO":hasWarn?"WARN":"GOOD",
-    whatChanged:hasWarn?"Jarvis has something worth watching.":"Nothing important has changed.",
+    whatChanged:"Watching "+watched+" setups."+closestText,
     pairs,
     updatedAt:Date.now(),
   };

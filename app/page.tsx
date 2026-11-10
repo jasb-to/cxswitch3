@@ -103,7 +103,8 @@ export default function Dashboard(){
       <div className="min-w-0 grid grid-cols-[3.5rem_minmax(0,1fr)] items-start gap-2 text-[11px] leading-5"><span className="pt-0.5 text-[9px] text-white/35 font-bold tracking-wide">STATUS</span><span className={`min-w-0 whitespace-normal break-words [overflow-wrap:anywhere] ${statusTone}`}>{status}{trendlineNote}</span></div>
       
       <div className="min-w-0 flex items-start gap-1 text-[9px] leading-4"><span className="pt-0.5 text-[9px] text-white/35 font-bold tracking-wide">STOCH</span><span className={`min-w-0 whitespace-normal break-words [overflow-wrap:anywhere] ${stochTone}`}>{typeof closedK==="number"&&typeof closedD==="number"?`${closedK.toFixed(1)} / ${closedD.toFixed(1)}`:"— / —"} — {stochState}{staleNote}</span></div>
-      <div className="grid grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 border-t border-white/[0.07] pt-2 text-[9px] leading-4"><span className="text-white/30 font-bold tracking-wide">JARVIS</span><span className={`rounded border px-2 py-1 text-[9px] font-black tracking-wider ${verdictTone}`}>{verdict}</span></div>
+      <div className="flex items-center gap-2 border-t border-white/[0.07] pt-2 text-[9px] leading-4"><span className="text-white/30 font-bold tracking-wide">JARVIS ANALYST</span><span className={`rounded border px-2 py-1 text-[8px] font-black tracking-wider ${verdictTone}`}>{verdict}</span></div>
+      <div className="rounded-md border border-white/[0.07] bg-black/30 p-2 text-[9px] leading-4 text-white/75">{j?.currentAnalysis??m?.jarvisState??"Awaiting market snapshot."}</div>
       {alertSent&&<div className="mt-1 rounded-md border border-white/[0.08] bg-white/[0.025] px-2 py-1.5">
         <div className={`text-[8px] font-black tracking-wide ${a.direction==="LONG"?"text-green-300":"text-red-300"}`}>{isActive?"ACTIVE TRADE":"ALERT SENT"} · {a.direction} {a.type} · ENTRY {money(a.entry)} · SL {money(a.stop)} · TP1 {money(a.tp1)} · TP2 {money(a.tp2??a.target)}</div>
         {isActive&&typeof pnlPct==="number"&&<div className={`mt-1 text-[10px] font-black tabular-nums ${activeProfitable?"text-green-300":"text-red-300"}`}>PNL {pct(pnlPct)} · CURRENT {money(p)}</div>}
@@ -111,11 +112,11 @@ export default function Dashboard(){
       </div>}
       <div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
         {isActive&&<div>POSITION SIZE · {Math.round((m?.sizeMultiplier??a?.sizeMultiplier??0)*100)}% size</div>}
-        <div>JARVIS STATE · {m?.jarvisState??j?.currentAnalysis??j?.reason??"—"}</div>
-        <div>JARVIS REASON · {j?.reason??a?.jarvisReason??"—"}</div>
+        <div>JARVIS STATE · {j?.currentAnalysis??m?.jarvisState??"—"}</div>
+        <div>JARVIS REASON · {j?.reason??a?.jarvisReason??"Advisory only · V28 execution unchanged"}</div>
         <div>STRUCTURE · {m?.structureShift?.reason??"—"}</div>
         <div>STRATEGY STATUS · {status}</div>
-        <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {m?.distToTrendline!=null?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
+        <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {typeof m?.trendlineDistancePct==="number"?`${m.trendlineDistancePct.toFixed(2)}%`:typeof m?.distToTrendline==="number"?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
       </div>
       <div className="mt-auto flex justify-end pt-1">
         <button
