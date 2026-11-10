@@ -224,7 +224,7 @@ export async function runJarvis(marketData:any[], active:any[]): Promise<JarvisS
   const pairs:Record<string,JarvisPairState>={};
   for(const m of marketData) pairs[m.pair]=pairState(m,activeByPair.get(m.pair));
   const narratives=buildJarvisNarrative(marketData,active);
-  for(const [pair,narrative] of Object.entries(narratives)){if(pairs[pair])pairs[pair].currentAnalysis=narrative;}
+  for(const [pair,narrative] of Object.entries(narratives)){if(pairs[pair]){pairs[pair].currentAnalysis=narrative;pairs[pair].reason=activeByPair.has(pair)?"Active position · advisory momentum review":"Pre-signal radar · monitoring existing V28 conditions";}}
   const all=Object.values(pairs);
   const hasVeto=false;
   const hasWarn=all.some(x=>x.verdict==="WARN");
