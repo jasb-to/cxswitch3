@@ -378,6 +378,7 @@ export async function GET(request:Request){
   const sameDirectionExisting=!!existing&&existing.direction===signal.direction;
    const entry2Continuation=sameDirectionExisting&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2";
    if(existing&&existing.direction!==signal.direction){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=opposite_direction_position_exists`);return;}
+   if(signal.type==="ADD"&&(!existing||existing.direction!==signal.direction||!(existing.type==="ENTRY_1"||existing.type==="ENTRY_2"))){console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=confirmed_active_entry_1_or_2_required`);return;}
    if(existing&&signal.type!=="ADD"&&!entry2Continuation&&signal.type!=="ENTRY_2"){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=active_position_exists`);return;}
    const history=historyAtStart;
    if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=pair_paused`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=pair_paused`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
