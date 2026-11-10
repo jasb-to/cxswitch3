@@ -116,7 +116,7 @@ export default function Dashboard(){
         <div>JARVIS REASON · {j?.reason??a?.jarvisReason??"Advisory only · V28 execution unchanged"}</div>
         <div>STRUCTURE · {m?.structureShift?.reason??"—"}</div>
         <div>STRATEGY STATUS · {status}</div>
-        <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {m?.distToTrendline!=null?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
+        <div>TRENDLINE · {m?.trendlinePrice!=null?money(m.trendlinePrice):"—"} · DISTANCE · {typeof m?.trendlineDistancePct==="number"?`${m.trendlineDistancePct.toFixed(2)}%`:typeof m?.distToTrendline==="number"?`${m.distToTrendline.toFixed(2)}%`:"—"}</div>
       </div>
       <div className="mt-auto flex justify-end pt-1">
         <button
