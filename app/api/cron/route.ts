@@ -378,6 +378,7 @@ export async function GET(request:Request){
   const sameDirectionExisting=!!existing&&existing.direction===signal.direction;
    const entry2Continuation=sameDirectionExisting&&existing.type==="ENTRY_1"&&signal.type==="ENTRY_2";
    if(existing&&existing.direction!==signal.direction){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=opposite_direction_position_exists`);return;}
+   if(signal.type==="ADD"&&(!existing||existing.direction!==signal.direction||!(existing.type==="ENTRY_1"||existing.type==="ENTRY_2"))){console.log(`[ALERT DISPATCH] pair=${pair} type=ADD status=suppressed reason=confirmed_active_entry_1_or_2_required`);return;}
    if(existing&&signal.type!=="ADD"&&!entry2Continuation&&signal.type!=="ENTRY_2"){console.log(`[ALERT DISPATCH] pair=${pair} type=${signal.type} status=suppressed reason=active_position_exists`);return;}
    const history=historyAtStart;
    if(PAUSED_ALERT_PAIRS.has(pair)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);console.log(`[ALERT DISPATCH] pair=${pair} direction=${signal.direction} status=suppressed reason=pair_paused`);console.log(`[STATE ADD] pair=${pair} status=skipped reason=pair_paused`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});return;}
@@ -403,7 +404,8 @@ export async function GET(request:Request){
   }
   dispatchStage="telegram_send";telegramSendStarted=true;
   try{
-    const telegramDelivery=await sendAlert({symbol:signal.pair,state:"ENTRY",price:signal.entry,bias:signal.direction,stopLoss:signal.stop,takeProfit:signal.tp2,takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,signalClass:signal.signalClass,sizeMultiplier:signal.sizeMultiplier,context:signal.context,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",jarvis:jarvisReview});
+    const sharedPositionTarget=signal.type==="ADD"&&existing?(existing.tp1??existing.tp2??existing.target):undefined;
+    const telegramDelivery=await sendAlert({symbol:signal.pair,state:"ENTRY",price:signal.entry,bias:signal.direction,stopLoss:signal.stop,takeProfit:signal.tp2,takeProfit1:signal.tp1,takeProfit2:signal.tp2,sharedPositionTarget,rr:signal.rr,expectedMove:signal.expectedMove,signalClass:signal.signalClass,sizeMultiplier:signal.sizeMultiplier,context:signal.context,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:"📊",jarvis:jarvisReview});
     alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent",telegramMessageId:telegramDelivery.messageId});
     newSignals.push(signal);
     console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP ${signal.tp2}`);
