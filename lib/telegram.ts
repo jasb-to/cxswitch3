@@ -23,8 +23,11 @@ export async function sendAlert(signal:any){
   const emoji=signal.signalEmoji||"📊";
   const dir=signal.bias==="LONG"?"📈":"📉";
   const entry=Number(signal.price??signal.entry);
-  const rawTp1=Number(signal.takeProfit1??signal.tp1);
-  const rawTp2=Number(signal.takeProfit2??signal.tp2);
+  // ADD alerts share the original active position's target; keep the ADD leg's own entry and stop.
+  const sharedPositionTarget=Number(signal.sharedPositionTarget);
+  const useSharedPositionTarget=type==="ADD"&&Number.isFinite(sharedPositionTarget)&&sharedPositionTarget>0;
+  const rawTp1=useSharedPositionTarget?sharedPositionTarget:Number(signal.takeProfit1??signal.tp1);
+  const rawTp2=useSharedPositionTarget?sharedPositionTarget:Number(signal.takeProfit2??signal.tp2);
   const singleTarget=Number.isFinite(rawTp1)&&Number.isFinite(rawTp2)&&rawTp1===rawTp2;
   const tp1=rawTp1;
   const tp2=rawTp2;
@@ -59,9 +62,9 @@ export async function sendAlert(signal:any){
     `${dir} ${signal.symbol} — ${signal.bias}`,
     `Entry: ${formatPrice(entry)} · MARKET`,
     `SL: ${formatPrice(stop)}`,
-    singleTarget?`TP: ${formatPrice(tp1)}`:`TP1: ${formatPrice(tp1)}`,
+    useSharedPositionTarget?`TP (shared position): ${formatPrice(tp1)}`:singleTarget?`TP: ${formatPrice(tp1)}`:`TP1: ${formatPrice(tp1)}`,
     ...(singleTarget?[]:[`TP2: ${formatPrice(tp2)}`]),
-    `RR${singleTarget?"":" (TP1)"}: ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
+    `RR${useSharedPositionTarget?" (ADD leg)":singleTarget?"":" (TP1)"}: ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
     ...(singleTarget?[]:[`RR (TP2): ${rrTp2==null?"-":rrTp2.toFixed(2)+"R"}`]),
     `Size: ${sizeText}`,
     jarvis?.verdict ? `JARVIS: ${jarvis.verdict}` : "",
