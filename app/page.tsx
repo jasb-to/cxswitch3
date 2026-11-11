@@ -106,7 +106,7 @@ export default function Dashboard(){
       <div className="flex items-center gap-2 border-t border-white/[0.07] pt-2 text-[9px] leading-4"><span className="text-white/30 font-bold tracking-wide">JARVIS ANALYST</span><span className={`rounded border px-2 py-1 text-[8px] font-black tracking-wider ${verdictTone}`}>{verdict}</span></div>
       {alertSent&&<div className="mt-1 rounded-md border border-white/[0.08] bg-white/[0.025] px-2 py-1.5">
         <div className={`text-[8px] font-black tracking-wide ${a.direction==="LONG"?"text-green-300":"text-red-300"}`}>{isActive?"ACTIVE TRADE":"ALERT SENT"} · {a.direction} {a.type} · ENTRY {money(a.entry)} · SL {money(a.stop)} · TP1 {money(a.tp1)} · TP2 {money(a.tp2??a.target)}</div>
-        {isActive&&typeof pnlPct==="number"&&<div className={`mt-1 text-[10px] font-black tabular-nums ${activeProfitable?"text-green-300":"text-red-300"}`}>PNL {pct(pnlPct)} · CURRENT {money(p)}</div>}
+        {typeof pnlPct==="number"&&<div className={`mt-1 text-[10px] font-black tabular-nums ${(isActive?activeProfitable:pnlPct>=0)?"text-green-300":"text-red-300"}`}>{isActive?"UNREALISED PNL":"MOVE SINCE ENTRY"} {pct(pnlPct)} · CURRENT {money(p)}</div>}
         {isActive&&<div className={`mt-1 inline-flex rounded px-2 py-1 text-[9px] font-black ${shouldHold?"text-green-300 bg-green-500/10":"text-red-300 bg-red-500/10"}`}>{shouldHold?(activeProfitable?"🟢 HOLD (TIGHTEN STOP)":"🟢 HOLD"):"🔴 EXIT"}</div>}
       </div>}
       <div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
