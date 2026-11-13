@@ -332,6 +332,17 @@ export async function GET(request:Request){
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
   let signal=result.signal;
+  if(signal){
+    // Silence only signals that shouldHold would immediately exit on this same tick.
+    // This is a dispatch/persistence filter; generateSignal and its entry rules are untouched.
+    const immediateHold=shouldHold(signal,c4,price);
+    if(!immediateHold.shouldHold&&immediateHold.reason==="4h_ema5_13_misaligned_unprofitable_exit"){
+      console.log(`[SIGNAL SUPPRESSED] ${pair} ${signal.type} ${signal.direction} not dispatched: would immediately exit on 4H momentum misalignment`);
+      alerts.push({pair,direction:signal.direction,type:signal.type,status:"suppressed",reason:immediateHold.reason});
+      dispatchPairSignal=undefined;
+      return;
+    }
+  }
   let recentExitCooldown=false;
   if(signal){
     // Read history after signal generation: an exit earlier in this same cron
@@ -400,15 +411,6 @@ export async function GET(request:Request){
     console.log(`[STATE ADD] pair=${pair} status=skipped reason=jarvis_veto`);
     console.log(`[JARVIS] ${pair} — ${signal.type} ${signal.direction} vetoed: ${jarvisReview.reason}`);
     alerts.push({pair,direction:signal.direction,type:signal.type,status:"jarvis_veto",reason:jarvisReview.reason});
-    return;
-  }
-  // Preflight only the terminal 4H momentum exit that would otherwise fire
-  // immediately after this new signal is persisted and managed on the next pass.
-  const immediateHold=shouldHold(signal,snapshot.momentumCandles4h??[],price,Date.now());
-  if(!immediateHold.shouldHold&&immediateHold.reason==="4h_ema5_13_misaligned_unprofitable_exit"){
-    await releaseTelegramAlert(alertKey);telegramClaimed=false;
-    console.log(`[SIGNAL SUPPRESSED] ${signal.pair} ${signal.type} ${signal.direction} not dispatched: would immediately exit on 4H momentum misalignment`);
-    alerts.push({pair:signal.pair,direction:signal.direction,type:signal.type,status:"suppressed",reason:immediateHold.reason});
     return;
   }
   dispatchStage="telegram_send";telegramSendStarted=true;
