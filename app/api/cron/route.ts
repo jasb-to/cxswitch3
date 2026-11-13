@@ -402,6 +402,15 @@ export async function GET(request:Request){
     alerts.push({pair,direction:signal.direction,type:signal.type,status:"jarvis_veto",reason:jarvisReview.reason});
     return;
   }
+  // Preflight only the terminal 4H momentum exit that would otherwise fire
+  // immediately after this new signal is persisted and managed on the next pass.
+  const immediateHold=shouldHold(signal,snapshot.momentumCandles4h??[],price,Date.now());
+  if(!immediateHold.shouldHold&&immediateHold.reason==="4h_ema5_13_misaligned_unprofitable_exit"){
+    await releaseTelegramAlert(alertKey);telegramClaimed=false;
+    console.log(`[SIGNAL SUPPRESSED] ${signal.pair} ${signal.type} ${signal.direction} not dispatched: would immediately exit on 4H momentum misalignment`);
+    alerts.push({pair:signal.pair,direction:signal.direction,type:signal.type,status:"suppressed",reason:immediateHold.reason});
+    return;
+  }
   dispatchStage="telegram_send";telegramSendStarted=true;
   try{
     const sharedPositionTarget=signal.type==="ADD"&&existing?(existing.tp1??existing.tp2??existing.target):undefined;
