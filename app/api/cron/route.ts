@@ -1,7 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat, markKrakenOhlcPairSuccess } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, shouldHold, getStochHistoryPointCount, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold, setHysteresis, getStochHistoryPointCount, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
@@ -342,6 +342,11 @@ export async function GET(request:Request){
       dispatchPairSignal=undefined;
       return;
     }
+  }
+  // Commit hysteresis only after the shouldHold pre-flight has allowed dispatch.
+  // A signal rejected by the pre-flight must not consume its same-candle lock.
+  if(signal&&(signal.type==="ENTRY_1"||signal.type==="ENTRY_2"||signal.type==="ADD")&&typeof signal.context?.closed4hTimestamp==="number"){
+    setHysteresis(signal.pair,signal.type,signal.entry,signal.context.closed4hTimestamp);
   }
   let recentExitCooldown=false;
   if(signal){
