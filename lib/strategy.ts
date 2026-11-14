@@ -21,7 +21,7 @@ export interface Signal {
  signalClass:"TREND"|"REVERSAL"; sizeMultiplier:0.5|1;
  entry:number; stop:number; tp1:number; tp2:number; rr:number;
  adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number;
- reason:string; timestamp:number; version:number; context?:{regime?:RegimeState;trendlinePrice?:number;momentumAligned?:boolean|null;fourHDirection?:Direction|null;dailyDirection?:Direction|null;entry1Direction?:Direction|null};
+ reason:string; timestamp:number; version:number; context?:{regime?:RegimeState;trendlinePrice?:number;momentumAligned?:boolean|null;fourHDirection?:Direction|null;dailyDirection?:Direction|null;entry1Direction?:Direction|null;closed4hTimestamp?:number};
 }
 
 export interface Entry1State { pair:string; direction:"LONG"|"SHORT"; entry:number; timestamp:number; context?:any; }
@@ -90,7 +90,7 @@ function isHysteresisBlocked(pair:string,type:"ENTRY_1"|"ENTRY_2"|"ADD",price:nu
  if(!previous||previous.lastSignalType!==type||previous.lastSignalCandleTimestamp!==candleTimestamp||previous.lastSignalPrice<=0)return false;
  return Math.abs(price-previous.lastSignalPrice)/previous.lastSignalPrice<HYSTERESIS_BAND;
 }
-function setHysteresis(pair:string,type:"ENTRY_1"|"ENTRY_2"|"ADD",price:number,candleTimestamp:number):void {
+export function setHysteresis(pair:string,type:"ENTRY_1"|"ENTRY_2"|"ADD",price:number,candleTimestamp:number):void {
  hysteresisStore.set(pair,{lastSignalType:type,lastSignalPrice:price,lastSignalCandleTimestamp:candleTimestamp});
 }
 
@@ -573,8 +573,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  if(stopClamped)debug.push("[STOP] Clamped to 15x liquidation buffer: "+stop.toFixed(2)+" (was "+originalStop.toFixed(2)+")");
  debug.push("[RR] Original V28 R:R="+originalRr.toFixed(2)+" | Protected trade R:R="+actualRr.toFixed(2));
  const size=regime.sizeMultiplier===0.5?0.5:1;
- const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:signalDirection!,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(actualRr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:signalDirection+" "+finalType+" | "+(finalType==="ENTRY_1"?"Fast daily EMA5/13 + price vs EMA5 + EMA5 slope, with 4H Stoch extreme":"Daily macro EMA8/21 direction")+" + V28 trigger | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{regime:regime.state,trendlinePrice:signalTl.price,momentumAligned,fourHDirection,dailyDirection:macro.direction,entry1Direction:fast.direction}};
- setHysteresis(pair,finalType,price,candleTimestamp);
+ const signal:Signal={id:pair+"_"+finalType+"_"+now,pair,direction:signalDirection!,type:finalType,signalClass:"TREND",sizeMultiplier:size,entry:Math.round(price*100)/100,stop:Math.round(stop*100)/100,tp1:Math.round(target*100)/100,tp2:Math.round(target*100)/100,rr:Math.round(actualRr*100)/100,adx:Math.round(av*10)/10,rsi:Math.round(rv*10)/10,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(target-price)/price*1000)/10,reason:signalDirection+" "+finalType+" | "+(finalType==="ENTRY_1"?"Fast daily EMA5/13 + price vs EMA5 + EMA5 slope, with 4H Stoch extreme":"Daily macro EMA8/21 direction")+" + V28 trigger | "+regime.state,timestamp:now,version:CURRENT_SIGNAL_VERSION,context:{regime:regime.state,trendlinePrice:signalTl.price,momentumAligned,fourHDirection,dailyDirection:macro.direction,entry1Direction:fast.direction,closed4hTimestamp:candleTimestamp}};
  debug.push("[STOP] "+signal.stop+" | V28 swing/ATR stop");debug.push("[TARGET] "+signal.tp1+" | V28 ATR/swing target; TP2 mirrors TP1");debug.push("[SIGNAL] "+signal.direction+" "+signal.type+" entry="+signal.entry+" SL="+signal.stop+" TP="+signal.tp1+" RR="+signal.rr);
  return{signal,market:getMarketSnapshot(pair,candles1h,candles4h,candles15m),debug};
 }
