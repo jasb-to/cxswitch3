@@ -107,6 +107,11 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       cooldownsChanged=true;
     }
     if(!hold.shouldHold){
+      // Defensive lifecycle guard: a MARKET entry is already filled and cannot be missed.
+      if(hold.reason==="missed_entry"&&alert.orderType!=="LIMIT"){
+        console.warn(`[MANAGEMENT] ${alert.pair} ${alert.direction} ignored missed_entry for MARKET signal; retaining active position`);
+        continue;
+      }
       // Commit the exit to history and active state before attempting Telegram delivery.
       const exitStatus=hold.reason==="tp_hit"?"TP_HIT":hold.reason==="sl_hit"?"SL_HIT":hold.reason==="expired_ttl"||hold.reason==="missed_entry"?"EXPIRED":"FAILED";
       await updateSignalHistoryStatus(alert.id,exitStatus,hold.reason,price);
