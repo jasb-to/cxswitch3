@@ -60,10 +60,10 @@ export async function sendAlert(signal:any){
   // Strategy-generated reasons are authoritative and must never be dropped from entry/add alerts.
   // Keep the legacy context explanation as supplementary detail when it adds information.
   const reasonLines=[
-    strategyReason? "Reason: "+strategyReason:"",
-    contextReason && (!strategyReason || (type==="ENTRY_2" && signal.context?.entryCrossType))?contextReason:""
+    strategyReason? "Reason: "+strategyReason:contextReason,
+    strategyReason && contextReason?contextReason:""
   ].filter(Boolean);
-  const reasonText=reasonLines.join("\\n");
+  const reasonText=reasonLines.join("\n");
   const lines=[
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type==="ADD"?"ADD (Position Building)":type}`,
     ...(signal.testOnly===true?["🧪 TEST ONLY — NOT A TRADING SIGNAL",""]:[]),
