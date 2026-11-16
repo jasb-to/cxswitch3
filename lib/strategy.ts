@@ -18,6 +18,7 @@ export interface Candle {
 export interface Signal {
  id:string; pair:string; direction:"LONG"|"SHORT";
  type:"ENTRY_1"|"ENTRY_2"|"ADD"|"REVERSAL_SHORT"|"REVERSAL_LONG";
+ orderType?:"MARKET"|"LIMIT";
  signalClass:"TREND"|"REVERSAL"; sizeMultiplier:0.5|1;
  entry:number; stop:number; tp1:number; tp2:number; rr:number;
  adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number;
@@ -596,8 +597,11 @@ export interface ValidityCheck{valid:boolean;reason:string;exited:boolean}
 export function isSignalStillValid(signal:Signal,p:number,now:number=Date.now()):ValidityCheck{
  const ttl=signal.type==="ADD"?4*60*60*1000:24*60*60*1000;
  if(now-signal.timestamp>ttl)return{valid:false,reason:"expired_ttl",exited:true};
- const entryBuffer=signal.type==="ADD"?1.005:1.02;
- if((signal.direction==="LONG"&&p>signal.entry*entryBuffer)||(signal.direction==="SHORT"&&p<signal.entry*(2-entryBuffer)))return{valid:false,reason:"missed_entry",exited:true};
+ // V28 alerts are MARKET entries by default. Only explicitly pending LIMIT orders can be missed.
+ if(signal.orderType==="LIMIT"){
+  const entryBuffer=signal.type==="ADD"?1.005:1.02;
+  if((signal.direction==="LONG"&&p>signal.entry*entryBuffer)||(signal.direction==="SHORT"&&p<signal.entry*(2-entryBuffer)))return{valid:false,reason:"missed_entry",exited:true};
+ }
  if((signal.direction==="LONG"&&p<=signal.stop)||(signal.direction==="SHORT"&&p>=signal.stop))return{valid:false,reason:"sl_hit",exited:true};
  const tp=signal.tp1??signal.tp2;if((signal.direction==="LONG"&&p>=tp)||(signal.direction==="SHORT"&&p<=tp))return{valid:false,reason:"tp_hit",exited:true};
  return{valid:true,reason:"active",exited:false};
