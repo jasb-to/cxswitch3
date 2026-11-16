@@ -51,11 +51,19 @@ export async function sendAlert(signal:any){
     : sizePct===25 ? "25% (recent cross + low regime)"
     : sizePct===50 ? (ctx.entryCrossType==="recent"?"50% (recent cross)":ctx.entryCrossType==="fresh"?"50% (low regime)":signalClass==="REVERSAL"?"50% (counter-trend)":"50% (reduced size)")
     : `${sizePct}%`;
-  const reasonText=signal.context?.entryCrossType==="recent"
+  const strategyReason=typeof signal.reason==="string"?signal.reason.trim():"";
+  const contextReason=signal.context?.entryCrossType==="recent"
     ? "Reason: recent 4H Stoch RSI cross ("+(signal.context?.crossAgeInCandles??"?")+" candles ago)"
     : signal.context?.entryCrossType==="fresh"
       ? "Reason: fresh 4H Stoch RSI cross"
       : type==="ENTRY_2"?"Reason: ENTRY_2 retest confirmed":"";
+  // Strategy-generated reasons are authoritative and must never be dropped from entry/add alerts.
+  // Keep the legacy context explanation as supplementary detail when it adds information.
+  const reasonLines=[
+    strategyReason? "Reason: "+strategyReason:"",
+    contextReason && (!strategyReason || (type==="ENTRY_2" && signal.context?.entryCrossType))?contextReason:""
+  ].filter(Boolean);
+  const reasonText=reasonLines.join("\\n");
   const lines=[
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${type==="ADD"?"ADD (Position Building)":type}`,
     ...(signal.testOnly===true?["🧪 TEST ONLY — NOT A TRADING SIGNAL",""]:[]),
