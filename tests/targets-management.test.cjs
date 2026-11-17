@@ -47,12 +47,33 @@ test("Chandelier trailing stop logic is absent", () => {
 test("4H EMA5/13 misalignment exits an unprofitable LONG and SHORT immediately", () => {
   const falling = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 130 - i));
   const rising = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 70 + i));
-  const longExit = strategy.shouldHold(signal("LONG"), falling, 99);
-  const shortExit = strategy.shouldHold(signal("SHORT"), rising, 101);
+  const oldEntry = Date.now() - 2 * FOUR_HOURS;
+  const longExit = strategy.shouldHold(signal("LONG", { timestamp: oldEntry }), falling, 99);
+  const shortExit = strategy.shouldHold(signal("SHORT", { timestamp: oldEntry }), rising, 101);
   assert.equal(longExit.shouldHold, false);
   assert.equal(longExit.reason, "4h_ema5_13_misaligned_unprofitable_exit");
   assert.equal(shortExit.shouldHold, false);
   assert.equal(shortExit.reason, "4h_ema5_13_misaligned_unprofitable_exit");
+});
+
+test("4H EMA5/13 misalignment gets a two-candle grace period for fresh entries", () => {
+  const falling = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 130 - i));
+  const rising = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 70 + i));
+  const now = Date.now();
+  const longGrace = strategy.shouldHold(signal("LONG", { timestamp: now }), falling, 99, now);
+  const shortGrace = strategy.shouldHold(signal("SHORT", { timestamp: now }), rising, 101, now);
+  assert.equal(longGrace.shouldHold, true);
+  assert.equal(shortGrace.shouldHold, true);
+  assert.equal(longGrace.reason, "4h_momentum_and_daily_macro_valid");
+  assert.equal(shortGrace.reason, "4h_momentum_and_daily_macro_valid");
+});
+
+test("4H EMA5/13 misalignment exit resumes at two completed 4H candles", () => {
+  const falling = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 130 - i));
+  const now = Date.now();
+  const atBoundary = strategy.shouldHold(signal("LONG", { timestamp: now - 2 * FOUR_HOURS }), falling, 99, now);
+  assert.equal(atBoundary.shouldHold, false);
+  assert.equal(atBoundary.reason, "4h_ema5_13_misaligned_unprofitable_exit");
 });
 
 test("4H EMA5/13 misalignment still tightens a profitable trade to breakeven", () => {
