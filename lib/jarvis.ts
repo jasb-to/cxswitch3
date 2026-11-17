@@ -20,8 +20,8 @@ function devilAdvocateWarnings(direction: "LONG" | "SHORT", snapshot: any): stri
   const warnings: string[] = [];
   const macro = String(snapshot?.dailyDirection || "").toUpperCase();
   const slope = Number(snapshot?.dailyFastEma5Slope);
-  const slopeUp = snapshot?.dailyFastEma5SlopeUp === true || (Number.isFinite(slope) && slope > 0);
-  const slopeDown = snapshot?.dailyFastEma5SlopeUp === false || (Number.isFinite(slope) && slope < 0);
+  const slopeUp = Number.isFinite(slope) ? slope > 0 : snapshot?.dailyFastEma5SlopeUp === true;
+  const slopeDown = Number.isFinite(slope) ? slope < 0 : snapshot?.dailyFastEma5SlopeUp === false;
 
   if ((macro === "SHORT" || macro === "BEAR" || macro === "BEARISH") && slopeUp) {
     warnings.push("1D macro is SHORT, but fast EMA5/13 momentum is starting to slope UP — reversal risk.");
@@ -29,11 +29,12 @@ function devilAdvocateWarnings(direction: "LONG" | "SHORT", snapshot: any): stri
     warnings.push("1D macro is LONG, but fast EMA5/13 momentum is starting to slope DOWN — reversal risk.");
   }
 
-  const k = Number(snapshot?.stochK4h ?? snapshot?.stochK);
-  const pk = Number(snapshot?.stochK4hPrev);
-  const d = Number(snapshot?.stochD4h);
-  const pd = Number(snapshot?.stochD4hPrev);
   const candles = Array.isArray(snapshot?.momentumCandles4h) ? snapshot.momentumCandles4h : [];
+  const derivedStoch = candles.length ? stochState(candles.map((c:any) => Number(c.close))) : null;
+  const k = Number(snapshot?.stochK4h ?? snapshot?.stochK ?? derivedStoch?.k);
+  const pk = Number(snapshot?.stochK4hPrev ?? derivedStoch?.pk);
+  const d = Number(snapshot?.stochD4h ?? derivedStoch?.d);
+  const pd = Number(snapshot?.stochD4hPrev ?? derivedStoch?.pd);
   const recent = candles.slice(-5);
   if (recent.length >= 5) {
     const first = Number(recent[0]?.close);
