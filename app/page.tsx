@@ -114,6 +114,7 @@ export default function Dashboard(){
       <div className="mt-1 rounded-md border border-white/[0.07] bg-black/30 p-2 space-y-1 text-[8px] text-white/45">
         {isActive&&<div>POSITION SIZE · {Math.round((m?.sizeMultiplier??a?.sizeMultiplier??0)*100)}% size</div>}
         <div>JARVIS STATE · {j?.currentAnalysis??m?.jarvisState??"—"}</div>
+        {j?.skepticWarning&&<div className="rounded border border-amber-400/20 bg-amber-500/[0.06] px-2 py-1.5 font-semibold text-amber-200">⚠️ {j.skepticWarning}</div>}
         <div>JARVIS REASON · {j?.reason??a?.jarvisReason??"Advisory only · V28 execution unchanged"}</div>
         <div>STRUCTURE · {m?.structureShift?.reason??"—"}</div>
         <div>STRATEGY STATUS · {status}</div>
