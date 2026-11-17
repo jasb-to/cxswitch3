@@ -13,6 +13,53 @@ export type JarvisVerdict = "GOOD" | "WARN" | "VETO";
 export interface JarvisReview {
   verdict: JarvisVerdict;
   reason: string;
+  skepticWarning?: string;
+}
+
+function devilAdvocateWarnings(direction: "LONG" | "SHORT", snapshot: any): string[] {
+  const warnings: string[] = [];
+  const macro = String(snapshot?.dailyDirection || "").toUpperCase();
+  const slope = Number(snapshot?.dailyFastEma5Slope);
+  const slopeUp = Number.isFinite(slope) ? slope > 0 : snapshot?.dailyFastEma5SlopeUp === true;
+  const slopeDown = Number.isFinite(slope) ? slope < 0 : snapshot?.dailyFastEma5SlopeUp === false;
+
+  if ((macro === "SHORT" || macro === "BEAR" || macro === "BEARISH") && slopeUp) {
+    warnings.push("1D macro is SHORT, but fast EMA5/13 momentum is starting to slope UP — reversal risk.");
+  } else if ((macro === "LONG" || macro === "BULL" || macro === "BULLISH") && slopeDown) {
+    warnings.push("1D macro is LONG, but fast EMA5/13 momentum is starting to slope DOWN — reversal risk.");
+  }
+
+  const candles = Array.isArray(snapshot?.momentumCandles4h) ? snapshot.momentumCandles4h : [];
+  const derivedStoch = candles.length ? stochState(candles.map((c:any) => Number(c.close))) : null;
+  const k = Number(snapshot?.stochK4h ?? snapshot?.stochK ?? derivedStoch?.k);
+  const pk = Number(snapshot?.stochK4hPrev ?? derivedStoch?.pk);
+  const d = Number(snapshot?.stochD4h ?? derivedStoch?.d);
+  const pd = Number(snapshot?.stochD4hPrev ?? derivedStoch?.pd);
+  const recent = candles.slice(-5);
+  if (recent.length >= 5) {
+    const first = Number(recent[0]?.close);
+    const last = Number(recent[recent.length - 1]?.close);
+    if (first > 0 && last > 0) {
+      const directionalRun = (last / first - 1) * 100 * (direction === "LONG" ? 1 : -1);
+      if (directionalRun > 5 && ((direction === "LONG" && k > 95) || (direction === "SHORT" && k < 5))) {
+        warnings.push(`4H Stoch is pinned at ${k.toFixed(1)} after a ${directionalRun.toFixed(1)}% run in the trade direction over five candles — exhaustion/fade risk.`);
+      }
+    }
+  }
+
+  const crossedUp = Number.isFinite(pk) && Number.isFinite(pd) && Number.isFinite(k) && Number.isFinite(d) && pk <= pd && k > d;
+  const crossedDown = Number.isFinite(pk) && Number.isFinite(pd) && Number.isFinite(k) && Number.isFinite(d) && pk >= pd && k < d;
+  if (direction === "SHORT" && crossedUp && pk < 20) {
+    warnings.push(`4H Stoch is crossing UP from oversold (K ${pk.toFixed(1)} → ${k.toFixed(1)}) against the SHORT — counter-trend bounce risk.`);
+  } else if (direction === "LONG" && crossedDown && pk > 80) {
+    warnings.push(`4H Stoch is crossing DOWN from overbought (K ${pk.toFixed(1)} → ${k.toFixed(1)}) against the LONG — counter-trend pullback risk.`);
+  }
+
+  return warnings;
+}
+
+function formatSkepticWarning(warnings: string[]): string | undefined {
+  return warnings.length ? "[JARVIS SKEPTIC] WARNING: " + warnings.join(" ") : undefined;
 }
 
 export interface JarvisOpportunity {
@@ -28,6 +75,7 @@ export interface JarvisPairState {
   direction: "LONG" | "SHORT" | "NEUTRAL";
   verdict: JarvisVerdict;
   reason: string;
+  skepticWarning?: string;
   currentAnalysis: string;
   opportunity?: JarvisOpportunity;
   updatedAt: number;
@@ -62,7 +110,7 @@ function directionFrom4H(snapshot:any): "BULL" | "BEAR" | "NEUTRAL" {
   return "NEUTRAL";
 }
 
-export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
+function reviewFiredSignalBase(signal: Signal, snapshot:any): JarvisReview {
   if(signal.signalClass==="REVERSAL" || signal.type==="REVERSAL_SHORT" || signal.type==="REVERSAL_LONG"){
     return { verdict:"WARN", reason:"counter-trend reversal — reduce size, tighter management" };
   }
@@ -92,6 +140,15 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
   }
 
   return { verdict:"GOOD", reason:"Aligned with 1D and 4H context" };
+}
+
+
+export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
+  const base = reviewFiredSignalBase(signal, snapshot);
+  const skepticWarning = formatSkepticWarning(devilAdvocateWarnings(signal.direction, snapshot));
+  return skepticWarning
+    ? { verdict: "WARN", reason: base.verdict === "WARN" ? base.reason + " · " + skepticWarning : skepticWarning, skepticWarning }
+    : base;
 }
 
 function detectOpportunity(m:any, evaluation:any): JarvisOpportunity|undefined {
@@ -143,7 +200,8 @@ export function buildJarvisNarrative(marketSnapshot:any[], activeSignals:any[]):
       const aligned=m?.momentumAligned??m?.alignment?.momentumAligned;
       const momentum=aligned===true?"4H EMA5/13 momentum is aligned, holding for target.":aligned===false?"4H EMA5/13 momentum is misaligned; tighten stop and monitor exit conditions.":"4H EMA5/13 momentum is unavailable.";
       const pnlText=pnl===null?"PnL unavailable":(pnl>=0?"+":"")+pnl.toFixed(2)+"% PnL";
-      narratives[pair]="ACTIVE "+String(active.direction||"").toUpperCase()+" · "+pnlText+". "+momentum+(context?" "+context+".":""); continue;
+      const skepticWarning=formatSkepticWarning(devilAdvocateWarnings(active.direction,m));
+      narratives[pair]="ACTIVE "+String(active.direction||"").toUpperCase()+" · "+pnlText+". "+momentum+(context?" "+context+".":"")+(skepticWarning?" "+skepticWarning:""); continue;
     }
     const macro=String(m?.dailyDirection||"NEUTRAL").toUpperCase(),fast=String(m?.entry1Direction||"NEUTRAL").toUpperCase();
     const side=(v:string):"LONG"|"SHORT"|null=>v==="LONG"||v==="BULL"||v==="BULLISH"?"LONG":v==="SHORT"||v==="BEAR"||v==="BEARISH"?"SHORT":null;
@@ -208,6 +266,7 @@ function pairState(m:any, active:any): JarvisPairState {
     direction,
     verdict:review.verdict,
     reason:review.reason,
+    skepticWarning:review.skepticWarning,
     currentAnalysis,
     opportunity,
     updatedAt:Date.now(),
@@ -262,6 +321,7 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   const tlDistance=Number(market?.trendlineDistancePct??market?.distToTrendline);
   const tlText=Number.isFinite(tlDistance)?" Trendline distance "+tlDistance.toFixed(2)+"%.":" Trendline distance unavailable.";
   const filterText=" 4H EMA5/13 momentum is "+(momentum?"aligned":"misaligned")+" (trade-management context only)."+(exhaustion?" Stoch hard cap: "+exhaustion+".":"");
+  const skepticWarning=signal?formatSkepticWarning(devilAdvocateWarnings(signal.direction,market)):undefined;
   if(!evaluation.direction)return "[JARVIS STATE] "+pair+" — DAILY MACRO (1D EMA8/21): "+dailyText+"."+filterText+tlText+" Waiting for the V28 trendline/Stoch trigger.";
   const dir=evaluation.direction,st=evaluation.trigger,q=c.map(x=>x.close),rawStoch=stochState(q),kNow=rawStoch.k,dNow=rawStoch.d;
   let stochSummary="Stoch is waiting for confirmation.";
@@ -269,6 +329,6 @@ export function narratePairState(pair:string,market:any,candles4h:Candle[],signa
   else if(st.entry2)stochSummary="Stoch is turning in the daily direction for ENTRY_2.";
   else if(dir==="LONG"&&kNow>dNow)stochSummary="Stoch is turning bullish, but entry timing is not ready yet.";
   else if(dir==="SHORT"&&kNow<dNow)stochSummary="Stoch is turning bearish, but entry timing is not ready yet.";
-  if(signal)return "[JARVIS STATE] "+pair+" — "+signal.type+" "+dir+" fired using the dual-track daily EMA8/21 macro and EMA5/13 ENTRY_1 bias."+filterText+tlText+" "+stochSummary+" TP "+signal.tp1.toFixed(2)+".";
+  if(signal)return "[JARVIS STATE] "+pair+" — "+signal.type+" "+dir+" fired using the dual-track daily EMA8/21 macro and EMA5/13 ENTRY_1 bias."+filterText+tlText+" "+stochSummary+" TP "+signal.tp1.toFixed(2)+"."+(skepticWarning?" "+skepticWarning:"");
   return "[JARVIS STATE] "+pair+" — DAILY MACRO (1D EMA8/21): "+dailyText+"."+filterText+tlText+" "+stochSummary+" Waiting for a V28 trendline/Stoch trigger.";
 }
