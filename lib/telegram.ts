@@ -45,8 +45,8 @@ export async function sendAlert(signal:any){
     ? jarvis.skepticWarning.trim()
     : typeof ctx.skepticWarning==="string" ? ctx.skepticWarning.trim() : "";
   const skepticReason=skepticWarning
-    .replace(/^\\[JARVIS SKEPTIC\\]\\s*WARNING:\\s*/i,"")
-    .replace(/^⚠️\\s*JARVIS SKEPTIC:\\s*/i,"")
+    .replace(/^\[JARVIS SKEPTIC\]\s*WARNING:\s*/i,"")
+    .replace(/^⚠️\s*JARVIS SKEPTIC:\s*/i,"")
     .trim();
   const skepticLine=skepticReason?`⚠️ JARVIS SKEPTIC: ${skepticReason}`:"";
   const regimePct=Math.round(Number(ctx.regimeSizeMultiplier??1)*100);
