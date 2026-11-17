@@ -75,7 +75,7 @@ export default function Dashboard(){
     const regime=m?.regime??"—";
     const macroSide=m?.dailyDirection==="LONG"?"LONG":m?.dailyDirection==="SHORT"?"SHORT":null;
     const tactical=m?.fourHDirection??m?.fourHTacticalDirection;
-    const fourHSide=tactical==="BULL"?"LONG":tactical==="BEAR"?"SHORT":tactical==="LONG"||tactical==="SHORT"?tactical:null;
+    const fourHSide=tactical==="BULL"?"LONG":tactical==="BEAR"?"SHORT":null;
     const directionConflict=!!macroSide&&!!fourHSide&&macroSide!==fourHSide;
     const regimeTone=regime.startsWith("BULL")?"text-green-400":regime.startsWith("BEAR")?"text-red-400":"text-white/65";
     const status=String(m?.strategyStatus??"").trim()||"WAIT — no setup";
