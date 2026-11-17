@@ -41,6 +41,14 @@ export async function sendAlert(signal:any){
   const jarvis=signal.jarvis;
 
   const ctx=signal.context??{};
+  const skepticWarning=typeof jarvis?.skepticWarning==="string"&&jarvis.skepticWarning.trim()
+    ? jarvis.skepticWarning.trim()
+    : typeof ctx.skepticWarning==="string" ? ctx.skepticWarning.trim() : "";
+  const skepticReason=skepticWarning
+    .replace(/^\\[JARVIS SKEPTIC\\]\\s*WARNING:\\s*/i,"")
+    .replace(/^⚠️\\s*JARVIS SKEPTIC:\\s*/i,"")
+    .trim();
+  const skepticLine=skepticReason?`⚠️ JARVIS SKEPTIC: ${skepticReason}`:"";
   const regimePct=Math.round(Number(ctx.regimeSizeMultiplier??1)*100);
   const entryPct=Math.round(Number(ctx.entrySizeMultiplier??1)*100);
   const riskPct=Math.round(Number(ctx.riskSizeMultiplier??1)*100);
@@ -75,8 +83,9 @@ export async function sendAlert(signal:any){
     `RR${useSharedPositionTarget?" (ADD leg)":singleTarget?"":" (TP1)"}: ${rrTp1==null?"-":rrTp1.toFixed(2)+"R"}`,
     ...(singleTarget?[]:[`RR (TP2): ${rrTp2==null?"-":rrTp2.toFixed(2)+"R"}`]),
     `Size: ${sizeText}`,
-    jarvis?.verdict ? `JARVIS: ${jarvis.verdict}` : "",
-    reasonText
+    skepticLine ? "" : jarvis?.verdict ? `JARVIS: ${jarvis.verdict}` : "",
+    reasonText,
+    skepticLine
   ].filter(Boolean).join("\n");
 
   // V28 mirrors its single executable target into tp1 and tp2 for compatibility; display it once.
