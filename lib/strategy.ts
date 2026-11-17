@@ -616,8 +616,8 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),_lastExit
   const closes=bars.map(x=>x.close);
   const ageInCandles=(Date.now()-s.timestamp)/(4*60*60*1000);
   const e5=closes.length?ema(closes,5).at(-1)??0:0,e13=closes.length?ema(closes,13).at(-1)??0:0;
-  const fourHDirection:Direction|null=e5>e13?"LONG":e5<e13?"SHORT":fallbackDirection;
-  const momentumAligned=fourHDirection===null?fallbackAligned:fourHDirection===s.direction;
+  const fourHDirection:Direction|null=e5>e13?"LONG":e5<e13?"SHORT":null;
+  const momentumAligned=fourHDirection===null?null:fourHDirection===s.direction;
   const profitable=s.direction==="LONG"?p>s.entry:p<s.entry, state={fourHDirection,momentumAligned,profitable};
 
   // Grace period: retain hard stop/target and opposite Stoch exits, but ignore
