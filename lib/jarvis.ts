@@ -74,6 +74,7 @@ export interface JarvisPairState {
   direction: "LONG" | "SHORT" | "NEUTRAL";
   verdict: JarvisVerdict;
   reason: string;
+  skepticWarning?: string;
   currentAnalysis: string;
   opportunity?: JarvisOpportunity;
   updatedAt: number;
