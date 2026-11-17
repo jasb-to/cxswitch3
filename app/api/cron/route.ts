@@ -53,6 +53,72 @@ function telegramAlertKey(signal:Signal,resetAt?:number):string{
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}${resetSuffix}`;
 }
 
+function liveEma(values:number[],period:number):number[]{
+  if(!values.length)return [];
+  const result=[values[0]],alpha=2/(period+1);
+  for(let i=1;i<values.length;i++)result.push(values[i]*alpha+result[i-1]*(1-alpha));
+  return result;
+}
+function liveRsiSeries(closes:number[],period=14):number[]{
+  if(closes.length<period+1)return [];
+  let gain=0,loss=0;
+  for(let i=1;i<=period;i++){const change=closes[i]-closes[i-1];if(change>0)gain+=change;else loss+=Math.abs(change);}
+  let avgGain=gain/period,avgLoss=loss/period;
+  const out=[Math.round((avgLoss===0?100:100-100/(1+avgGain/avgLoss))*10)/10];
+  for(let i=period+1;i<closes.length;i++){
+    const change=closes[i]-closes[i-1];
+    avgGain=(avgGain*(period-1)+Math.max(change,0))/period;
+    avgLoss=(avgLoss*(period-1)+Math.max(-change,0))/period;
+    out.push(Math.round((avgLoss===0?100:100-100/(1+avgGain/avgLoss))*10)/10);
+  }
+  return out;
+}
+function liveStochRsi(closes:number[]):{k:number;d:number}{
+  const rsi=liveRsiSeries(closes);
+  if(rsi.length<16)return{k:50,d:50};
+  const raw:number[]=[];
+  for(let i=13;i<rsi.length;i++){
+    const window=rsi.slice(i-13,i+1),lo=Math.min(...window),hi=Math.max(...window);
+    raw.push(hi===lo?50:(rsi[i]-lo)/(hi-lo)*100);
+  }
+  const k:number[]=[];
+  for(let i=2;i<raw.length;i++)k.push((raw[i]+raw[i-1]+raw[i-2])/3);
+  if(k.length<3)return{k:50,d:50};
+  const currentK=k.at(-1)!;
+  return{k:Math.round(currentK*10)/10,d:Math.round((k.at(-1)!+k.at(-2)!+k.at(-3)!)/3*10)/10};
+}
+async function getLive4HCandle(pair:string):Promise<any>{
+  const url=new URL("https://api.kraken.com/0/public/OHLC");
+  url.searchParams.set("pair",krakenPairFormat(pair+"/USD"));
+  url.searchParams.set("interval","240");
+  const response=await fetch(url.toString(),{signal:AbortSignal.timeout(5000)});
+  if(!response.ok)throw new Error(`Kraken live 4H OHLC HTTP ${response.status}`);
+  const data=await response.json();
+  if(data?.error?.length)throw new Error(`Kraken live 4H OHLC: ${data.error.join(", ")}`);
+  const key=Object.keys(data?.result??{}).find(k=>k!=="last");
+  const raw=key?data.result[key]:null;
+  if(!Array.isArray(raw)||!raw.length)throw new Error("Kraken live 4H OHLC response was empty");
+  const row=raw.at(-1),timestamp=Number(row[0])*1000,intervalMs=240*60*1000;
+  const currentBucket=Math.floor(Date.now()/intervalMs)*intervalMs;
+  if(!Number.isFinite(timestamp)||timestamp!==currentBucket)throw new Error("Kraken did not return the currently forming 4H candle");
+  const candle={timestamp,open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[6])};
+  if(![candle.open,candle.high,candle.low,candle.close,candle.volume].every(Number.isFinite))throw new Error("Kraken live 4H candle contained invalid values");
+  return candle;
+}
+async function liveMomentumOpposes(pair:string,direction:"LONG"|"SHORT",closedCandles:any[]):Promise<{opposes:boolean;detail:string}>{
+  const live=await getLive4HCandle(pair);
+  const candles=[...closedCandles.filter((c:any)=>c.timestamp!==live.timestamp),live];
+  const closes=candles.map((c:any)=>Number(c.close));
+  if(closes.length<35||closes.some((v:number)=>!Number.isFinite(v)))throw new Error("Insufficient valid candles for live momentum indicators");
+  const prior=liveStochRsi(closes.slice(0,-1)),current=liveStochRsi(closes);
+  const ema5=liveEma(closes,5).at(-1)!,ema13=liveEma(closes,13).at(-1)!;
+  const stochAgainst=direction==="SHORT"
+    ?prior.k<=prior.d&&current.k>current.d
+    :prior.k>=prior.d&&current.k<current.d;
+  const emaAgainst=direction==="SHORT"?ema5>ema13:ema5<ema13;
+  return{opposes:stochAgainst||emaAgainst,detail:`live K/D ${current.k}/${current.d} (prior ${prior.k}/${prior.d}), EMA5/13 ${ema5}/${ema13}, stochCrossAgainst=${stochAgainst}, emaAgainst=${emaAgainst}`};
+}
+
 const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_ema8_21_reversed_unprofitable","4h_ema5_13_misaligned_unprofitable_exit"]);
 // Every shouldHold=false result is terminal and must be removed from active_signals before entry evaluation.
 async function persistExitCooldown(pair:string,reason:string,cooldowns:Record<string,number>){if(!INDICATOR_EXIT_REASONS.has(reason))return;cooldowns[pair]=Date.now();}
@@ -409,6 +475,23 @@ export async function GET(request:Request){
     console.log(`[STATE ADD] pair=${pair} status=skipped reason=jarvis_veto`);
     console.log(`[JARVIS] ${pair} — ${signal.type} ${signal.direction} vetoed: ${jarvisReview.reason}`);
     alerts.push({pair,direction:signal.direction,type:signal.type,status:"jarvis_veto",reason:jarvisReview.reason});
+    return;
+  }
+  // Re-check momentum against the currently forming 4H candle immediately before delivery.
+  try{
+    const liveMomentum=await liveMomentumOpposes(pair,signal.direction,c4);
+    if(liveMomentum.opposes){
+      await releaseTelegramAlert(alertKey);telegramClaimed=false;
+      console.log(`[SIGNAL SUPPRESSED] ${pair} ${signal.type} ${signal.direction} not dispatched: live 4H momentum is opposing the entry.`);
+      console.log(`[LIVE MOMENTUM] ${pair} ${liveMomentum.detail}`);
+      alerts.push({pair,direction:signal.direction,type:signal.type,status:"live_momentum_veto",reason:liveMomentum.detail});
+      return;
+    }
+    console.log(`[LIVE MOMENTUM] ${pair} ${signal.direction} confirmed: ${liveMomentum.detail}`);
+  }catch(liveError){
+    await releaseTelegramAlert(alertKey);telegramClaimed=false;
+    console.error(`[SIGNAL SUPPRESSED] ${pair} ${signal.type} ${signal.direction} not dispatched: live 4H momentum unavailable — ${String(liveError)}`);
+    alerts.push({pair,direction:signal.direction,type:signal.type,status:"live_momentum_unavailable",reason:String(liveError)});
     return;
   }
   dispatchStage="telegram_send";telegramSendStarted=true;
