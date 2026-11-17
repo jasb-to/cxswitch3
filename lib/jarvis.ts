@@ -194,7 +194,8 @@ export function buildJarvisNarrative(marketSnapshot:any[], activeSignals:any[]):
     const pair=String(m?.pair||"?"); const active=activeByPair.get(pair);
     const regime=String(m?.regime||"UNKNOWN").replace(/_/g," "); const adx=Number(m?.adx);
     const macroDirection=directionFromDaily(m?.dailyDirection);
-    const fourHDirection=directionFrom4H(m);
+    const fourHValue=String(m?.fourHDirection||"").toUpperCase();
+    const fourHDirection=fourHValue==="LONG"||fourHValue==="BULL"||fourHValue==="BULLISH"?"BULL":fourHValue==="SHORT"||fourHValue==="BEAR"||fourHValue==="BEARISH"?"BEAR":"NEUTRAL";
     const directionConflict=macroDirection!=="NEUTRAL"&&fourHDirection!=="NEUTRAL"&&macroDirection!==fourHDirection;
     const context=directionConflict
       ? `${macroDirection==="BEAR"?"Bearish":"Bullish"} daily macro, but 4H momentum is opposing. Beware of conflict.`
