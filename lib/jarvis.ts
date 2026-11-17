@@ -147,7 +147,7 @@ export function reviewFiredSignal(signal: Signal, snapshot:any): JarvisReview {
   const base = reviewFiredSignalBase(signal, snapshot);
   const skepticWarning = formatSkepticWarning(devilAdvocateWarnings(signal.direction, snapshot));
   return skepticWarning
-    ? { verdict: "WARN", reason: skepticWarning, skepticWarning }
+    ? { verdict: "WARN", reason: base.verdict === "WARN" ? base.reason + " · " + skepticWarning : skepticWarning, skepticWarning }
     : base;
 }
 
