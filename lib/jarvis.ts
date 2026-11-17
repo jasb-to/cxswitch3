@@ -193,7 +193,12 @@ export function buildJarvisNarrative(marketSnapshot:any[], activeSignals:any[]):
   for(const m of marketSnapshot||[]){
     const pair=String(m?.pair||"?"); const active=activeByPair.get(pair);
     const regime=String(m?.regime||"UNKNOWN").replace(/_/g," "); const adx=Number(m?.adx);
-    const context=[regime!=="UNKNOWN"?regime+" regime":null,Number.isFinite(adx)&&adx>25?"Strong trend":null].filter(Boolean).join(" · ");
+    const macroDirection=directionFromDaily(m?.dailyDirection);
+    const fourHDirection=directionFrom4H(m);
+    const directionConflict=macroDirection!=="NEUTRAL"&&fourHDirection!=="NEUTRAL"&&macroDirection!==fourHDirection;
+    const context=directionConflict
+      ? `${macroDirection==="BEAR"?"Bearish":"Bullish"} daily macro, but 4H momentum is opposing. Beware of conflict.`
+      : [regime!=="UNKNOWN"?regime+" regime":null,Number.isFinite(adx)&&adx>25&&macroDirection!=="NEUTRAL"&&macroDirection===fourHDirection?"Strong trend":null].filter(Boolean).join(" · ");
     if(active){
       const price=Number(m?.currentPrice??m?.price),entry=Number(active.entry);
       const pnl=Number.isFinite(price)&&Number.isFinite(entry)&&entry>0?((price-entry)/entry*100)*(active.direction==="SHORT"?-1:1):null;
