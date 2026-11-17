@@ -74,8 +74,7 @@ export default function Dashboard(){
    <div className="grid grid-cols-1 gap-2 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#070707] sm:grid-cols-2 md:grid-cols-4">{PAIRS.map(pair=>{const m=market[pair],a=active[pair]||latest[pair],j=jarvis?.pairs?.[pair],isActive=!!active[pair],p=prices[pair]??m?.price??a?.currentPrice??a?.entry??0;const dailyDirection=m?.dailyDirection??undefined;const direction=dailyDirection==="SHORT"?"SHORT":dailyDirection==="LONG"?"LONG":"—";const pnlPct=a&&a.entry>0?((p-a.entry)/a.entry*100)*(a.direction==="LONG"?1:-1):null;const activeProfitable=isActive?(typeof a?.momentumProfit==="boolean"?a.momentumProfit:(pnlPct!==null&&pnlPct>0)):false;const shouldHold=isActive&&(a?.shouldHold??(a?.managementState==="STAY"));const cardId=`card-${pair}`;
     const regime=m?.regime??"—";
     const macroSide=m?.dailyDirection==="LONG"?"LONG":m?.dailyDirection==="SHORT"?"SHORT":null;
-    const tactical=m?.fourHDirection??m?.fourHTacticalDirection;
-    const fourHSide=tactical==="BULL"?"LONG":tactical==="BEAR"?"SHORT":null;
+    const fourHSide=m?.fourHDirection==="BULL"?"LONG":m?.fourHDirection==="BEAR"?"SHORT":null;
     const directionConflict=!!macroSide&&!!fourHSide&&macroSide!==fourHSide;
     const regimeTone=regime.startsWith("BULL")?"text-green-400":regime.startsWith("BEAR")?"text-red-400":"text-white/65";
     const status=String(m?.strategyStatus??"").trim()||"WAIT — no setup";
