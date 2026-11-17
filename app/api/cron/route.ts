@@ -337,19 +337,7 @@ export async function GET(request:Request){
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   marketData.push(snapshot);
   let signal=result.signal;
-  if(signal){
-    // Silence only signals that shouldHold would immediately exit on this same tick.
-    // This is a dispatch/persistence filter; generateSignal and its entry rules are untouched.
-    const immediateHold=shouldHold(signal,c4,price);
-    if(!immediateHold.shouldHold&&immediateHold.reason==="4h_ema5_13_misaligned_unprofitable_exit"){
-      console.log(`[SIGNAL SUPPRESSED] ${pair} ${signal.type} ${signal.direction} not dispatched: would immediately exit on 4H momentum misalignment`);
-      alerts.push({pair,direction:signal.direction,type:signal.type,status:"suppressed",reason:immediateHold.reason});
-      dispatchPairSignal=undefined;
-      return;
-    }
-  }
-  // Commit hysteresis only after the shouldHold pre-flight has allowed dispatch.
-  // A signal rejected by the pre-flight must not consume its same-candle lock.
+  // Commit hysteresis for generated entry signals before downstream dispatch checks.
   if(signal&&(signal.type==="ENTRY_1"||signal.type==="ENTRY_2"||signal.type==="ADD")&&typeof signal.context?.closed4hTimestamp==="number"){
     setHysteresis(signal.pair,signal.type,signal.entry,signal.context.closed4hTimestamp);
   }
