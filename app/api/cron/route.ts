@@ -115,8 +115,8 @@ async function liveMomentumOpposes(pair:string,direction:"LONG"|"SHORT",closedCa
   const stochAgainst=direction==="SHORT"
     ?prior.k<=prior.d&&current.k>current.d
     :prior.k>=prior.d&&current.k<current.d;
-  const emaAgainst=direction==="SHORT"?ema5>ema13:ema5<ema13;
-  return{opposes:stochAgainst||emaAgainst,detail:`live K/D ${current.k}/${current.d} (prior ${prior.k}/${prior.d}), EMA5/13 ${ema5}/${ema13}, stochCrossAgainst=${stochAgainst}, emaAgainst=${emaAgainst}`};
+  // EMA5/13 is diagnostic context only; it must never veto a live entry.
+  return{opposes:stochAgainst,detail:`live K/D ${current.k}/${current.d} (prior ${prior.k}/${prior.d}), EMA5/13 ${ema5}/${ema13}, stochCrossAgainst=${stochAgainst}`};
 }
 
 const INDICATOR_EXIT_REASONS=new Set(["stoch_extreme_opposite_exit","daily_ema8_21_reversed_unprofitable","4h_ema5_13_misaligned_unprofitable_exit"]);
