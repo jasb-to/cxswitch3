@@ -639,7 +639,16 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),_lastExit
     return{shouldHold:false,reason:"daily_ema8_21_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
 
   const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k>80:st.k<20;
-  if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+  // Do not exit on a pinned Stoch extreme while the Daily Macro and 4H
+  // momentum remain aligned and ADX confirms a strong trend.
+  const strongTrendAligned =
+    dailyTrend.direction===s.direction &&
+    momentumAligned===true &&
+    adx(bars)>25;
+  if(opposite&&!strongTrendAligned)
+    return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+  if(opposite&&strongTrendAligned)
+    return{shouldHold:true,reason:"stoch_extreme_held_strong_trend",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
   return{shouldHold:true,reason:"4h_momentum_and_daily_macro_valid",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
 }
 
