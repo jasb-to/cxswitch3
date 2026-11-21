@@ -613,21 +613,29 @@ export interface HoldResult{shouldHold:boolean;reason:string;managementState:"ST
 export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),_lastExitAlertAt?:number):HoldResult{
   const bars=[...c], fallbackDirection=s.context?.fourHDirection??null;
   const fallbackAligned=typeof s.context?.momentumAligned==="boolean"?s.context.momentumAligned:null;
-  if(bars.length<22)return{shouldHold:true,reason:"insufficient_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE",fourHDirection:fallbackDirection,momentumAligned:fallbackAligned,profitable:null};
-  const closes=bars.map(x=>x.close),e5=ema(closes,5).at(-1)??0,e13=ema(closes,13).at(-1)??0;
+  const closes=bars.map(x=>x.close);
+  const ageInCandles=(Date.now()-s.timestamp)/(4*60*60*1000);
+  const e5=closes.length?ema(closes,5).at(-1)??0:0,e13=closes.length?ema(closes,13).at(-1)??0:0;
   const fourHDirection:Direction|null=e5>e13?"LONG":e5<e13?"SHORT":null;
   const momentumAligned=fourHDirection===null?null:fourHDirection===s.direction;
   const profitable=s.direction==="LONG"?p>s.entry:p<s.entry, state={fourHDirection,momentumAligned,profitable};
+
+  // Grace period: retain hard stop/target and opposite Stoch exits, but ignore
+  // EMA momentum misalignment while a newly opened trade develops for two 4H candles.
+  if(ageInCandles<2){
+    const v=isSignalStillValid(s,p,now);
+    if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+    const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k>80:st.k<20;
+    if(opposite)return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
+    return{shouldHold:true,reason:"momentum_grace_period",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
+  }
+
+  if(bars.length<22)return{shouldHold:true,reason:"insufficient_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE",fourHDirection:fallbackDirection,momentumAligned:fallbackAligned,profitable:null};
   const v=isSignalStillValid(s,p,now);
   if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE",...state};
 
-  // Give fresh V28 entries two 4H candles to develop before enforcing the
-  // losing-trade EMA5/13 momentum exit. SL/TP validity and Stoch exits remain active.
-  const ageInCandles=(now-s.timestamp)/(4*60*60*1000);
-  const withinMomentumGracePeriod=ageInCandles>=0&&ageInCandles<2;
-
   // Early tactical exit: losing trades close when 4H EMA5/13 points against them.
-  if(!withinMomentumGracePeriod&&momentumAligned===false&&!profitable)
+  if(momentumAligned===false&&!profitable)
     return{shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
   if(momentumAligned===false&&profitable)
     return{shouldHold:true,reason:"4h_ema5_13_misaligned_profitable_tighten_stop_to_entry",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,...state};
