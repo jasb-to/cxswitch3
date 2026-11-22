@@ -303,7 +303,7 @@ export async function GET(request:Request){
  // Fetch one consistent candle snapshot for every pair before evaluating any entry.
  // This lets position management clear exited/expired positions before generateSignal
  // checks active_position_exists for that same pair.
- const candleByPair=new Map<string,{c1:any[];c4:any[];c15:any[]}>();
+ const candleByPair=new Map<string,{c1:any[];c4:any[];c15:any[];livePrice:number}>();
  await Promise.all(PAIRS.map(async(pair)=>{
    try{
      const results=await Promise.allSettled([
