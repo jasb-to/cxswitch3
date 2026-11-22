@@ -26,14 +26,28 @@ test("ENTRY_2 may start independently and may continue a same-direction ENTRY_1"
   assert.match(strategy, /entry2Continuation=activeMatch&&_activeSignals\.some/);
 });
 
-test("4H EMA5/13 misalignment exits an unprofitable entry and protects a profitable one", () => {
+test("4H EMA5/13 misalignment exits losing trades but never tightens profitable stops", () => {
   const start = strategy.indexOf("export function shouldHold(");
   assert.notEqual(start, -1);
   const hold = strategy.slice(start);
   assert.match(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
   assert.match(hold, /momentumAligned===false&&!profitable/);
-  assert.match(hold, /momentumAligned===false&&profitable/);
-  assert.match(hold, /newStop:s\.entry/);
+  assert.match(hold, /4h_ema5_13_misaligned_profitable_hold/);
+  assert.doesNotMatch(hold, /newStop:s\\.entry/);
+  assert.doesNotMatch(hold, /tighten_stop_to_entry/);
+});
+
+test("cron management uses a live Kraken ticker and history mutations are serialized", () => {
+  assert.match(route, /getCurrentPrice/);
+  assert.match(route, /currentPrice:Number\\(candles\\.livePrice\\)/);
+  assert.match(state, /createSerialQueue/);
+  assert.match(state, /runSignalHistoryMutation/);
+});
+
+test("stop-hit Telegram alerts require the original stop threshold to be reached", () => {
+  assert.match(telegram, /actualStopReached/);
+  assert.match(telegram, /hit stop at/);
+  assert.match(route, /kind:"STOP_HIT",price,stop,reason:"sl_hit"/);
 });
 
 test("Telegram entry sender permits all three V28 signal types", () => {

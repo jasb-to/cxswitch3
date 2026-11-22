@@ -186,8 +186,12 @@ export async function sendManagementAlert(update:{
   let text:string;
   // Exit copy is reason-driven. Never label a management exit as a stop hit
   // unless the recorded exit reason is exactly sl_hit.
-  if(update.reason==="sl_hit"){
-    text=`🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(update.price)}`;
+  if(update.reason==="sl_hit"||update.kind==="STOP_HIT"){
+     const stop=Number(update.stop),price=Number(update.price);
+     const actualStopReached=Number.isFinite(stop)&&stop>0&&Number.isFinite(price)&&
+       (update.direction==="LONG"?price<=stop:price>=stop);
+     if(!actualStopReached)throw new Error("Refusing to send STOP_HIT: live price has not reached the original stop level");
+     text=`🛑 EXIT — ${update.pair} ${update.direction} hit stop at ${formatPrice(stop)} (live price ${formatPrice(price)})`;
   }else if(update.reason==="4h_ema5_13_misaligned_unprofitable_exit"){
     text=`🛑 EXIT — ${update.pair} ${update.direction} closed at ${formatPrice(update.price)} (4H Momentum Misaligned)`;
   }else if(update.reason==="stoch_extreme_opposite_exit"){

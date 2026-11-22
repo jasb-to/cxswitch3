@@ -19,10 +19,12 @@ test("target is one 5 ATR objective; TP2 is compatibility mirror only", () => {
   assert.doesNotMatch(strategy, /entry\+15\*a|entry-15\*a/);
 });
 
-test("active management calls the V28 shouldHold and persists exits", () => {
+test("active management calls V28 shouldHold with live price and persists exits", () => {
   assert.ok(cron.includes("shouldHold(toSignalLike(alert)"));
+  assert.ok(cron.includes("currentPrice:Number(candles.livePrice)"));
   assert.ok(cron.includes('"stoch_extreme_opposite_exit"'));
   assert.ok(cron.includes('"daily_ema8_21_reversed_unprofitable"'));
+  assert.ok(!cron.includes("hold.newStop"));
 });
 
 test("alert matrix still permits ENTRY_1 and ADD while ENTRY_2 remains silent", () => {

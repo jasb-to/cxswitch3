@@ -1,6 +1,6 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
-import { getCandles, krakenPairFormat, markKrakenOhlcPairSuccess } from "@/lib/kraken";
+import { getCandles, getCurrentPrice, krakenPairFormat, markKrakenOhlcPairSuccess } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, shouldHold, setHysteresis, getStochHistoryPointCount, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
 import type { Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
@@ -163,11 +163,6 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
     const hold=shouldHold(toSignalLike(alert),candles,price,Date.now(),cooldowns[alert.pair]);
      const livePnlPct=alert.entry>0?((price-Number(alert.entry))/Number(alert.entry)*100)*(alert.direction==="LONG"?1:-1):null;alert.currentPrice=price;if(livePnlPct!==null)alert.unrealizedPnlPct=livePnlPct;alert.shouldHold=hold.shouldHold;alert.fourHDirection=hold.fourHDirection;alert.momentumAligned=hold.momentumAligned;alert.managementState=hold.managementState;alert.managementRecommendation=hold.recommendation;alert.momentumProfit=hold.profitable??(livePnlPct!==null?livePnlPct>0:null);
     if(hold.reason==="4h_ema5_13_misaligned_unprofitable_hold")console.log(`[MANAGEMENT] ${alert.pair} ${alert.direction} — holding; 4H EMA5/13 misaligned but this alone is not a terminal V28 exit (P/L ${livePnlPct===null?"unknown":livePnlPct.toFixed(3)+"%"})`);
-    if(hold.newStop&&Number.isFinite(hold.newStop)){
-      const currentStop=Number(alert.stop)||0;
-      const tightens=alert.direction==="LONG"?hold.newStop>currentStop:currentStop===0||hold.newStop<currentStop;
-      if(tightens){alert.stop=hold.newStop;console.log(`[MANAGEMENT] ${alert.pair} ${alert.direction} — 4H EMA5/13 momentum weakened; stop tightened to entry ${hold.newStop}`);alerts.push({pair:alert.pair,direction:alert.direction,status:"stop_tightened",stop:hold.newStop,reason:hold.reason});}
-    }
     if(!hold.shouldHold&&INDICATOR_EXIT_REASONS.has(hold.reason)&&cooldownsAvailable){
       persistExitCooldown(alert.pair,hold.reason,cooldowns);
       cooldownsChanged=true;
@@ -188,7 +183,7 @@ async function observeAlertManagement(active:any[],marketData:any[],alerts:any[]
       const kind=hold.reason==="tp_hit"?"TARGET_HIT":hold.reason==="sl_hit"?"STOP_HIT":hold.reason==="stoch_extreme_opposite_exit"?"STOCH_EXTREME_OPPOSITE":hold.reason==="4h_ema5_13_misaligned_unprofitable_exit"?"4H_MOMENTUM_MISALIGNED":"4H_REVERSAL";
       const key=`management:${alert.id}:exit:${hold.reason}`;
       if(hold.reason!=="expired_ttl"&&hold.reason!=="missed_entry"&&await claimTelegramAlert(key))
-        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price,reason:hold.reason});
+        await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind,price,stop:Number(alert.stop),reason:hold.reason});
     }
     } catch(error) {
       if(/Supabase KV|TimeoutError|AbortError|KV .*failed|state store/i.test(String(error)))stateStoreFailed=true;
@@ -220,7 +215,7 @@ async function reconcileAlertOutcomes(initialActive:any[], marketData:any[], ale
       active=active.filter((item:any)=>item.id!==alert.id);
       alerts.push({pair:alert.pair,direction:alert.direction,status:"sl_hit",price,level:stop});
       const exitKey=`management:${alert.id}:exit:hard_stop`;
-      if(await claimTelegramAlert(exitKey))await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"STOP_HIT",price});
+      if(await claimTelegramAlert(exitKey))await sendManagementAlert({pair:alert.pair,direction:alert.direction,kind:"STOP_HIT",price,stop,reason:"sl_hit"});
       console.log(`[ALERT STATE] ${alert.pair} ${alert.direction} — SL_HIT @ ${price} (SL ${stop})`);
     }else if(targetHit){
       await updateSignalHistoryStatus(alert.id,"TP_HIT","tp_hit",price);
@@ -314,14 +309,15 @@ export async function GET(request:Request){
      const results=await Promise.allSettled([
        getCandles(krakenPairFormat(pair+"/USD"),60),
        getCandles(krakenPairFormat(pair+"/USD"),240),
-       getCandles(krakenPairFormat(pair+"/USD"),15)
+       getCandles(krakenPairFormat(pair+"/USD"),15),
+       getCurrentPrice(krakenPairFormat(pair+"/USD"))
      ]);
      const failed=results.find((result)=>result.status==="rejected");
      if(failed?.status==="rejected")throw failed.reason;
-     const [c1,c4,c15]=results.map((result)=>result.status==="fulfilled"?result.value:[]);
-     if(!c1.length||!c4.length||!c15.length)throw new Error("Kraken returned an empty candle interval");
+     const [c1,c4,c15,livePrice]=results.map((result)=>result.status==="fulfilled"?result.value:undefined);
+     if(!c1?.length||!c4?.length||!c15?.length||!Number.isFinite(livePrice)||livePrice<=0)throw new Error("Kraken returned incomplete candles or an invalid live ticker price");
      markKrakenOhlcPairSuccess(krakenPairFormat(pair+"/USD"));
-     candleByPair.set(pair,{c1,c4,c15});
+     candleByPair.set(pair,{c1,c4,c15,livePrice});
    }catch(error){
      console.error(`[PAIR] ${pair} — candle prefetch failed; pair skipped for this run`,error);
      alerts.push({pair,status:"error",stage:"candle_prefetch",error:String(error)});
@@ -331,7 +327,7 @@ export async function GET(request:Request){
  const preflightMarketData=PAIRS.flatMap(pair=>{
    const candles=candleByPair.get(pair);
    if(!candles?.c1.length||!candles.c4.length||!candles.c15.length)return [];
-   return [{pair,currentPrice:Number(candles.c1.at(-1)?.close),momentumCandles4h:candles.c4.slice(-220)}];
+   return [{pair,currentPrice:Number(candles.livePrice),momentumCandles4h:candles.c4.slice(-220)}];
  }).filter((market:any)=>Number.isFinite(market.currentPrice)&&market.currentPrice>0);
 
  // Do not manage positions, evaluate entries, or write active_signals without
@@ -372,7 +368,7 @@ export async function GET(request:Request){
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});return;}
   const ema513=get4HEmaDiagnostic(c4);
 
-  const price=c1.at(-1)!.close;
+  const price=Number(candleSet.livePrice);
   console.log(marketStructureLog(pair,c4,price));
   const existing=active.find(x=>x.pair===pair);
   const historyForEntry=historyAtStart;

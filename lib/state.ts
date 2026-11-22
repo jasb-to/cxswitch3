@@ -3,8 +3,13 @@
 
 import { Redis } from "./supabase-kv";
 import { Signal } from "./strategy";
+import { createSerialQueue } from "./serial-queue";
 
 const redis = new Redis();
+// Serialize signal-history read/modify/write transactions within this runtime.
+// The cron's distributed lock prevents overlapping cron instances; this queue
+// prevents concurrent pair tasks in one invocation from overwriting each other.
+const runSignalHistoryMutation = createSerialQueue();
 
 const LEGACY_SIGNALS_KEY = "cxswitch:signals";
 const LEGACY_TRADES_KEY = "cxswitch:active_trades";
@@ -360,8 +365,8 @@ export async function getLatestAlerts():Promise<Record<string,SignalHistoryEntry
   return derived;
 }
 
-export async function appendSignalHistory(signal:Signal):Promise<void>{const history=await getSignalHistory();if(history.some(h=>h.id===signal.id)){console.log(`[HISTORY] Signal ${signal.id} already recorded`);return;}const entry:SignalHistoryEntry={id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? 0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",version:signal.version};history.push(entry);if(history.length>SIGNAL_HISTORY_MAX)history.splice(0,history.length-SIGNAL_HISTORY_MAX);await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};latest[entry.pair]=entry;await redis.set(LATEST_ALERTS_KEY,latest);console.log(`[HISTORY] Appended ${signal.pair} ${signal.direction} ${signal.type} | TP1 ${entry.tp1 ?? "—"} | TP2 ${entry.tp2 ?? "—"} | latest alert persisted`);}
-export async function updateSignalHistoryStatus(id:string,status:HistoryStatus,exitReason?:string,exitPrice?:number):Promise<void>{const history=await getSignalHistory();const idx=history.findIndex(h=>h.id===id);if(idx<0){console.log(`[HISTORY] Warning: could not find ${id}`);return;}history[idx].status=status;if(exitReason)history[idx].exitReason=exitReason;if(exitPrice!==undefined)history[idx].exitPrice=exitPrice;history[idx].exitTimestamp=Date.now();await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};if(latest[history[idx].pair]?.id===id){latest[history[idx].pair]=history[idx];await redis.set(LATEST_ALERTS_KEY,latest);}console.log(`[HISTORY] Updated ${id} -> ${status}${exitReason?` (${exitReason})`:""}`);}
+export async function appendSignalHistory(signal:Signal):Promise<void>{return runSignalHistoryMutation(async()=>{const history=await getSignalHistory();if(history.some(h=>h.id===signal.id)){console.log(`[HISTORY] Signal ${signal.id} already recorded`);return;}const entry:SignalHistoryEntry={id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? 0,tp1:signal.tp1,tp2:signal.tp2,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",version:signal.version};history.push(entry);if(history.length>SIGNAL_HISTORY_MAX)history.splice(0,history.length-SIGNAL_HISTORY_MAX);await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};latest[entry.pair]=entry;await redis.set(LATEST_ALERTS_KEY,latest);console.log(`[HISTORY] Appended ${signal.pair} ${signal.direction} ${signal.type} | TP1 ${entry.tp1 ?? "—"} | TP2 ${entry.tp2 ?? "—"} | latest alert persisted`);});}
+export async function updateSignalHistoryStatus(id:string,status:HistoryStatus,exitReason?:string,exitPrice?:number):Promise<void>{return runSignalHistoryMutation(async()=>{const history=await getSignalHistory();const idx=history.findIndex(h=>h.id===id);if(idx<0){console.log(`[HISTORY] Warning: could not find ${id}`);return;}history[idx].status=status;if(exitReason)history[idx].exitReason=exitReason;if(exitPrice!==undefined)history[idx].exitPrice=exitPrice;history[idx].exitTimestamp=Date.now();await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};if(latest[history[idx].pair]?.id===id){latest[history[idx].pair]=history[idx];await redis.set(LATEST_ALERTS_KEY,latest);}console.log(`[HISTORY] Updated ${id} -> ${status}${exitReason?` (${exitReason})`:""}`);});}
 export async function updateHistoryMilestonesBatch(updates:{id:string;price:number}[]):Promise<void>{
   if(!updates.length)return;
   const history=await getSignalHistory();
