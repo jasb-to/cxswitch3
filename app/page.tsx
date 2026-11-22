@@ -97,7 +97,7 @@ export default function Dashboard(){
     const strategyReady=m?.dailyDirection!=null;
     const cardBorder=strategyReady?"border-emerald-500/35":"border-amber-500/25";
     const alertState=String(a?.validity?.state??a?.status??"").toUpperCase();
-    const alertSent=!!a&&["ACTIVE","VALID"].includes(alertState);
+    const alertSent=isActive||!!a&&["ACTIVE","VALID"].includes(alertState);
     const trendlineDistancePct=typeof p==="number"&&p>0&&typeof m?.trendlinePrice==="number"&&m.trendlinePrice>0?Math.abs(p-m.trendlinePrice)/m.trendlinePrice*100:typeof m?.trendlineDistancePct==="number"?m.trendlineDistancePct:typeof m?.distToTrendline==="number"?m.distToTrendline:null;
     return <article key={pair} className={`bg-[#0b0b0b] rounded-xl border ${cardBorder} p-3 sm:p-3.5 min-w-0 flex flex-col gap-2 select-text`} style={{WebkitUserSelect:"text",userSelect:"text"}}>
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 min-w-0">
