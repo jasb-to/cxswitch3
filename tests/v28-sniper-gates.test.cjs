@@ -58,12 +58,12 @@ test("4H EMA5/13 is management context, not an ENTRY_1 or ENTRY_2 entry veto", (
   assert.doesNotMatch(generate, /targetCount|targetAtrMultiple|dailyFastEma|ema5_4h:e5_4h|exhaustion:/);
 });
 
-test("4H EMA5/13 misalignment exits an unprofitable trade and protects a profitable trade at breakeven", () => {
+test("4H EMA5/13 misalignment exits unprofitable trades but keeps profitable trades at original stop", () => {
   const hold = body("shouldHold");
   assert.match(hold, /momentumAligned===false&&!profitable/);
   assert.match(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
-  assert.match(hold, /momentumAligned===false&&profitable/);
-  assert.match(hold, /newStop:s\.entry/);
+  assert.match(hold, /4h_ema5_13_misaligned_profitable_hold/);
+  assert.doesNotMatch(hold, /newStop:s\.entry/);
 });
 
 test("Daily reversal exit uses macro EMA8/21 only, with opposite Stoch as a separate exit", () => {
