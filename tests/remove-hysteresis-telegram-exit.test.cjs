@@ -33,13 +33,13 @@ test("4H EMA5/13 misalignment exits losing trades but never tightens profitable 
   assert.match(hold, /4h_ema5_13_misaligned_unprofitable_exit/);
   assert.match(hold, /momentumAligned===false&&!profitable/);
   assert.match(hold, /4h_ema5_13_misaligned_profitable_hold/);
-  assert.doesNotMatch(hold, /newStop:s\\.entry/);
+  assert.doesNotMatch(hold, /newStop:s\.entry/);
   assert.doesNotMatch(hold, /tighten_stop_to_entry/);
 });
 
 test("cron management uses a live Kraken ticker and history mutations are serialized", () => {
   assert.match(route, /getCurrentPrice/);
-  assert.match(route, /currentPrice:Number\\(candles\\.livePrice\\)/);
+  assert.ok(route.includes("currentPrice:Number(candles.livePrice)"));
   assert.match(state, /createSerialQueue/);
   assert.match(state, /runSignalHistoryMutation/);
 });
