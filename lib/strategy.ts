@@ -478,7 +478,7 @@ export function evaluateGates(pair:string,candles4h:Candle[],currentPrice:number
  let rawType:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,direction:Direction|null=null;
  if(entry1Ready&&!activePairPosition){rawType="ENTRY_1";direction=entry1TradeDirection;}
  else if(entry2Ready&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";direction=macro.direction;}
- else if(activeMatch&&macro.direction&&trendlineMacro&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap&&!activeTargetHit){rawType="ADD";direction=macro.direction;}
+ else if(activeMatch&&macro.direction&&trendlineMacro&&beyond&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap){if(!activeTargetHit){rawType="ADD";direction=macro.direction;}}
  const regime=computeRegime(bars),missing:string[]=[];
  if(!macro.direction)missing.push("Daily macro EMA8/21 unavailable: ENTRY_2 and ADD unavailable");
  if(!trendlineFast&&!trendlineMacro)missing.push("directional 4H trendline unavailable");
@@ -537,7 +537,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let rawDirection:Direction|null=null;
  if(entry1Eligible&&!activePairPosition){rawType="ENTRY_1";rawDirection=entry1TradeDirection;}
  else if(entry2Eligible&&(!activePairPosition||entry2Continuation)){rawType="ENTRY_2";rawDirection=macro.direction;}
- else if(activeMatch&&macro.direction&&trendlineMacro&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap&&!activeTargetHit){rawType="ADD";rawDirection=macro.direction;}
+ else if(activeMatch&&macro.direction&&trendlineMacro&&beyondTrendline&&confirming&&emaAligned&&(volUp||stochMomentum||adxStrong)&&!hardCap){if(!activeTargetHit){rawType="ADD";rawDirection=macro.direction;}}
  debug.push("[V28] "+pair+" | DAILY_MACRO="+(macro.direction??"NONE")+" FAST_BIAS="+(fast.direction??"NEUTRAL")+" (EMA5="+fast.ema5.toFixed(4)+" EMA13="+fast.ema13.toFixed(4)+" priceVsEMA5="+(fast.priceAboveEma5?"ABOVE":"BELOW")+" slope="+(fast.slopeUp?"UP":"DOWN")+") | ENTRY_1="+entry1TradeDirection+" | FastTL Dist="+(fastTrendlineDistancePct===null?"N/A":fastTrendlineDistancePct.toFixed(2)+"%")+" | MacroTL Dist="+(macroTrendlineDistancePct===null?"N/A":macroTrendlineDistancePct.toFixed(2)+"%")+" | Stoch="+st.k+" | Type="+rawType);
  if(rawType)debug.push("[TRIGGER] "+rawType+" "+rawDirection);
  const finalType=rawType;
