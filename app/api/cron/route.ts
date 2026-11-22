@@ -312,10 +312,13 @@ export async function GET(request:Request){
        getCandles(krakenPairFormat(pair+"/USD"),15),
        getCurrentPrice(krakenPairFormat(pair+"/USD"))
      ]);
-     const failed=results.find((result)=>result.status==="rejected");
-     if(failed?.status==="rejected")throw failed.reason;
-     const [c1,c4,c15,livePrice]=results.map((result)=>result.status==="fulfilled"?result.value:undefined);
-     if(!c1?.length||!c4?.length||!c15?.length||!Number.isFinite(livePrice)||livePrice<=0)throw new Error("Kraken returned incomplete candles or an invalid live ticker price");
+     const [oneHourResult,fourHourResult,fifteenMinuteResult,tickerResult]=results;
+     if(oneHourResult.status==="rejected")throw oneHourResult.reason;
+     if(fourHourResult.status==="rejected")throw fourHourResult.reason;
+     if(fifteenMinuteResult.status==="rejected")throw fifteenMinuteResult.reason;
+     if(tickerResult.status==="rejected")throw tickerResult.reason;
+     const c1=oneHourResult.value,c4=fourHourResult.value,c15=fifteenMinuteResult.value,livePrice=tickerResult.value;
+     if(!c1.length||!c4.length||!c15.length||!Number.isFinite(livePrice)||livePrice<=0)throw new Error("Kraken returned incomplete candles or an invalid live ticker price");
      markKrakenOhlcPairSuccess(krakenPairFormat(pair+"/USD"));
      candleByPair.set(pair,{c1,c4,c15,livePrice});
    }catch(error){
