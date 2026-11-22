@@ -26,5 +26,5 @@ test("every shouldHold=false result is removed, not only an allowlisted reason",
 });
 
 test("preflight market snapshot uses current pair price and 4H candles", () => {
-  assert.match(route, /currentPrice:Number\(candles\.c1\.at\(-1\)\?\.close\),momentumCandles4h:candles\.c4\.slice\(-220\)/);
+  assert.match(route, /currentPrice:Number\(candles\.livePrice\),momentumCandles4h:candles\.c4\.slice\(-220\)/);
 });

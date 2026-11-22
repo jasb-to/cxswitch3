@@ -25,7 +25,7 @@ test("Kraken OHLC circuit breaker is pair-scoped and opens after three consecuti
 
 test("Cron skips incomplete pairs and aborts marketData=0 before position management or signal evaluation", () => {
   assert.match(cron, /Promise\.allSettled\(\[/);
-  assert.match(cron, /if\(!c1\.length\|\|!c4\.length\|\|!c15\.length\)/);
+  assert.match(cron, /if\(!c1\.length\|\|!c4\.length\|\|!c15\.length\|\|!Number\.isFinite\(livePrice\)\|\|livePrice<=0\)/);
   assert.match(cron, /export const maxDuration = 60/);
   const guard = cron.indexOf('if(preflightMarketData.length===0)');
   const management = cron.indexOf("observeAlertManagement(active,preflightMarketData,alerts)");

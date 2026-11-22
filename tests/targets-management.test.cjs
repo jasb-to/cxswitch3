@@ -76,12 +76,12 @@ test("4H EMA5/13 misalignment exit resumes at two completed 4H candles", () => {
   assert.equal(atBoundary.reason, "4h_ema5_13_misaligned_unprofitable_exit");
 });
 
-test("4H EMA5/13 misalignment still tightens a profitable trade to breakeven", () => {
+test("4H EMA5/13 misalignment keeps a profitable trade open at its original stop", () => {
   const falling = candlesFromCloses(Array.from({ length: 30 }, (_, i) => 130 - i));
   const result = strategy.shouldHold(signal("LONG"), falling, 101);
   assert.equal(result.shouldHold, true);
-  assert.equal(result.newStop, 100);
-  assert.match(result.reason, /tighten_stop_to_entry/);
+  assert.equal(result.newStop, undefined);
+  assert.equal(result.reason, "4h_ema5_13_misaligned_profitable_hold");
 });
 
 function dailyCandlesFromCloses(closes) {

@@ -638,7 +638,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),_lastExit
   if(!withinMomentumGracePeriod&&momentumAligned===false&&!profitable)
     return{shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
   if(momentumAligned===false&&profitable)
-    return{shouldHold:true,reason:"4h_ema5_13_misaligned_profitable_tighten_stop_to_entry",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,...state};
+    return{shouldHold:true,reason:"4h_ema5_13_misaligned_profitable_hold",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
 
   // Daily reversal is determined only by the slower EMA8/21 macro trend.
   const dailyTrend=trend1DMacro(aggregateTo1D(bars));
