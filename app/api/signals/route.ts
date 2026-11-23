@@ -1,6 +1,6 @@
 // app/api/signals/route.ts — canonical dashboard state + alert validity
 import { NextResponse } from "next/server";
-import { getActiveSignals, getSignalHistory, getLatestAlerts, getMarketData, getLastCronRun } from "@/lib/state";
+import { getActiveSignals, getSignalHistory, getLatestAlerts, getMarketData, getLastCronRun, getCardResets } from "@/lib/state";
 import { CXSWITCH_VERSION, ENTRY_ARCHITECTURE, DAILY_BIAS } from "@/lib/version";
 import { getJarvisSnapshot } from "@/lib/jarvis";
 import { shouldHold } from "@/lib/strategy";
@@ -91,7 +91,7 @@ function latestAlertMomentum(pair:string,history:any[],market:any,activePosition
 }
 
 export async function GET(){
-  const activeSignals=await getActiveSignals(),signalHistory=await getSignalHistory(),persistedLatest=await getLatestAlerts(),marketData=await getMarketData(),lastCronRun=await getLastCronRun(),jarvisSnapshot=await getJarvisSnapshot(),now=Date.now();
+  const activeSignals=await getActiveSignals(),signalHistory=await getSignalHistory(),persistedLatest=await getLatestAlerts(),cardResets=await getCardResets(),marketData=await getMarketData(),lastCronRun=await getLastCronRun(),jarvisSnapshot=await getJarvisSnapshot(),now=Date.now();
   const historyById=new Map(signalHistory.map((h:any)=>[h.id,h]));
   const activeForDisplay=activeSignals.map((s:any)=>{
     const historical:any=historyById.get(s.id)??signalHistory.filter((h:any)=>h.pair===s.pair&&h.direction===s.direction&&h.status==="ACTIVE").sort((a:any,b:any)=>b.timestamp-a.timestamp)[0];
@@ -117,6 +117,6 @@ export async function GET(){
     return `[PAIR] ${pair} | 1D=${m.dailyDirection||"—"} | 4H=${m.fourH513?.label||m.trend||"—"} | SIGNAL=${signal} | POSITION=${position} | MANAGEMENT=${management} | JARVIS=${jarvis}`;
   });
   const logs=[`[SYSTEM] CXSwitch v${CXSWITCH_VERSION} | ${ENTRY_ARCHITECTURE} | ${DAILY_BIAS}`,`[CRON] Last run ${lastCronRun?new Date(lastCronRun).toISOString():"not recorded"}`,...unifiedPairLogs,...historyLogs,`[CRON] State: active=${enrichedActive.length} marketData=${liveMarketData.length} history=${signalHistory.length} latest=${Object.keys(latestAlerts).length}`].slice(0,40);
-  const response=NextResponse.json({version:CXSWITCH_VERSION,architecture:ENTRY_ARCHITECTURE,dailyBias:DAILY_BIAS,activeSignals:enrichedActive,signalHistory:enrichedHistory,marketData:liveMarketData,latestAlerts,logs,system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length},updatedAt:new Date(now).toISOString()});
+  const response=NextResponse.json({version:CXSWITCH_VERSION,architecture:ENTRY_ARCHITECTURE,dailyBias:DAILY_BIAS,activeSignals:enrichedActive,signalHistory:enrichedHistory,marketData:liveMarketData,latestAlerts,cardResets,logs,system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length},updatedAt:new Date(now).toISOString()});
   response.headers.set("Cache-Control","no-store, no-cache, must-revalidate, proxy-revalidate");response.headers.set("Pragma","no-cache");response.headers.set("Expires","0");return response;
 }
