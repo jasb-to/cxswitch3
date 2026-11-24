@@ -8,26 +8,36 @@ const strategy = fs.readFileSync(
   "utf8"
 );
 
-test("V28 StochRSI entry and opposite-extreme exit directions do not contradict", () => {
+test("V28 StochRSI exit uses the pinned File A directional extremes", () => {
   const holdStart = strategy.indexOf("export function shouldHold(");
   assert.notEqual(holdStart, -1, "shouldHold must exist");
   const holdSource = strategy.slice(holdStart);
-
-  // A LONG is entered at the oversold extreme; it must only Stoch-exit
-  // at the opposite, overbought extreme.
-  assert.match(
-    holdSource,
-    /s\.direction\s*===\s*"LONG"\s*\?\s*st\.k\s*>\s*80\s*:\s*st\.k\s*<\s*20/
+  const oppositeMatch = holdSource.match(
+    /const st\s*=\s*stochRsi\(closes\)\s*,\s*opposite\s*=\s*(s\.direction\s*===\s*"LONG"\s*\?\s*st\.k\s*<\s*20\s*:\s*st\.k\s*>\s*80)\s*;/
   );
+  assert.ok(oppositeMatch, "shouldHold must use LONG K < 20 and SHORT K > 80");
 
-  // Keep the ENTRY_1 timing rules unchanged: LONG oversold, SHORT overbought.
+  // Exercise the exact directional expression used by shouldHold.
+  const isOppositeExtreme = new Function("s", "st", `return ${oppositeMatch[1]};`);
+  assert.equal(isOppositeExtreme({ direction: "SHORT" }, { k: 10 }), false,
+    "a SHORT at K < 20 must not trigger stoch_extreme_opposite_exit");
+  assert.equal(isOppositeExtreme({ direction: "SHORT" }, { k: 90 }), true,
+    "a SHORT at K > 80 must trigger stoch_extreme_opposite_exit");
+  assert.equal(isOppositeExtreme({ direction: "LONG" }, { k: 10 }), true,
+    "a LONG at K < 20 must trigger stoch_extreme_opposite_exit");
+  assert.equal(isOppositeExtreme({ direction: "LONG" }, { k: 90 }), false,
+    "a LONG at K > 80 must not trigger stoch_extreme_opposite_exit");
+});
+
+test("V28 ENTRY_1 StochRSI timing rules remain unchanged", () => {
   const entryStart = strategy.indexOf("export function evaluateGates(");
   const entryEnd = strategy.indexOf("export function generateSignal(", entryStart);
   assert.notEqual(entryStart, -1, "evaluateGates must exist");
   assert.notEqual(entryEnd, -1, "generateSignal must follow evaluateGates");
   const entrySource = strategy.slice(entryStart, entryEnd);
+  assert.match(entrySource, /stochExtremeFast/);
   assert.match(
     entrySource,
-    /entry1TradeDirection/
+    /entry1TradeDirection==="LONG"&&st\.k<20\)\|\|\(entry1TradeDirection==="SHORT"&&st\.k>80/
   );
 });
