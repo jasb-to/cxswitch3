@@ -646,7 +646,7 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),_lastExit
   if(dailyReversed&&!profitable)
     return{shouldHold:false,reason:"daily_ema8_21_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
 
-  const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k>80:st.k<20;
+  const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k<20:st.k>80;
   // Do not exit on a pinned Stoch extreme while the Daily Macro and 4H
   // momentum remain aligned and ADX confirms a strong trend.
   const strongTrendAligned =
