@@ -13,7 +13,7 @@ test("V28 StochRSI exit uses the opposite extreme from entry", () => {
   assert.notEqual(holdStart, -1, "shouldHold must exist");
   const holdSource = strategy.slice(holdStart);
   const oppositeMatch = holdSource.match(
-    /const st\\s*=\\s*stochRsi\\(closes\\)\\s*,\\s*opposite\\s*=\\s*(s\\.direction\\s*===\\s*"LONG"\\s*\\?\\s*st\\.k\\s*>\\s*80\\s*:\\s*st\\.k\\s*<\\s*20)\\s*;/
+    /const st\s*=\s*stochRsi\(closes\)\s*,\s*opposite\s*=\s*(s\.direction\s*===\s*"LONG"\s*\?\s*st\.k\s*>\s*80\s*:\s*st\.k\s*<\s*20)\s*;/
   );
   assert.ok(oppositeMatch, "shouldHold must use LONG K > 80 and SHORT K < 20");
 
