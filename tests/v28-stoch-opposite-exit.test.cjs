@@ -8,25 +8,25 @@ const strategy = fs.readFileSync(
   "utf8"
 );
 
-test("V28 StochRSI exit uses the pinned File A directional extremes", () => {
+test("V28 StochRSI exit uses the opposite extreme from entry", () => {
   const holdStart = strategy.indexOf("export function shouldHold(");
   assert.notEqual(holdStart, -1, "shouldHold must exist");
   const holdSource = strategy.slice(holdStart);
   const oppositeMatch = holdSource.match(
-    /const st\s*=\s*stochRsi\(closes\)\s*,\s*opposite\s*=\s*(s\.direction\s*===\s*"LONG"\s*\?\s*st\.k\s*<\s*20\s*:\s*st\.k\s*>\s*80)\s*;/
+    /const st\\s*=\\s*stochRsi\\(closes\\)\\s*,\\s*opposite\\s*=\\s*(s\\.direction\\s*===\\s*"LONG"\\s*\\?\\s*st\\.k\\s*>\\s*80\\s*:\\s*st\\.k\\s*<\\s*20)\\s*;/
   );
-  assert.ok(oppositeMatch, "shouldHold must use LONG K < 20 and SHORT K > 80");
+  assert.ok(oppositeMatch, "shouldHold must use LONG K > 80 and SHORT K < 20");
 
   // Exercise the exact directional expression used by shouldHold.
   const isOppositeExtreme = new Function("s", "st", `return ${oppositeMatch[1]};`);
-  assert.equal(isOppositeExtreme({ direction: "SHORT" }, { k: 10 }), false,
-    "a SHORT at K < 20 must not trigger stoch_extreme_opposite_exit");
-  assert.equal(isOppositeExtreme({ direction: "SHORT" }, { k: 90 }), true,
-    "a SHORT at K > 80 must trigger stoch_extreme_opposite_exit");
-  assert.equal(isOppositeExtreme({ direction: "LONG" }, { k: 10 }), true,
-    "a LONG at K < 20 must trigger stoch_extreme_opposite_exit");
-  assert.equal(isOppositeExtreme({ direction: "LONG" }, { k: 90 }), false,
-    "a LONG at K > 80 must not trigger stoch_extreme_opposite_exit");
+  assert.equal(isOppositeExtreme({ direction: "SHORT" }, { k: 90 }), false,
+    "a SHORT at K = 90 must not trigger stoch_extreme_opposite_exit");
+  assert.equal(isOppositeExtreme({ direction: "SHORT" }, { k: 10 }), true,
+    "a SHORT at K = 10 must trigger stoch_extreme_opposite_exit");
+  assert.equal(isOppositeExtreme({ direction: "LONG" }, { k: 10 }), false,
+    "a LONG at K = 10 must not trigger stoch_extreme_opposite_exit");
+  assert.equal(isOppositeExtreme({ direction: "LONG" }, { k: 90 }), true,
+    "a LONG at K = 90 must trigger stoch_extreme_opposite_exit");
 });
 
 test("V28 ENTRY_1 StochRSI timing rules remain unchanged", () => {
