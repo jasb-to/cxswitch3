@@ -14,7 +14,7 @@ export const revalidate=0;
 // Give transient market-data/API latency room without relying on the platform default.
 // Kraken OHLC can require a retry across two bounded batches; allow transient upstream latency.
 export const maxDuration = 60;
-const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC"] as const;
+const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","VIRTUAL","ZEC","SUI","NEAR"] as const;
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
 const MIN_CRON_INTERVAL_MS=2*60*1000;
@@ -304,7 +304,8 @@ export async function GET(request:Request){
  // This lets position management clear exited/expired positions before generateSignal
  // checks active_position_exists for that same pair.
  const candleByPair=new Map<string,{c1:any[];c4:any[];c15:any[];livePrice:number}>();
- await Promise.all(PAIRS.map(async(pair)=>{
+ // Process pairs sequentially to keep Kraken OHLC requests within public API rate limits.
+ for (const pair of PAIRS) {
    try{
      const results=await Promise.allSettled([
        getCandles(krakenPairFormat(pair+"/USD"),60),
@@ -325,7 +326,7 @@ export async function GET(request:Request){
      console.error(`[PAIR] ${pair} — candle prefetch failed; pair skipped for this run`,error);
      alerts.push({pair,status:"error",stage:"candle_prefetch",error:String(error)});
    }
- }));
+ }
 
  const preflightMarketData=PAIRS.flatMap(pair=>{
    const candles=candleByPair.get(pair);
