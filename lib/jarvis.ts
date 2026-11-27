@@ -196,15 +196,19 @@ export function buildJarvisNarrative(marketSnapshot:any[], activeSignals:any[]):
     const macroDirection=directionFromDaily(m?.dailyDirection);
     const fourHValue=String(m?.fourHDirection||"").toUpperCase();
     const fourHDirection=fourHValue==="LONG"||fourHValue==="BULL"||fourHValue==="BULLISH"?"BULL":fourHValue==="SHORT"||fourHValue==="BEAR"||fourHValue==="BEARISH"?"BEAR":"NEUTRAL";
-    const directionConflict=macroDirection!=="NEUTRAL"&&fourHDirection!=="NEUTRAL"&&macroDirection!==fourHDirection;
-    const context=directionConflict
-      ? `${macroDirection==="BEAR"?"Bearish":"Bullish"} daily macro, but 4H momentum is opposing. Beware of conflict.`
-      : [regime!=="UNKNOWN"?regime+" regime":null,Number.isFinite(adx)&&adx>25&&macroDirection!=="NEUTRAL"&&macroDirection===fourHDirection?"Strong trend":null].filter(Boolean).join(" · ");
+    const ema5_4h=Number(m?.fourH513?.ema5??m?.ema5_4h);
+    const ema13_4h=Number(m?.fourH513?.ema13??m?.ema13_4h);
+    const currentPrice=Number(m?.currentPrice??m?.price);
+    const spreadPct=Number.isFinite(ema5_4h)&&Number.isFinite(ema13_4h)&&currentPrice>0?Math.abs(ema5_4h-ema13_4h)/currentPrice*100:null;
+    const fourHStrength=spreadPct===null?"—":spreadPct>=0.5?"STRONG":spreadPct>=0.1?"MEDIUM":"WEAK";
+    const fourHLabel=fourHDirection==="BULL"?"BULLISH":fourHDirection==="BEAR"?"BEARISH":"—";
+    const alignment=macroDirection!=="NEUTRAL"&&fourHDirection!=="NEUTRAL"?(macroDirection===fourHDirection?"ALIGNED":"OPPOSING"):"WAITING";
+    const momentumSummary=fourHLabel!=="—"&&fourHStrength!=="—"?`4H MOMENTUM: ${fourHLabel} (${fourHStrength}) - ${alignment}`:"4H MOMENTUM: WAITING";
+    const context=[regime!=="UNKNOWN"?regime+" regime":null,Number.isFinite(adx)&&adx>25&&macroDirection!=="NEUTRAL"&&macroDirection===fourHDirection?"Strong trend":null].filter(Boolean).join(" · ");
     if(active){
       const price=Number(m?.currentPrice??m?.price),entry=Number(active.entry);
       const pnl=Number.isFinite(price)&&Number.isFinite(entry)&&entry>0?((price-entry)/entry*100)*(active.direction==="SHORT"?-1:1):null;
-      const aligned=m?.momentumAligned??m?.alignment?.momentumAligned;
-      const momentum=aligned===true?"4H EMA5/13 momentum is aligned, holding for target.":aligned===false?"4H EMA5/13 momentum is misaligned; tighten stop and monitor exit conditions.":"4H EMA5/13 momentum is unavailable.";
+      const momentum=momentumSummary+". 4H direction is descriptive context; position management remains governed by the existing rules.";
       const pnlText=pnl===null?"PnL unavailable":(pnl>=0?"+":"")+pnl.toFixed(2)+"% PnL";
       const skepticWarning=formatSkepticWarning(devilAdvocateWarnings(active.direction,m));
       narratives[pair]="ACTIVE "+String(active.direction||"").toUpperCase()+" · "+pnlText+". "+momentum+(context?" "+context+".":"")+(skepticWarning?" "+skepticWarning:""); continue;
@@ -222,7 +226,7 @@ export function buildJarvisNarrative(marketSnapshot:any[], activeSignals:any[]):
     else if(!Number.isFinite(k)) analysis="Watching "+pair+" "+dir+". Price is at the trendline, but Stoch K is unavailable; waiting for the V28 Stoch condition.";
     else if(dir==="LONG"?k<=20:k>=80) analysis="READY: "+pair+" "+dir+". Price is at the trendline and Stoch K is "+k.toFixed(1)+" (extreme). Waiting for the next candle close to confirm the V28 trigger.";
     else analysis="Watching "+pair+" "+dir+". Price is at the trendline, but Stoch K is "+k.toFixed(1)+". Waiting for Stoch to hit "+(dir==="LONG"?"20":"80")+" to trigger.";
-    narratives[pair]=analysis+(context?" "+context+".":"");
+    narratives[pair]=analysis+" "+momentumSummary+(context?" · "+context+".":"");
   }
   return narratives;
 }
