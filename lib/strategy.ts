@@ -619,6 +619,11 @@ export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if(v.reason==="sl_hit")return"SL_HIT";if(v.reason==="tp_hit")return"TP_HIT";return"ACTIVE";}
 export interface HoldResult{shouldHold:boolean;reason:string;managementState:"STAY"|"EXIT";recommendation:"STAY IN TRADE"|"EXIT TRADE";newStop?:number;fourHDirection:Direction|null;momentumAligned:boolean|null;profitable:boolean|null}
 export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),_lastExitAlertAt?:number):HoldResult{
+  // Fresh positions get two complete 4H candles to develop before the
+  // losing-trade EMA5/13 momentum exit is enforced. Price-based SL/TP checks
+  // below remain active throughout this grace period.
+  const ageInHours=(now-s.timestamp)/(1000*60*60);
+  const inGracePeriod=ageInHours>=0&&ageInHours<8;
   const bars=[...c], fallbackDirection=s.context?.fourHDirection??null;
   const fallbackAligned=typeof s.context?.momentumAligned==="boolean"?s.context.momentumAligned:null;
   if(bars.length<22)return{shouldHold:true,reason:"insufficient_4h_history",managementState:"STAY",recommendation:"STAY IN TRADE",fourHDirection:fallbackDirection,momentumAligned:fallbackAligned,profitable:null};
@@ -629,30 +634,27 @@ export function shouldHold(s:Signal,c:Candle[],p:number,now=Date.now(),_lastExit
   const v=isSignalStillValid(s,p,now);
   if(!v.valid)return{shouldHold:false,reason:v.reason,managementState:"EXIT",recommendation:"EXIT TRADE",...state};
 
-  // Give fresh V28 entries two 4H candles to develop before enforcing the
-  // losing-trade EMA5/13 momentum exit. SL/TP validity and Stoch exits remain active.
-  const ageInCandles=(now-s.timestamp)/(4*60*60*1000);
-  const withinMomentumGracePeriod=ageInCandles>=0&&ageInCandles<2;
+  // Daily reversal is determined only by the slower EMA8/21 macro trend.
+  const dailyTrend=trend1DMacro(aggregateTo1D(bars));
+  const dailyReversed=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG");
 
-  // Early tactical exit: losing trades close when 4H EMA5/13 points against them.
-  if(!withinMomentumGracePeriod&&momentumAligned===false&&!profitable)
+  // Do not let 4H EMA5/13 misalignment close a fresh, unprofitable position
+  // during its first eight hours. Stop loss and take profit remain authoritative.
+  if(momentumAligned===false&&!profitable&&!inGracePeriod)
     return{shouldHold:false,reason:"4h_ema5_13_misaligned_unprofitable_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
   if(momentumAligned===false&&profitable)
     return{shouldHold:true,reason:"4h_ema5_13_misaligned_profitable_hold",managementState:"STAY",recommendation:"STAY IN TRADE",...state};
 
-  // Daily reversal is determined only by the slower EMA8/21 macro trend.
-  const dailyTrend=trend1DMacro(aggregateTo1D(bars));
-  const dailyReversed=(s.direction==="LONG"&&dailyTrend.direction==="SHORT")||(s.direction==="SHORT"&&dailyTrend.direction==="LONG");
   if(dailyReversed&&!profitable)
     return{shouldHold:false,reason:"daily_ema8_21_reversed_unprofitable",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
 
   const st=stochRsi(closes),opposite=s.direction==="LONG"?st.k>80:st.k<20;
-  // Do not exit on a pinned Stoch extreme while the Daily Macro and 4H
-  // momentum remain aligned and ADX confirms a strong trend.
-  const strongTrendAligned =
-    dailyTrend.direction===s.direction &&
-    momentumAligned===true &&
-    adx(bars)>25;
+  // Oversold Stoch during a SHORT downtrend (or overbought Stoch during a LONG
+  // uptrend) is trend confirmation. Suppress this exit whenever both the Daily
+  // EMA8/21 macro and 4H EMA5/13 momentum still agree with the position.
+  // ADX is intentionally not part of this override: direction alignment alone
+  // is the requested confirmation, including during fast impulsive moves.
+  const strongTrendAligned=dailyTrend.direction===s.direction&&momentumAligned===true;
   if(opposite&&!strongTrendAligned)
     return{shouldHold:false,reason:"stoch_extreme_opposite_exit",managementState:"EXIT",recommendation:"EXIT TRADE",...state};
   if(opposite&&strongTrendAligned)
